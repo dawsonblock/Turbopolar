@@ -48,10 +48,8 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
         scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
         weights = mx.softmax(scores, axis=-1)
         ref_output = mx.sum(weights[:, :, :, None] * v_dense.reshape(B, H, S * L, D), axis=-2)
-        dummy_q = mx.zeros([B, H, self.config.qjl_proj_dim // 8], dtype=mx.uint8)
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(mx.zeros([B, H, S, L, D], dtype=mx.float16))
         gpu_output, _ = self.bridge.execute_online_attention_dense_v(
-            q, unified, v_dense, qjl_payload, dummy_q, self.config, actual_seq_len=S*L, use_qjl=False
+            q, unified, v_dense, None, None, self.config, actual_seq_len=S*L, use_qjl=False
         )
         mx.eval(ref_output, gpu_output)
         ref_np = np.array(ref_output)
@@ -99,10 +97,8 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
         scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
         weights = mx.softmax(scores, axis=-1)
         ref_output = mx.sum(weights[:, :, :, None] * v_dequant.reshape(B, H, S * L, D), axis=-2)
-        dummy_q = mx.zeros([B, H, self.config.qjl_proj_dim // 8], dtype=mx.uint8)
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(mx.zeros([B, H, S, L, D], dtype=mx.float16))
         gpu_output, _ = self.bridge.execute_online_attention_quant_v(
-            q, unified, quant_v, qjl_payload, dummy_q, self.config, actual_seq_len=S*L, use_qjl=False
+            q, unified, quant_v, None, None, self.config, actual_seq_len=S*L, use_qjl=False
         )
         mx.eval(ref_output, gpu_output)
         ref_np = np.array(ref_output)
@@ -113,6 +109,36 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
         max_err = np.max(np.abs(ref_np - gpu_np))
         self.assertGreaterEqual(cosine, 0.999)
         self.assertLessEqual(max_err, 1e-3)
+
+    def test_long_context_float_accumulator_stability(self):
+        """Dense-V attention at 4k and 8k should stay close to CPU reference."""
+        for T in (4096, 8192):
+            with self.subTest(T=T):
+                B, H, S, L, D = 1, 2, T // self.config.block_size, self.config.block_size, self.config.head_dim
+                mx.random.seed(self.config.seed)
+                q = mx.random.normal(shape=[B, H, D])
+                k_original = mx.random.normal(shape=[B, H, S * L, D])
+                v_dense = mx.random.normal(shape=[B, H, S, L, D])
+                unified = self._encode_unified(k_original)
+                k_recon = self.polar_decoder.decode_block(unified)
+                scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+                weights = mx.softmax(scores, axis=-1)
+                ref_output = mx.sum(weights[:, :, :, None] * v_dense.reshape(B, H, S * L, D), axis=-2)
+                gpu_output, _ = self.bridge.execute_online_attention_dense_v(
+                    q, unified, v_dense, None, None, self.config, actual_seq_len=S * L, use_qjl=False
+                )
+                mx.eval(ref_output, gpu_output)
+                ref_np = np.array(ref_output)
+                gpu_np = np.array(gpu_output)
+                cosine = np.dot(ref_np.flatten(), gpu_np.flatten()) / (
+                    np.linalg.norm(ref_np) * np.linalg.norm(gpu_np) + 1e-12
+                )
+                max_err = np.max(np.abs(ref_np - gpu_np))
+                # Tolerance grows with sqrt(seq_len) because online softmax rescaling
+                # accumulates rounding differences.
+                allowed_err = 2e-3 * np.sqrt(T / 64.0)
+                self.assertGreaterEqual(cosine, 0.999, f"cosine={cosine} at T={T}")
+                self.assertLessEqual(max_err, allowed_err, f"max_err={max_err} at T={T}")
 
     def test_gqa_quant_v_attention(self):
         """Test GQA with quantized V attention."""
@@ -138,11 +164,8 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
             shape=(B, H_kv, S * L, D), block_size=L, head_dim=D,
             metadata=blocks[0].metadata,
         )
-        qjl_encoder = QJLResidualEncoder(config)
-        dummy_q = mx.zeros([B, H_q, config.qjl_proj_dim // 8], dtype=mx.uint8)
-        qjl_payload = qjl_encoder.compute_residual_sketch(mx.zeros([B, H_kv, S, L, D], dtype=mx.float16))
         gpu_output, trace = bridge.execute_online_attention_quant_v(
-            q, unified, quant_v, qjl_payload, dummy_q, config, actual_seq_len=S*L, use_qjl=False
+            q, unified, quant_v, None, None, config, actual_seq_len=S*L, use_qjl=False
         )
         mx.eval(gpu_output)
         self.assertEqual(gpu_output.shape, (B, H_q, D))

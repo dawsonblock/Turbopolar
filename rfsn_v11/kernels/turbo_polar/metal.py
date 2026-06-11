@@ -1,7 +1,7 @@
 import mlx.core as mx
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.polar.payload import PolarKeyBlock
@@ -405,14 +405,30 @@ class MetalKernelBridge:
             threadgroup=(self._tg_x, 1, 1),
         )[0]
 
+    def _resolve_qjl_tensors(
+        self, qjl_payload: Optional[QJLPayload], q_proj_signs: Optional[mx.array],
+        B: int, H_q: int, H_kv: int, S: int, L: int, qjl_proj_dim: int, use_qjl: bool
+    ) -> Tuple[mx.array, mx.array, mx.array]:
+        if use_qjl:
+            if qjl_payload is None or q_proj_signs is None:
+                raise ValueError("qjl_payload and q_proj_signs are required when use_qjl=True")
+            return qjl_payload.packed_signs, qjl_payload.norms, q_proj_signs
+        qjl_bytes = qjl_proj_dim // 8
+        qjl_s = mx.zeros((B, H_kv, S, L, qjl_bytes), dtype=mx.uint8)
+        qjl_n = mx.zeros((B, H_kv, S, L), dtype=mx.float16)
+        q_proj = mx.zeros((B, H_q, qjl_bytes), dtype=mx.uint8)
+        return qjl_s, qjl_n, q_proj
+
     def execute_online_attention_dense_v(
         self, q: mx.array, block: PolarKeyBlock, v_dense: mx.array,
-        qjl_payload: QJLPayload, q_proj_signs: mx.array, config,
+        qjl_payload: Optional[QJLPayload], q_proj_signs: Optional[mx.array], config,
         actual_seq_len: int, use_qjl: bool = False,
     ) -> Tuple[mx.array, Dict[str, Any]]:
-        B, H_q, S, L, _ = block.radii.shape
-        H_kv = block.radii.shape[1]
+        B, H_kv, S, L, _ = block.radii.shape
         num_queries_per_kv = q.shape[1] // H_kv
+        qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
+            qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
+        )
         if not self.threadgroup_supported:
             v_broadcast = mx.repeat(v_dense.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
             return self._cpu_online_attention(
@@ -424,7 +440,7 @@ class MetalKernelBridge:
         out_array = mx.zeros(out_shape, dtype=out_dtype)
         q, radii, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
             q, block.radii, block.angle_codes_l1, block.angle_codes_deep,
-            v_dense, qjl_payload.packed_signs, qjl_payload.norms, q_proj_signs
+            v_dense, qjl_s, qjl_n, q_proj
         )
         strides = self._build_strides_attn_dense(q, radii, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs, out_array)
         output = self._kernel_attn_dense(
@@ -462,12 +478,14 @@ class MetalKernelBridge:
 
     def execute_online_attention_quant_v(
         self, q: mx.array, block: PolarKeyBlock, quant_v: QuantizedVBlock,
-        qjl_payload: QJLPayload, q_proj_signs: mx.array, config,
+        qjl_payload: Optional[QJLPayload], q_proj_signs: Optional[mx.array], config,
         actual_seq_len: int, use_qjl: bool = False,
     ) -> Tuple[mx.array, Dict[str, Any]]:
-        B, H_q, S, L, _ = block.radii.shape
-        H_kv = block.radii.shape[1]
+        B, H_kv, S, L, _ = block.radii.shape
         num_queries_per_kv = q.shape[1] // H_kv
+        qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
+            qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
+        )
         if not self.threadgroup_supported:
             v_dequant = GroupedVQuantizer(group_size=quant_v.group_size).dequantize_block(quant_v)
             v_broadcast = mx.repeat(v_dequant.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
@@ -480,7 +498,7 @@ class MetalKernelBridge:
         out_array = mx.zeros(out_shape, dtype=out_dtype)
         q, radii, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
             q, block.radii, block.angle_codes_l1, block.angle_codes_deep,
-            quant_v.codes, quant_v.scales, qjl_payload.packed_signs, qjl_payload.norms, q_proj_signs
+            quant_v.codes, quant_v.scales, qjl_s, qjl_n, q_proj
         )
         strides = self._build_strides_attn_quant(q, radii, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs, out_array)
         output = self._kernel_attn_quant(

@@ -147,7 +147,7 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
 
             gpu_out_no_qjl, trace_no_qjl = bridge.execute_online_attention_quant_v(
                 q=q, block=block, quant_v=quant_v,
-                qjl_payload=qjl_payload, q_proj_signs=q_packed_signs,
+                qjl_payload=None, q_proj_signs=None,
                 config=config, actual_seq_len=T, use_qjl=False
             )
             self.assertTrue(trace_no_qjl["metal_used"] or trace_no_qjl["fallback_used"])

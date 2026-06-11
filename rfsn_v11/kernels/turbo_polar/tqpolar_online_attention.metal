@@ -50,22 +50,22 @@ kernel void tqpolar_online_attention_dense_v(
     uint stride_qp_b  = strides[26]; uint stride_qp_h  = strides[27];
     uint stride_o_b   = strides[28]; uint stride_o_h   = strides[29];
 
-    half m_stat = -INFINITY;
-    half l_stat = 0.0h;
-    half acc[4] = {0.0h, 0.0h, 0.0h, 0.0h};
-    threadgroup half shared_scores[64];
-    threadgroup half shared_q_norm[1];
+    float m_stat = -INFINITY;
+    float l_stat = 0.0f;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    threadgroup float shared_scores[64];
+    threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
-        half q_sum = 0.0h;
+        float q_sum = 0.0f;
         for (uint d = 0; d < head_dim; d++) {
-            half val = q[b * stride_q_b + q_head * stride_q_h + d];
+            float val = q[b * stride_q_b + q_head * stride_q_h + d];
             q_sum += val * val;
         }
         shared_q_norm[0] = sqrt(q_sum);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    half q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0h;
+    float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
     for (uint s = 0; s < total_blocks; s++) {
         for (uint l = 0; l < block_size; l++) {
@@ -76,18 +76,18 @@ kernel void tqpolar_online_attention_dense_v(
                 }
                 continue;
             }
-            half private_sum = 0.0h;
+            float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                half r = polar_radii[offset_r];
-                half norm_angle = 0.0h;
+                float r = polar_radii[offset_r];
+                float norm_angle = 0.0f;
                 if (j < split_half_d) {
                     uint l1_byte_idx = j / 2;
                     uint l1_nibble = j % 2;
                     uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l + l1_byte_idx;
                     uchar l1_byte = angle_codes_l1[offset_c1];
                     uchar l1_code = (l1_nibble == 0) ? (l1_byte & 0x0F) : ((l1_byte >> 4) & 0x0F);
-                    norm_angle = static_cast<half>(l1_code) / l1_scale;
+                    norm_angle = float(l1_code) / float(l1_scale);
                 } else {
                     uint rel_j = j - split_half_d;
                     uint deep_byte_idx = rel_j / 4;
@@ -95,14 +95,14 @@ kernel void tqpolar_online_attention_dense_v(
                     uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
                     uchar deep_byte = angle_codes_deep[offset_cd];
                     uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
-                    norm_angle = static_cast<half>(deep_code) / deep_scale;
+                    norm_angle = float(deep_code) / float(deep_scale);
                 }
-                half angle = (norm_angle * 2.0h * M_PI_H) - M_PI_H;
-                half k_x = r * cos(angle);
-                half k_y = r * sin(angle);
-                half q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                half q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * attention_scale;
+                float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
+                float k_x = r * cos(angle);
+                float k_y = r * sin(angle);
+                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
             uint local_hamming = 0;
             if (use_qjl != 0) {
@@ -113,13 +113,13 @@ kernel void tqpolar_online_attention_dense_v(
                     local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
                 }
             }
-            half total_polar_score = simd_sum(private_sum);
+            float total_polar_score = simd_sum(private_sum);
             uint total_hamming_dist = simd_sum(local_hamming);
             if (tid == 0) {
                 if (use_qjl != 0) {
-                    half match_score = static_cast<half>(qjl_proj_dim) - 2.0h * static_cast<half>(total_hamming_dist);
-                    half norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    half qjl_correction = (norm_E * q_norm) * (match_score / static_cast<half>(qjl_proj_dim));
+                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
+                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
+                    float qjl_correction = (norm_E * q_norm) * (match_score / float(qjl_proj_dim));
                     shared_scores[l] = total_polar_score + qjl_correction;
                 } else {
                     shared_scores[l] = total_polar_score;
@@ -128,30 +128,30 @@ kernel void tqpolar_online_attention_dense_v(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        half block_max = -INFINITY;
+        float block_max = -INFINITY;
         for (uint l = 0; l < block_size; l++) {
             block_max = max(block_max, shared_scores[l]);
         }
-        half m_new = max(m_stat, block_max);
-        half alpha = exp(m_stat - m_new);
-        half l_block = 0.0h;
+        float m_new = max(m_stat, block_max);
+        float alpha = exp(m_stat - m_new);
+        float l_block = 0.0f;
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx < actual_seq_len) {
                 l_block += exp(shared_scores[l] - m_new);
             }
         }
-        half l_new = l_stat * alpha + l_block;
+        float l_new = l_stat * alpha + l_block;
 
         for (uint k = 0; k < num_elements_per_thread; k++) {
             uint d = tid + k * 32;
-            half v_sum = 0.0h;
+            float v_sum = 0.0f;
             for (uint l = 0; l < block_size; l++) {
                 uint global_tok_idx = s * block_size + l;
                 if (global_tok_idx < actual_seq_len) {
-                    half p = exp(shared_scores[l] - m_new);
+                    float p = exp(shared_scores[l] - m_new);
                     uint offset_v = b * stride_v_b + kv_head * stride_v_h + s * stride_v_s + l * stride_v_l + d;
-                    v_sum += p * v_dense[offset_v];
+                    v_sum += p * float(v_dense[offset_v]);
                 }
             }
             acc[k] = acc[k] * alpha + v_sum;
@@ -163,7 +163,7 @@ kernel void tqpolar_online_attention_dense_v(
 
     for (uint k = 0; k < num_elements_per_thread; k++) {
         uint d = tid + k * 32;
-        output[b * stride_o_b + q_head * stride_o_h + d] = acc[k] / l_stat;
+        output[b * stride_o_b + q_head * stride_o_h + d] = half(acc[k] / l_stat);
     }
 }
 
@@ -213,22 +213,22 @@ kernel void tqpolar_online_attention_quant_v(
     uint stride_qp_b  = strides[30]; uint stride_qp_h  = strides[31];
     uint stride_o_b   = strides[32]; uint stride_o_h   = strides[33];
 
-    half m_stat = -INFINITY;
-    half l_stat = 0.0h;
-    half acc[4] = {0.0h, 0.0h, 0.0h, 0.0h};
-    threadgroup half shared_scores[64];
-    threadgroup half shared_q_norm[1];
+    float m_stat = -INFINITY;
+    float l_stat = 0.0f;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    threadgroup float shared_scores[64];
+    threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
-        half q_sum = 0.0h;
+        float q_sum = 0.0f;
         for (uint d = 0; d < head_dim; d++) {
-            half val = q[b * stride_q_b + q_head * stride_q_h + d];
+            float val = q[b * stride_q_b + q_head * stride_q_h + d];
             q_sum += val * val;
         }
         shared_q_norm[0] = sqrt(q_sum);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    half q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0h;
+    float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
     for (uint s = 0; s < total_blocks; s++) {
         for (uint l = 0; l < block_size; l++) {
@@ -239,18 +239,18 @@ kernel void tqpolar_online_attention_quant_v(
                 }
                 continue;
             }
-            half private_sum = 0.0h;
+            float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                half r = polar_radii[offset_r];
-                half norm_angle = 0.0h;
+                float r = polar_radii[offset_r];
+                float norm_angle = 0.0f;
                 if (j < split_half_d) {
                     uint l1_byte_idx = j / 2;
                     uint l1_nibble = j % 2;
                     uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l + l1_byte_idx;
                     uchar l1_byte = angle_codes_l1[offset_c1];
                     uchar l1_code = (l1_nibble == 0) ? (l1_byte & 0x0F) : ((l1_byte >> 4) & 0x0F);
-                    norm_angle = static_cast<half>(l1_code) / l1_scale;
+                    norm_angle = float(l1_code) / float(l1_scale);
                 } else {
                     uint rel_j = j - split_half_d;
                     uint deep_byte_idx = rel_j / 4;
@@ -258,14 +258,14 @@ kernel void tqpolar_online_attention_quant_v(
                     uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
                     uchar deep_byte = angle_codes_deep[offset_cd];
                     uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
-                    norm_angle = static_cast<half>(deep_code) / deep_scale;
+                    norm_angle = float(deep_code) / float(deep_scale);
                 }
-                half angle = (norm_angle * 2.0h * M_PI_H) - M_PI_H;
-                half k_x = r * cos(angle);
-                half k_y = r * sin(angle);
-                half q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                half q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * attention_scale;
+                float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
+                float k_x = r * cos(angle);
+                float k_y = r * sin(angle);
+                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
             uint local_hamming = 0;
             if (use_qjl != 0) {
@@ -276,13 +276,13 @@ kernel void tqpolar_online_attention_quant_v(
                     local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
                 }
             }
-            half total_polar_score = simd_sum(private_sum);
+            float total_polar_score = simd_sum(private_sum);
             uint total_hamming_dist = simd_sum(local_hamming);
             if (tid == 0) {
                 if (use_qjl != 0) {
-                    half match_score = static_cast<half>(qjl_proj_dim) - 2.0h * static_cast<half>(total_hamming_dist);
-                    half norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    half qjl_correction = (norm_E * q_norm) * (match_score / static_cast<half>(qjl_proj_dim));
+                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
+                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
+                    float qjl_correction = (norm_E * q_norm) * (match_score / float(qjl_proj_dim));
                     shared_scores[l] = total_polar_score + qjl_correction;
                 } else {
                     shared_scores[l] = total_polar_score;
@@ -291,34 +291,34 @@ kernel void tqpolar_online_attention_quant_v(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        half block_max = -INFINITY;
+        float block_max = -INFINITY;
         for (uint l = 0; l < block_size; l++) {
             block_max = max(block_max, shared_scores[l]);
         }
-        half m_new = max(m_stat, block_max);
-        half alpha = exp(m_stat - m_new);
-        half l_block = 0.0h;
+        float m_new = max(m_stat, block_max);
+        float alpha = exp(m_stat - m_new);
+        float l_block = 0.0f;
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx < actual_seq_len) {
                 l_block += exp(shared_scores[l] - m_new);
             }
         }
-        half l_new = l_stat * alpha + l_block;
+        float l_new = l_stat * alpha + l_block;
 
         for (uint k = 0; k < num_elements_per_thread; k++) {
             uint d = tid + k * 32;
-            half v_sum = 0.0h;
+            float v_sum = 0.0f;
             uint group_idx = d / group_size;
             for (uint l = 0; l < block_size; l++) {
                 uint global_tok_idx = s * block_size + l;
                 if (global_tok_idx < actual_seq_len) {
-                    half p = exp(shared_scores[l] - m_new);
+                    float p = exp(shared_scores[l] - m_new);
                     uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
                     uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
                     int8_t v_code = v_codes[offset_vc];
-                    half v_scale = v_scales[offset_vs];
-                    half dequantized_v = static_cast<half>(v_code) * v_scale;
+                    float v_scale = v_scales[offset_vs];
+                    float dequantized_v = float(v_code) * v_scale;
                     v_sum += p * dequantized_v;
                 }
             }
@@ -331,6 +331,6 @@ kernel void tqpolar_online_attention_quant_v(
 
     for (uint k = 0; k < num_elements_per_thread; k++) {
         uint d = tid + k * 32;
-        output[b * stride_o_b + q_head * stride_o_h + d] = acc[k] / l_stat;
+        output[b * stride_o_b + q_head * stride_o_h + d] = half(acc[k] / l_stat);
     }
 }
