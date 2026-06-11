@@ -8,9 +8,10 @@
 
 - **Metal kernels on M2:** custom QK and attention kernels compile and run natively on Apple Silicon under MLX 0.31.2.
 - **MLX dispatch is correct:** we probe and adapt to the `grid == total_threads` semantics in this MLX version.
-- **Unit tests pass:** 24/24 tests green; coverage includes configuration, polar key quantization, V quantization, QJL estimation, cache telemetry, and both CPU/Metal attention paths.
+- **Unit tests pass:** 25/25 tests green; coverage includes configuration, polar key quantization, V quantization, QJL estimation, cache telemetry, CPU/Metal attention paths, and cache input validation.
 - **Honest KV reduction:** ~1.66–1.78× on standard configs without faking the accounting.
-- **Repository is clean:** pyproject.toml, Makefile, README, LICENSE, .gitignore, scripts/, benchmarks/ exist.
+- **Repository is clean:** pyproject.toml, Makefile, README, STATUS.md, LICENSE, .gitignore, scripts/, benchmarks/ exist.
+- **Phase 1 hotfixes complete:** README quickstart corrected, `append()` validates inputs, `bench_attention.py` renamed to `bench_cache_compression.py`, `make smoke` added.
 
 ## What is still experimental
 

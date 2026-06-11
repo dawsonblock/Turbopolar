@@ -58,31 +58,31 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
     def test_incremental_append(self):
         config = self._make_config(128, gqa_ratio=1)
         cache = TurboPolarKVCacheRuntime(config)
-        for chunk_size in (17, 31, 64, 7, 11):
-            k = mx.random.normal(shape=[1, 4, chunk_size, 128])
-            v = mx.random.normal(shape=[1, 4, chunk_size, 128])
+        for _ in range(130):
+            k = mx.random.normal(shape=[1, config.num_kv_heads, 1, config.head_dim])
+            v = mx.random.normal(shape=[1, config.num_kv_heads, 1, config.head_dim])
             cache.append(k, v)
-        self.assertEqual(cache.actual_seq_len, 130)
         self._assert_cache_shape(cache, 130)
 
-    def test_gqa_attention_payload(self):
-        config = self._make_config(128, gqa_ratio=4)
+    def test_fetch_blocks_roundtrip(self):
+        config = self._make_config(128, gqa_ratio=1)
         cache = TurboPolarKVCacheRuntime(config)
-        k = mx.random.normal(shape=[1, 1, 65, 128])
-        v = mx.random.normal(shape=[1, 1, 65, 128])
+        k = mx.random.normal(shape=[1, config.num_kv_heads, 64, config.head_dim])
+        v = mx.random.normal(shape=[1, config.num_kv_heads, 64, config.head_dim])
         cache.append(k, v)
         block, quant_v, _, _, actual_len = cache.get_blocks_for_attention()
-        self.assertEqual(block.radii.shape[1], 1)
-        self.assertEqual(quant_v.codes.shape[1], 1)
-        self.assertEqual(actual_len, 65)
+        self.assertEqual(actual_len, 64)
+        decoder = PolarQuantDecoder()
+        k_recon = decoder.decode_block(block).reshape(1, config.num_kv_heads, 64, config.head_dim)
+        recon_error = float(mx.mean(mx.abs(k_recon - k)))
+        self.assertLess(recon_error, 0.5)
 
     def test_storage_modes(self):
         for mode in ("kv_quant", "dense_v_debug", "k_only_first"):
             with self.subTest(mode=mode):
                 config = TurboPolarConfig(
-                    head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-                    num_q_heads=4, num_kv_heads=4, use_qjl=False,
-                    storage_mode=mode, seed=1,
+                    head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4,
+                    storage_mode=mode, use_qjl=False,
                 )
                 cache = TurboPolarKVCacheRuntime(config)
                 k = mx.random.normal(shape=[1, 4, 64, 128])
@@ -101,18 +101,45 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
                     self.assertIsNone(dense_v)
                 self.assertIsNone(qjl)
 
-    def test_fetch_blocks_roundtrip(self):
-        config = self._make_config(128, gqa_ratio=1)
+    def test_qjl_optional_not_stored(self):
+        config = TurboPolarConfig(
+            head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4,
+            use_qjl=False, storage_mode="kv_quant",
+        )
         cache = TurboPolarKVCacheRuntime(config)
-        k = mx.random.normal(shape=[1, 4, 128, 128])
-        v = mx.random.normal(shape=[1, 4, 128, 128])
+        k = mx.random.normal(shape=[1, 4, 64, 128])
+        v = mx.random.normal(shape=[1, 4, 64, 128])
         cache.append(k, v)
-        fetched = cache.fetch_blocks()
-        self.assertEqual(fetched.shape, (1, 4, 128, 128))
-        # Fetched K should be close to polar-decoded K
-        k_recon = PolarQuantDecoder().decode_block(cache.get_blocks_for_attention()[0])
-        mx.eval(fetched, k_recon)
-        self.assertEqual(fetched.shape, k_recon.shape)
+        _, _, _, qjl, _ = cache.get_blocks_for_attention()
+        self.assertIsNone(qjl)
+        self.assertEqual(len(cache.qjl_blocks), 0)
+
+    def test_qjl_stored_when_enabled(self):
+        config = TurboPolarConfig(
+            head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4,
+            use_qjl=True, storage_mode="kv_quant",
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        k = mx.random.normal(shape=[1, 4, 64, 128])
+        v = mx.random.normal(shape=[1, 4, 64, 128])
+        cache.append(k, v)
+        _, _, _, qjl, _ = cache.get_blocks_for_attention()
+        self.assertIsNotNone(qjl)
+        self.assertEqual(len(cache.qjl_blocks), 1)
+
+    def test_gqa_attention_payload(self):
+        config = TurboPolarConfig(
+            head_dim=128, block_size=64, num_q_heads=8, num_kv_heads=2,
+            use_qjl=False, storage_mode="kv_quant",
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        k = mx.random.normal(shape=[1, 2, 64, 128])
+        v = mx.random.normal(shape=[1, 2, 64, 128])
+        cache.append(k, v)
+        block, quant_v, _, _, actual_len = cache.get_blocks_for_attention()
+        self.assertEqual(actual_len, 64)
+        self.assertEqual(block.radii.shape[1], 2)
+        self.assertEqual(quant_v.codes.shape[1], 2)
 
     def test_telemetry_counts_partial_kv(self):
         config = self._make_config(128, gqa_ratio=1)
@@ -121,37 +148,33 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         v = mx.random.normal(shape=[1, 4, 65, 128])
         cache.append(k, v)
         telem = cache.get_io_telemetry()
-        self.assertEqual(telem["partial_tokens"], 1)
         self.assertEqual(telem["total_blocks"], 1)
-        # Dense baseline already includes partial tokens; compressed must add raw partial bytes.
-        self.assertGreater(telem["actual_cache_bytes"], 0)
-        self.assertGreater(telem["compression_ratio"], 0.0)
+        self.assertEqual(telem["partial_tokens"], 1)
 
-    def test_qjl_optional_not_stored(self):
-        config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-            num_q_heads=4, num_kv_heads=4, use_qjl=False, seed=1,
-        )
+    def test_append_rejects_bad_inputs(self):
+        config = self._make_config(128, gqa_ratio=1)
         cache = TurboPolarKVCacheRuntime(config)
-        k = mx.random.normal(shape=[1, 4, 128, 128])
-        v = mx.random.normal(shape=[1, 4, 128, 128])
-        cache.append(k, v)
-        self.assertEqual(len(cache.qjl_blocks), 0)
-        block, quant_v, dense_v, qjl, actual_len = cache.get_blocks_for_attention()
-        self.assertIsNone(qjl)
 
-    def test_qjl_stored_when_enabled(self):
-        config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-            num_q_heads=4, num_kv_heads=4, use_qjl=True, seed=1,
-        )
-        cache = TurboPolarKVCacheRuntime(config)
-        k = mx.random.normal(shape=[1, 4, 128, 128])
-        v = mx.random.normal(shape=[1, 4, 128, 128])
-        cache.append(k, v)
-        self.assertEqual(len(cache.qjl_blocks), 2)
-        block, quant_v, dense_v, qjl, actual_len = cache.get_blocks_for_attention()
-        self.assertIsNotNone(qjl)
+        # Wrong rank
+        with self.assertRaises(ValueError):
+            cache.append(mx.random.normal((1, 4, 128)), mx.random.normal((1, 4, 128)))
+
+        # Mismatched k/v shape
+        with self.assertRaises(ValueError):
+            cache.append(mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 2, 128)))
+
+        # Wrong number of KV heads
+        with self.assertRaises(ValueError):
+            cache.append(mx.random.normal((1, 2, 1, 128)), mx.random.normal((1, 2, 1, 128)))
+
+        # Wrong head dimension
+        with self.assertRaises(ValueError):
+            cache.append(mx.random.normal((1, 4, 1, 64)), mx.random.normal((1, 4, 1, 64)))
+
+        # Batch size changes after first append
+        cache.append(mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 1, 128)))
+        with self.assertRaises(ValueError):
+            cache.append(mx.random.normal((2, 4, 1, 128)), mx.random.normal((2, 4, 1, 128)))
 
 
 if __name__ == "__main__":

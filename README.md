@@ -41,17 +41,16 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
 cfg = TurboPolarConfig(
-    num_heads=8,
+    num_q_heads=8,
     num_kv_heads=4,
     head_dim=128,
     block_size=64,
-    dtype="float16",
 )
 cache = TurboPolarKVCacheRuntime(cfg)
 
 for i in range(100):
-    k = mx.random.normal((1, 1, cfg.num_kv_heads, cfg.head_dim)).astype(mx.float16)
-    v = mx.random.normal((1, 1, cfg.num_kv_heads, cfg.head_dim)).astype(mx.float16)
+    k = mx.random.normal((1, cfg.num_kv_heads, 1, cfg.head_dim)).astype(mx.float16)
+    v = mx.random.normal((1, cfg.num_kv_heads, 1, cfg.head_dim)).astype(mx.float16)
     cache.append(k, v)
 
 print(cache.get_io_telemetry())

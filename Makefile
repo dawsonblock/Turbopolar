@@ -1,4 +1,4 @@
-.PHONY: all install install-dev test test-fast compile lint clean status
+.PHONY: all install install-dev test test-fast compile lint clean smoke status
 
 all: install-dev test
 
@@ -15,10 +15,14 @@ test-fast:
 	pytest tests/ -v --tb=short -x
 
 compile:
-	python -m compileall rfsn_v11 tests
+	python -m compileall rfsn_v11 tests scripts
 
 lint:
-	python -m compileall rfsn_v11 tests
+	python -m compileall rfsn_v11 tests scripts
+
+smoke:
+	python scripts/smoke_test.py
+	python scripts/readme_example.py
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

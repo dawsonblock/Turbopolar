@@ -42,7 +42,29 @@ class TurboPolarKVCacheRuntime:
         self.bytes_written = 0
         self.bytes_read = 0
 
+    def _validate_append_inputs(self, k_new: mx.array, v_new: mx.array):
+        if not isinstance(k_new, mx.array) or not isinstance(v_new, mx.array):
+            raise TypeError("append() expects mlx.core.array inputs")
+        if k_new.ndim != 4 or v_new.ndim != 4:
+            raise ValueError(f"append() expects 4-D inputs (B, H_kv, T, D), got {k_new.shape} and {v_new.shape}")
+        if k_new.shape != v_new.shape:
+            raise ValueError(f"k_new shape {k_new.shape} must match v_new shape {v_new.shape}")
+        B, H_kv, T_new, D = k_new.shape
+        if H_kv != self.config.num_kv_heads:
+            raise ValueError(f"input has {H_kv} KV heads but config expects {self.config.num_kv_heads}")
+        if D != self.config.head_dim:
+            raise ValueError(f"input head_dim {D} does not match config {self.config.head_dim}")
+        if T_new < 1:
+            raise ValueError(f"input must have at least one token, got T={T_new}")
+        if self.partial_k is not None and B != self.partial_k.shape[0]:
+            raise ValueError(f"batch size changed from {self.partial_k.shape[0]} to {B}")
+        if k_new.dtype != v_new.dtype:
+            raise ValueError(f"k_new dtype {k_new.dtype} must match v_new dtype {v_new.dtype}")
+        if k_new.dtype not in (mx.float16, mx.float32):
+            raise ValueError(f"only float16 and float32 inputs are supported, got {k_new.dtype}")
+
     def append(self, k_new: mx.array, v_new: mx.array):
+        self._validate_append_inputs(k_new, v_new)
         B, H, T_new, D = k_new.shape
         self.actual_seq_len += T_new
         if self.partial_k is None:
