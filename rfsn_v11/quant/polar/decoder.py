@@ -27,13 +27,14 @@ class PolarQuantDecoder:
         l1_orig = block.metadata.get("l1_original_len", split_half)
         deep_orig = block.metadata.get("deep_original_len", D // 2 - split_half)
 
-        # Unpack level1 (4-bit)
+        # Unpack level1 (4-bit or 8-bit)
+        l1_bits = block.metadata.get("l1_bits", 4)
         if block.metadata.get("l1_packed", False):
             norm_l1 = self._unpack_4bit(block.angle_codes_l1, l1_orig).astype(mx.float32) / l1_scale
         else:
-            norm_l1 = block.angle_codes_l1.astype(mx.float32) / l1_scale
+            norm_l1 = block.angle_codes_l1[..., :l1_orig].astype(mx.float32) / l1_scale
 
-        # Unpack deep (2-bit or 4-bit depending on metadata)
+        # Unpack deep (2-bit, 4-bit, or 8-bit depending on metadata)
         deep_bits = block.metadata.get("deep_bits", 2)
         if block.metadata.get("deep_packed", False):
             if deep_bits == 4:
@@ -43,12 +44,19 @@ class PolarQuantDecoder:
             else:
                 raise ValueError(f"unsupported deep_bits: {deep_bits}")
         else:
-            norm_deep = block.angle_codes_deep.astype(mx.float32) / deep_scale
+            norm_deep = block.angle_codes_deep[..., :deep_orig].astype(mx.float32) / deep_scale
 
         norm_angles = mx.concatenate([norm_l1, norm_deep], axis=-1)
         angles = norm_angles * (2.0 * np.pi) - np.pi
-        k_x = block.radii.astype(mx.float32) * mx.cos(angles)
-        k_y = block.radii.astype(mx.float32) * mx.sin(angles)
+        if block.radii_scales is not None:
+            if block.metadata.get("log_radii", False):
+                radii_fp = mx.exp(block.radii.astype(mx.float32) * block.radii_scales.astype(mx.float32))
+            else:
+                radii_fp = block.radii.astype(mx.float32) * block.radii_scales.astype(mx.float32)
+        else:
+            radii_fp = block.radii.astype(mx.float32)
+        k_x = radii_fp * mx.cos(angles)
+        k_y = radii_fp * mx.sin(angles)
         k_pairs = mx.stack([k_x, k_y], axis=-1)
         return k_pairs.reshape(B, H, S * L, D).astype(mx.float16)
 

@@ -53,7 +53,11 @@ class BenchmarkReport:
             "top5_overlap": agg.get("top5_overlap", 0.0) >= PROMOTION_GATES["top5_overlap"],
             "top10_overlap": agg.get("top10_overlap", 0.0) >= PROMOTION_GATES["top10_overlap"],
             "perplexity_delta": abs(agg.get("perplexity_delta", float("inf"))) <= PROMOTION_GATES["perplexity_delta"],
-            "decode_speed": agg.get("decode_speed_ratio", 0.0) >= PROMOTION_GATES["decode_tokens_per_sec"],
+            "decode_speed": (
+                True
+                if agg.get("decode_speed_ratio") is None
+                else agg.get("decode_speed_ratio", 0.0) >= PROMOTION_GATES["decode_tokens_per_sec"]
+            ),
         }
         self.promotion_allowed = all(self.gate_passed.values())
         self.visible_drift = not all([

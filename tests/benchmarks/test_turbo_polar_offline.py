@@ -25,8 +25,11 @@ class TestTurboPolarOffline(unittest.TestCase):
 
         # Verify bit-packed shapes
         self.assertEqual(blocks[0].radii.shape, (B, H, L, D // 2))
-        l1_packed_len = (D // 4 + 1) // 2  # ceil(split_half/2) = ceil(32/2) = 16
-        deep_packed_len = (D // 4 + 3) // 4  # ceil(32/4) = 8
+        split_half = self.config.split_dim // 2
+        deep_half = D // 2 - split_half
+        l1_packed_len = (split_half + 1) // 2  # 4-bit -> 2 per byte
+        codes_per_byte = 8 // self.config.k_angle_bits_deep
+        deep_packed_len = (deep_half + codes_per_byte - 1) // codes_per_byte
         self.assertEqual(blocks[0].angle_codes_l1.shape, (B, H, L, l1_packed_len))
         self.assertEqual(blocks[0].angle_codes_deep.shape, (B, H, L, deep_packed_len))
 
@@ -54,8 +57,8 @@ class TestTurboPolarOffline(unittest.TestCase):
         )
         mse = np.mean((orig_np - recon_np) ** 2)
 
-        # Default split_dim=64 uses 4-bit angles for the first half of pairs and
-        # 2-bit angles for the second half, so reconstruction is lossy.
+        # Default split_dim=64 uses 4-bit angles for both halves of pairs,
+        # so reconstruction is less lossy than the old 2-bit deep configuration.
         self.assertGreaterEqual(cosine, 0.90)
         self.assertLessEqual(mse, 0.5)
 

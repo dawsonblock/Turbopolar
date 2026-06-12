@@ -40,5 +40,11 @@ def qjl_dot_estimate(q: mx.array, qjl_payload: QJLPayload, q_proj_signs: mx.arra
     norm_E = qjl_payload.norms
     # Broadcast residual norms from KV heads to query heads
     norm_E = mx.repeat(norm_E, num_queries_per_kv, axis=1)
-    correction = (norm_E * q_norm[:, :, None, None]) * (match_score / proj_dim)
+
+    # Calibrated estimator: sign agreement -> angular -> cosine -> dot product.
+    # For random projections, P(signs agree) = 1 - arccos(cosine) / pi, so
+    # cos(theta) = sin((pi/2) * sign_correlation).
+    sign_corr = match_score / proj_dim
+    cos_est = mx.sin(mx.array(np.pi / 2.0, dtype=sign_corr.dtype) * sign_corr)
+    correction = (norm_E * q_norm[:, :, None, None]) * cos_est
     return correction.reshape(B, H_q, S * L)

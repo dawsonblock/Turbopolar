@@ -23,6 +23,9 @@ lint:
 bench:
 	python benchmarks/run_dense_vs_turbopolar.py --model $(MODEL)
 
+fast-bench:
+	python benchmarks/run_fast_attention_bench.py --model $(MODEL)
+
 smoke:
 	python scripts/smoke_test.py
 	python scripts/readme_example.py

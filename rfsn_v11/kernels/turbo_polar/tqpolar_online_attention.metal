@@ -8,29 +8,35 @@ inline half unpack_bit_online(device const uchar* packed_signs, uint offset, uin
 }
 
 kernel void tqpolar_online_attention_dense_v(
-    device const half* q                  [[buffer(0)]],
-    device const half* polar_radii        [[buffer(1)]],
-    device const uchar* angle_codes_l1     [[buffer(2)]],
-    device const uchar* angle_codes_deep   [[buffer(3)]],
-    device const half* v_dense             [[buffer(4)]],
-    device const uchar* qjl_packed_signs   [[buffer(5)]],
-    device const half* qjl_norms           [[buffer(6)]],
-    device const uchar* q_proj_signs       [[buffer(7)]],
-    device half* output                    [[buffer(8)]],
-    constant uint& head_dim                [[buffer(9)]],
-    constant uint& split_dim               [[buffer(10)]],
-    constant uint& block_size              [[buffer(11)]],
-    constant uint& total_blocks            [[buffer(12)]],
-    constant uint& qjl_proj_dim            [[buffer(13)]],
-    constant uint& use_qjl                 [[buffer(14)]],
-    constant half& l1_scale                [[buffer(15)]],
-    constant half& deep_scale              [[buffer(16)]],
-    constant half& attention_scale         [[buffer(17)]],
-    device const uint* strides             [[buffer(18)]],
-    constant uint& actual_seq_len          [[buffer(19)]],
-    constant uint& num_queries_per_kv      [[buffer(20)]],
-    uint3 tgid                             [[threadgroup_position_in_grid]],
-    uint tid                               [[thread_index_in_threadgroup]])
+    device const half* q                     [[buffer(0)]],
+    device const half* polar_radii           [[buffer(1)]],
+    device const int8_t* polar_radii_i8      [[buffer(2)]],
+    device const half* radii_scales          [[buffer(3)]],
+    device const uchar* angle_codes_l1       [[buffer(4)]],
+    device const uchar* angle_codes_deep     [[buffer(5)]],
+    device const half* v_dense               [[buffer(6)]],
+    device const uchar* qjl_packed_signs     [[buffer(7)]],
+    device const half* qjl_norms             [[buffer(8)]],
+    device const uchar* q_proj_signs         [[buffer(9)]],
+    device half* output                      [[buffer(10)]],
+    constant uint& head_dim                  [[buffer(11)]],
+    constant uint& split_dim                 [[buffer(12)]],
+    constant uint& block_size                [[buffer(13)]],
+    constant uint& total_blocks              [[buffer(14)]],
+    constant uint& qjl_proj_dim              [[buffer(15)]],
+    constant uint& use_qjl                   [[buffer(16)]],
+    constant half& l1_scale                  [[buffer(17)]],
+    constant half& deep_scale                [[buffer(18)]],
+    constant half& attention_scale           [[buffer(19)]],
+    constant uint& int8_radii                [[buffer(20)]],
+    constant uint& log_radii                 [[buffer(21)]],
+    constant uint& l1_bits                   [[buffer(22)]],
+    constant uint& deep_bits                 [[buffer(23)]],
+    device const uint* strides               [[buffer(24)]],
+    constant uint& actual_seq_len            [[buffer(25)]],
+    constant uint& num_queries_per_kv        [[buffer(26)]],
+    uint3 tgid                               [[threadgroup_position_in_grid]],
+    uint tid                                 [[thread_index_in_threadgroup]])
 {
     uint b = tgid.x;
     uint q_head = tgid.y;
@@ -42,13 +48,14 @@ kernel void tqpolar_online_attention_dense_v(
 
     uint stride_q_b   = strides[0];  uint stride_q_h   = strides[1];
     uint stride_r_b   = strides[2];  uint stride_r_h   = strides[3];  uint stride_r_s   = strides[4];  uint stride_r_l = strides[5];
-    uint stride_c1_b  = strides[6];  uint stride_c1_h  = strides[7];  uint stride_c1_s  = strides[8];  uint stride_c1_l = strides[9];
-    uint stride_cd_b  = strides[10]; uint stride_cd_h  = strides[11]; uint stride_cd_s  = strides[12]; uint stride_cd_l = strides[13];
-    uint stride_v_b   = strides[14]; uint stride_v_h   = strides[15]; uint stride_v_s   = strides[16]; uint stride_v_l = strides[17];
-    uint stride_qjl_b = strides[18]; uint stride_qjl_h = strides[19]; uint stride_qjl_s = strides[20]; uint stride_qjl_l = strides[21];
-    uint stride_qn_b  = strides[22]; uint stride_qn_h  = strides[23]; uint stride_qn_s  = strides[24]; uint stride_qn_l = strides[25];
-    uint stride_qp_b  = strides[26]; uint stride_qp_h  = strides[27];
-    uint stride_o_b   = strides[28]; uint stride_o_h   = strides[29];
+    uint stride_rs_b  = strides[6];  uint stride_rs_h  = strides[7];  uint stride_rs_s  = strides[8];
+    uint stride_c1_b  = strides[9];  uint stride_c1_h  = strides[10]; uint stride_c1_s  = strides[11]; uint stride_c1_l = strides[12];
+    uint stride_cd_b  = strides[13]; uint stride_cd_h  = strides[14]; uint stride_cd_s  = strides[15]; uint stride_cd_l = strides[16];
+    uint stride_v_b   = strides[17]; uint stride_v_h   = strides[18]; uint stride_v_s   = strides[19]; uint stride_v_l = strides[20];
+    uint stride_qjl_b = strides[21]; uint stride_qjl_h = strides[22]; uint stride_qjl_s = strides[23]; uint stride_qjl_l = strides[24];
+    uint stride_qn_b  = strides[25]; uint stride_qn_h  = strides[26]; uint stride_qn_s  = strides[27]; uint stride_qn_l = strides[28];
+    uint stride_qp_b  = strides[29]; uint stride_qp_h  = strides[30];
+    uint stride_o_b   = strides[31]; uint stride_o_h   = strides[32];
 
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
@@ -79,23 +86,41 @@ kernel void tqpolar_online_attention_dense_v(
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r = polar_radii[offset_r];
-                float norm_angle = 0.0f;
+                float r;
+                if (int8_radii == 0) {
+                    r = float(polar_radii[offset_r]);
+                } else {
+                    int8_t code = polar_radii_i8[offset_r];
+                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+                    float value = float(code) * scale;
+                    r = (log_radii != 0) ? exp(value) : value;
+                }
+                float norm_angle;
                 if (j < split_half_d) {
-                    uint l1_byte_idx = j / 2;
-                    uint l1_nibble = j % 2;
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l + l1_byte_idx;
-                    uchar l1_byte = angle_codes_l1[offset_c1];
-                    uchar l1_code = (l1_nibble == 0) ? (l1_byte & 0x0F) : ((l1_byte >> 4) & 0x0F);
-                    norm_angle = float(l1_code) / float(l1_scale);
+                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                    uchar code;
+                    if (l1_bits == 8) {
+                        code = angle_codes_l1[offset_c1 + j];
+                    } else {
+                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
+                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    }
+                    norm_angle = float(static_cast<half>(code) / l1_scale);
                 } else {
                     uint rel_j = j - split_half_d;
-                    uint deep_byte_idx = rel_j / 4;
-                    uint deep_pair = rel_j % 4;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
-                    uchar deep_byte = angle_codes_deep[offset_cd];
-                    uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
-                    norm_angle = float(deep_code) / float(deep_scale);
+                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                    uchar code;
+                    if (deep_bits == 8) {
+                        code = angle_codes_deep[offset_cd + rel_j];
+                    } else if (deep_bits == 4) {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
+                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    } else {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
+                        uint shift = (rel_j % 4) * 2;
+                        code = (byte >> shift) & 0x03;
+                    }
+                    norm_angle = float(static_cast<half>(code) / deep_scale);
                 }
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
@@ -119,7 +144,9 @@ kernel void tqpolar_online_attention_dense_v(
                 if (use_qjl != 0) {
                     float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
                     float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float qjl_correction = (norm_E * q_norm) * (match_score / float(qjl_proj_dim));
+                    float sign_corr = match_score / float(qjl_proj_dim);
+                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
+                    float qjl_correction = (norm_E * q_norm) * cos_est;
                     shared_scores[l] = total_polar_score + qjl_correction;
                 } else {
                     shared_scores[l] = total_polar_score;
@@ -168,31 +195,37 @@ kernel void tqpolar_online_attention_dense_v(
 }
 
 kernel void tqpolar_online_attention_quant_v(
-    device const half* q                  [[buffer(0)]],
-    device const half* polar_radii        [[buffer(1)]],
-    device const uchar* angle_codes_l1     [[buffer(2)]],
-    device const uchar* angle_codes_deep   [[buffer(3)]],
-    device const int8_t* v_codes           [[buffer(4)]],
-    device const half* v_scales           [[buffer(5)]],
-    device const uchar* qjl_packed_signs   [[buffer(6)]],
-    device const half* qjl_norms           [[buffer(7)]],
-    device const uchar* q_proj_signs       [[buffer(8)]],
-    device half* output                    [[buffer(9)]],
-    constant uint& head_dim                [[buffer(10)]],
-    constant uint& split_dim               [[buffer(11)]],
-    constant uint& block_size              [[buffer(12)]],
-    constant uint& total_blocks            [[buffer(13)]],
-    constant uint& qjl_proj_dim            [[buffer(14)]],
-    constant uint& group_size              [[buffer(15)]],
-    constant uint& use_qjl                 [[buffer(16)]],
-    constant half& l1_scale                [[buffer(17)]],
-    constant half& deep_scale              [[buffer(18)]],
-    constant half& attention_scale         [[buffer(19)]],
-    device const uint* strides             [[buffer(20)]],
-    constant uint& actual_seq_len          [[buffer(21)]],
-    constant uint& num_queries_per_kv      [[buffer(22)]],
-    uint3 tgid                             [[threadgroup_position_in_grid]],
-    uint tid                               [[thread_index_in_threadgroup]])
+    device const half* q                     [[buffer(0)]],
+    device const half* polar_radii           [[buffer(1)]],
+    device const int8_t* polar_radii_i8      [[buffer(2)]],
+    device const half* radii_scales          [[buffer(3)]],
+    device const uchar* angle_codes_l1       [[buffer(4)]],
+    device const uchar* angle_codes_deep     [[buffer(5)]],
+    device const int8_t* v_codes             [[buffer(6)]],
+    device const half* v_scales              [[buffer(7)]],
+    device const uchar* qjl_packed_signs     [[buffer(8)]],
+    device const half* qjl_norms             [[buffer(9)]],
+    device const uchar* q_proj_signs         [[buffer(10)]],
+    device half* output                      [[buffer(11)]],
+    constant uint& head_dim                  [[buffer(12)]],
+    constant uint& split_dim                 [[buffer(13)]],
+    constant uint& block_size                [[buffer(14)]],
+    constant uint& total_blocks              [[buffer(15)]],
+    constant uint& qjl_proj_dim              [[buffer(16)]],
+    constant uint& group_size                [[buffer(17)]],
+    constant uint& use_qjl                   [[buffer(18)]],
+    constant half& l1_scale                  [[buffer(19)]],
+    constant half& deep_scale                [[buffer(20)]],
+    constant half& attention_scale           [[buffer(21)]],
+    constant uint& int8_radii                [[buffer(22)]],
+    constant uint& log_radii                 [[buffer(23)]],
+    constant uint& l1_bits                   [[buffer(24)]],
+    constant uint& deep_bits                 [[buffer(25)]],
+    device const uint* strides               [[buffer(26)]],
+    constant uint& actual_seq_len            [[buffer(27)]],
+    constant uint& num_queries_per_kv        [[buffer(28)]],
+    uint3 tgid                               [[threadgroup_position_in_grid]],
+    uint tid                                 [[thread_index_in_threadgroup]])
 {
     uint b = tgid.x;
     uint q_head = tgid.y;
@@ -204,14 +237,15 @@ kernel void tqpolar_online_attention_quant_v(
 
     uint stride_q_b   = strides[0];  uint stride_q_h   = strides[1];
     uint stride_r_b   = strides[2];  uint stride_r_h   = strides[3];  uint stride_r_s   = strides[4];  uint stride_r_l = strides[5];
-    uint stride_c1_b  = strides[6];  uint stride_c1_h  = strides[7];  uint stride_c1_s  = strides[8];  uint stride_c1_l = strides[9];
-    uint stride_cd_b  = strides[10]; uint stride_cd_h  = strides[11]; uint stride_cd_s  = strides[12]; uint stride_cd_l = strides[13];
-    uint stride_vc_b  = strides[14]; uint stride_vc_h  = strides[15]; uint stride_vc_s  = strides[16]; uint stride_vc_l = strides[17];
-    uint stride_vs_b  = strides[18]; uint stride_vs_h  = strides[19]; uint stride_vs_s  = strides[20]; uint stride_vs_l = strides[21];
-    uint stride_qjl_b = strides[22]; uint stride_qjl_h = strides[23]; uint stride_qjl_s = strides[24]; uint stride_qjl_l = strides[25];
-    uint stride_qn_b  = strides[26]; uint stride_qn_h  = strides[27]; uint stride_qn_s  = strides[28]; uint stride_qn_l = strides[29];
-    uint stride_qp_b  = strides[30]; uint stride_qp_h  = strides[31];
-    uint stride_o_b   = strides[32]; uint stride_o_h   = strides[33];
+    uint stride_rs_b  = strides[6];  uint stride_rs_h  = strides[7];  uint stride_rs_s  = strides[8];
+    uint stride_c1_b  = strides[9];  uint stride_c1_h  = strides[10]; uint stride_c1_s  = strides[11]; uint stride_c1_l = strides[12];
+    uint stride_cd_b  = strides[13]; uint stride_cd_h  = strides[14]; uint stride_cd_s  = strides[15]; uint stride_cd_l = strides[16];
+    uint stride_vc_b  = strides[17]; uint stride_vc_h  = strides[18]; uint stride_vc_s  = strides[19]; uint stride_vc_l = strides[20];
+    uint stride_vs_b  = strides[21]; uint stride_vs_h  = strides[22]; uint stride_vs_s  = strides[23]; uint stride_vs_l = strides[24];
+    uint stride_qjl_b = strides[25]; uint stride_qjl_h = strides[26]; uint stride_qjl_s = strides[27]; uint stride_qjl_l = strides[28];
+    uint stride_qn_b  = strides[29]; uint stride_qn_h  = strides[30]; uint stride_qn_s  = strides[31]; uint stride_qn_l = strides[32];
+    uint stride_qp_b  = strides[33]; uint stride_qp_h  = strides[34];
+    uint stride_o_b   = strides[35]; uint stride_o_h   = strides[36];
 
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
@@ -242,23 +276,41 @@ kernel void tqpolar_online_attention_quant_v(
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r = polar_radii[offset_r];
-                float norm_angle = 0.0f;
+                float r;
+                if (int8_radii == 0) {
+                    r = float(polar_radii[offset_r]);
+                } else {
+                    int8_t code = polar_radii_i8[offset_r];
+                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+                    float value = float(code) * scale;
+                    r = (log_radii != 0) ? exp(value) : value;
+                }
+                float norm_angle;
                 if (j < split_half_d) {
-                    uint l1_byte_idx = j / 2;
-                    uint l1_nibble = j % 2;
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l + l1_byte_idx;
-                    uchar l1_byte = angle_codes_l1[offset_c1];
-                    uchar l1_code = (l1_nibble == 0) ? (l1_byte & 0x0F) : ((l1_byte >> 4) & 0x0F);
-                    norm_angle = float(l1_code) / float(l1_scale);
+                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                    uchar code;
+                    if (l1_bits == 8) {
+                        code = angle_codes_l1[offset_c1 + j];
+                    } else {
+                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
+                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    }
+                    norm_angle = float(static_cast<half>(code) / l1_scale);
                 } else {
                     uint rel_j = j - split_half_d;
-                    uint deep_byte_idx = rel_j / 4;
-                    uint deep_pair = rel_j % 4;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
-                    uchar deep_byte = angle_codes_deep[offset_cd];
-                    uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
-                    norm_angle = float(deep_code) / float(deep_scale);
+                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                    uchar code;
+                    if (deep_bits == 8) {
+                        code = angle_codes_deep[offset_cd + rel_j];
+                    } else if (deep_bits == 4) {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
+                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    } else {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
+                        uint shift = (rel_j % 4) * 2;
+                        code = (byte >> shift) & 0x03;
+                    }
+                    norm_angle = float(static_cast<half>(code) / deep_scale);
                 }
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
@@ -282,7 +334,9 @@ kernel void tqpolar_online_attention_quant_v(
                 if (use_qjl != 0) {
                     float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
                     float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float qjl_correction = (norm_E * q_norm) * (match_score / float(qjl_proj_dim));
+                    float sign_corr = match_score / float(qjl_proj_dim);
+                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
+                    float qjl_correction = (norm_E * q_norm) * cos_est;
                     shared_scores[l] = total_polar_score + qjl_correction;
                 } else {
                     shared_scores[l] = total_polar_score;

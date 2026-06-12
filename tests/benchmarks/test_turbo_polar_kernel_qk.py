@@ -75,6 +75,44 @@ class TestTurboPolarKernelQK(unittest.TestCase):
         mx.eval(gpu_scores)
         self.assertFalse(np.isnan(np.array(gpu_scores)).any())
 
+    def test_high_quality_config_fused_qk(self):
+        """Metal path supports int8 log-radii + 8-bit deep angles + split_dim=0."""
+        config = TurboPolarConfig(
+            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
+            num_q_heads=4, num_kv_heads=4, seed=42,
+            use_int8_radii=True, k_angle_bits_deep=8,
+        )
+        encoder = PolarQuantEncoder(config)
+        decoder = PolarQuantDecoder()
+        bridge = MetalKernelBridge()
+        B, H, S, L, D = 1, 4, 2, 64, 128
+        mx.random.seed(config.seed)
+        k_original = mx.random.normal(shape=[B, H, S * L, D])
+        q = mx.random.normal(shape=[B, H, D])
+        k_blocked = k_original.reshape(B, H, S, L, D)
+        blocks = [encoder.encode_block(k_blocked[:, :, s, :, :]) for s in range(S)]
+        unified = blocks[0].__class__(
+            radii=mx.stack([b.radii for b in blocks], axis=2),
+            angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
+            angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
+            radii_scales=mx.stack([b.radii_scales for b in blocks], axis=2),
+            shape=(B, H, S * L, D), block_size=L, head_dim=D,
+            metadata=blocks[0].metadata,
+        )
+        k_recon = decoder.decode_block(unified)
+        ref_scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * config.attention_scale
+        gpu_scores = bridge.execute_fused_qk(q, unified, config)
+        mx.eval(ref_scores, gpu_scores)
+        ref_np = np.array(ref_scores)
+        gpu_np = np.array(gpu_scores)
+        max_error = np.max(np.abs(ref_np - gpu_np))
+        cosine = np.dot(ref_np.flatten(), gpu_np.flatten()) / (
+            np.linalg.norm(ref_np) * np.linalg.norm(gpu_np) + 1e-12
+        )
+        self.assertFalse(np.isnan(gpu_np).any())
+        self.assertLessEqual(max_error, 1e-2)
+        self.assertGreaterEqual(cosine, 0.999)
+
     def test_gqa_fused_qk(self):
         """Test GQA: 4 query heads, 2 KV heads."""
         config = TurboPolarConfig(

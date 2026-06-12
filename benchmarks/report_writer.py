@@ -49,7 +49,7 @@ def write_markdown_report(report: BenchmarkReport, output_dir: Path) -> Path:
         f"**mlx_lm:** {report.mlx_lm_version}  ",
         f"**dtype:** {report.dtype}  ",
         f"**seed:** {report.seed}  ",
-        f"**Prompts:** {report.num_prompts}  ",
+        f"**Prompts:** {report.num_prompts} (gate metrics computed on prompts ≥ 64 tokens)  ",
         "",
         "## Promotion Gates",
         "",
@@ -64,7 +64,11 @@ def write_markdown_report(report: BenchmarkReport, output_dir: Path) -> Path:
         ("Top-5 overlap", f"≥ {PROMOTION_GATES['top5_overlap']:.2f}", f"{agg.get('top5_overlap', 0.0):.4f}"),
         ("Top-10 overlap", f"≥ {PROMOTION_GATES['top10_overlap']:.2f}", f"{agg.get('top10_overlap', 0.0):.4f}"),
         ("Perplexity delta", f"≤ {PROMOTION_GATES['perplexity_delta']:.3f}", f"{agg.get('perplexity_delta', 0.0):.4f}"),
-        ("Decode speed ratio", f"≥ {PROMOTION_GATES['decode_tokens_per_sec']:.2f}×", f"{agg.get('decode_speed_ratio', 0.0):.3f}×"),
+        (
+            "Decode speed ratio",
+            f"≥ {PROMOTION_GATES['decode_tokens_per_sec']:.2f}×",
+            f"{agg.get('decode_speed_ratio', 0.0):.3f}×" if agg.get("decode_speed_ratio") is not None else "skipped",
+        ),
     ]
     for name, threshold, actual in gate_rows:
         passed = report.gate_passed.get(name.split()[0].lower().replace('-', '_'), False)
@@ -92,7 +96,9 @@ def write_markdown_report(report: BenchmarkReport, output_dir: Path) -> Path:
         "|--------|-------|",
     ])
     for k, v in agg.items():
-        if isinstance(v, float):
+        if v is None:
+            lines.append(f"| {k} | skipped |")
+        elif isinstance(v, float):
             lines.append(f"| {k} | {v:.6f} |")
         else:
             lines.append(f"| {k} | {v} |")

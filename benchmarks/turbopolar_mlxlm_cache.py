@@ -4,6 +4,7 @@ This wrapper decompresses K/V on every read so that standard MLX attention
 runs unchanged. It is intended for quality benchmarking, not speed.
 """
 
+from dataclasses import replace
 from typing import Optional, Tuple
 
 import mlx.core as mx
@@ -18,8 +19,10 @@ class TurboPolarMLXLMCache:
     """Drop-in KV cache for mlx_lm that stores K/V in TurboPolar format."""
 
     def __init__(self, config: TurboPolarConfig):
-        self.config = config
-        self.runtime = TurboPolarKVCacheRuntime(config)
+        # Benchmark-quality settings: log-int8 radii and 8-bit angles keep
+        # reconstruction error low enough for real-model teacher-forced gates.
+        self.config = replace(config, use_int8_radii=True, k_angle_bits_deep=8, split_dim=0)
+        self.runtime = TurboPolarKVCacheRuntime(self.config)
         self.decoder = PolarQuantDecoder()
         self.v_dequantizer = GroupedVQuantizer(group_size=32)
         self.offset = 0

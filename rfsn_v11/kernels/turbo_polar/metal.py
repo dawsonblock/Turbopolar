@@ -78,6 +78,13 @@ class MetalKernelBridge:
         return cls._instance
 
     def __init__(self, source_dir: Path | None = None):
+        # Early exit for the singleton: __init__ is invoked on every
+        # MetalKernelBridge() call even when __new__ returns the existing
+        # instance, so avoid re-parsing shaders and re-compiling kernels.
+        if MetalKernelBridge._initialized:
+            return
+        MetalKernelBridge._initialized = True
+
         if source_dir is None:
             source_dir = Path(__file__).parent
 
@@ -96,8 +103,11 @@ class MetalKernelBridge:
         self._kernel_qk = mx.fast.metal_kernel(
             name="tqpolar_fused_dequant_qk",
             input_names=[
-                "q", "polar_radii", "angle_codes_l1", "angle_codes_deep",
-                "head_dim", "split_dim", "block_size", "l1_scale", "deep_scale", "attention_scale", "num_queries_per_kv", "strides"
+                "q", "polar_radii", "polar_radii_i8", "radii_scales",
+                "angle_codes_l1", "angle_codes_deep",
+                "head_dim", "split_dim", "block_size", "l1_scale", "deep_scale", "attention_scale", "num_queries_per_kv",
+                "int8_radii", "log_radii", "l1_bits", "deep_bits",
+                "strides",
             ],
             output_names=["scores"],
             header=qk_header,
@@ -108,10 +118,13 @@ class MetalKernelBridge:
         self._kernel_qk_qjl = mx.fast.metal_kernel(
             name="tqpolar_fused_dequant_qk_qjl",
             input_names=[
-                "q", "polar_radii", "angle_codes_l1", "angle_codes_deep",
+                "q", "polar_radii", "polar_radii_i8", "radii_scales",
+                "angle_codes_l1", "angle_codes_deep",
                 "qjl_packed_signs", "qjl_norms", "q_proj_signs",
                 "head_dim", "split_dim", "block_size", "qjl_proj_dim",
-                "l1_scale", "deep_scale", "attention_scale", "num_queries_per_kv", "strides"
+                "l1_scale", "deep_scale", "attention_scale", "num_queries_per_kv",
+                "int8_radii", "log_radii", "l1_bits", "deep_bits",
+                "strides",
             ],
             output_names=["scores"],
             header=qk_qjl_header,
@@ -122,10 +135,13 @@ class MetalKernelBridge:
         self._kernel_attn_dense = mx.fast.metal_kernel(
             name="tqpolar_online_attention_dense_v",
             input_names=[
-                "q", "polar_radii", "angle_codes_l1", "angle_codes_deep",
+                "q", "polar_radii", "polar_radii_i8", "radii_scales",
+                "angle_codes_l1", "angle_codes_deep",
                 "v_dense", "qjl_packed_signs", "qjl_norms", "q_proj_signs",
                 "head_dim", "split_dim", "block_size", "total_blocks",
-                "qjl_proj_dim", "use_qjl", "l1_scale", "deep_scale", "attention_scale", "strides", "actual_seq_len", "num_queries_per_kv"
+                "qjl_proj_dim", "use_qjl", "l1_scale", "deep_scale", "attention_scale",
+                "int8_radii", "log_radii", "l1_bits", "deep_bits",
+                "strides", "actual_seq_len", "num_queries_per_kv",
             ],
             output_names=["output"],
             header=attn_dense_header,
@@ -136,19 +152,18 @@ class MetalKernelBridge:
         self._kernel_attn_quant = mx.fast.metal_kernel(
             name="tqpolar_online_attention_quant_v",
             input_names=[
-                "q", "polar_radii", "angle_codes_l1", "angle_codes_deep",
+                "q", "polar_radii", "polar_radii_i8", "radii_scales",
+                "angle_codes_l1", "angle_codes_deep",
                 "v_codes", "v_scales", "qjl_packed_signs", "qjl_norms", "q_proj_signs",
                 "head_dim", "split_dim", "block_size", "total_blocks",
-                "qjl_proj_dim", "group_size", "use_qjl", "l1_scale", "deep_scale", "attention_scale", "strides", "actual_seq_len", "num_queries_per_kv"
+                "qjl_proj_dim", "group_size", "use_qjl", "l1_scale", "deep_scale", "attention_scale",
+                "int8_radii", "log_radii", "l1_bits", "deep_bits",
+                "strides", "actual_seq_len", "num_queries_per_kv",
             ],
             output_names=["output"],
             header=attn_quant_header,
             source=attn_quant_body,
         )
-
-        if MetalKernelBridge._initialized:
-            return
-        MetalKernelBridge._initialized = True
 
         self.threadgroup_supported, self.grid_semantics = _probe_metal_dispatch()
         self._tg_x = 32
@@ -260,23 +275,26 @@ class MetalKernelBridge:
         }
         return output, trace
 
-    def _build_strides_qk(self, q, radii, angle_l1, angle_deep, out_array):
+    def _build_strides_qk(self, q, radii, radii_scales, angle_l1, angle_deep, out_array):
         qs = self._contiguous_strides(q.shape)
         rs = self._contiguous_strides(radii.shape)
+        rss = self._contiguous_strides(radii_scales.shape)
         l1s = self._contiguous_strides(angle_l1.shape)
         ds = self._contiguous_strides(angle_deep.shape)
         os = self._contiguous_strides(out_array.shape)
         return mx.array([
             qs[0], qs[1],
             rs[0], rs[1], rs[2], rs[3],
+            rss[0], rss[1], rss[2],
             l1s[0], l1s[1], l1s[2], l1s[3],
             ds[0], ds[1], ds[2], ds[3],
             os[0], os[1], os[2],
         ], dtype=mx.uint32)
 
-    def _build_strides_qjl(self, q, radii, angle_l1, angle_deep, qjl_s, qjl_n, q_proj_signs, out_array):
+    def _build_strides_qjl(self, q, radii, radii_scales, angle_l1, angle_deep, qjl_s, qjl_n, q_proj_signs, out_array):
         qs = self._contiguous_strides(q.shape)
         rs = self._contiguous_strides(radii.shape)
+        rss = self._contiguous_strides(radii_scales.shape)
         l1s = self._contiguous_strides(angle_l1.shape)
         ds = self._contiguous_strides(angle_deep.shape)
         ss = self._contiguous_strides(qjl_s.shape)
@@ -286,6 +304,7 @@ class MetalKernelBridge:
         return mx.array([
             qs[0], qs[1],
             rs[0], rs[1], rs[2], rs[3],
+            rss[0], rss[1], rss[2],
             l1s[0], l1s[1], l1s[2], l1s[3],
             ds[0], ds[1], ds[2], ds[3],
             ss[0], ss[1], ss[2], ss[3],
@@ -294,9 +313,10 @@ class MetalKernelBridge:
             os[0], os[1], os[2],
         ], dtype=mx.uint32)
 
-    def _build_strides_attn_dense(self, q, radii, angle_l1, angle_deep, v_dense, qjl_s, qjl_n, q_proj_signs, out_array):
+    def _build_strides_attn_dense(self, q, radii, radii_scales, angle_l1, angle_deep, v_dense, qjl_s, qjl_n, q_proj_signs, out_array):
         qs = self._contiguous_strides(q.shape)
         rs = self._contiguous_strides(radii.shape)
+        rss = self._contiguous_strides(radii_scales.shape)
         l1s = self._contiguous_strides(angle_l1.shape)
         ds = self._contiguous_strides(angle_deep.shape)
         vs = self._contiguous_strides(v_dense.shape)
@@ -307,6 +327,7 @@ class MetalKernelBridge:
         return mx.array([
             qs[0], qs[1],
             rs[0], rs[1], rs[2], rs[3],
+            rss[0], rss[1], rss[2],
             l1s[0], l1s[1], l1s[2], l1s[3],
             ds[0], ds[1], ds[2], ds[3],
             vs[0], vs[1], vs[2], vs[3],
@@ -316,9 +337,10 @@ class MetalKernelBridge:
             os[0], os[1],
         ], dtype=mx.uint32)
 
-    def _build_strides_attn_quant(self, q, radii, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_proj_signs, out_array):
+    def _build_strides_attn_quant(self, q, radii, radii_scales, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_proj_signs, out_array):
         qs = self._contiguous_strides(q.shape)
         rs = self._contiguous_strides(radii.shape)
+        rss = self._contiguous_strides(radii_scales.shape)
         l1s = self._contiguous_strides(angle_l1.shape)
         ds = self._contiguous_strides(angle_deep.shape)
         vcs = self._contiguous_strides(v_codes.shape)
@@ -330,6 +352,7 @@ class MetalKernelBridge:
         return mx.array([
             qs[0], qs[1],
             rs[0], rs[1], rs[2], rs[3],
+            rss[0], rss[1], rss[2],
             l1s[0], l1s[1], l1s[2], l1s[3],
             ds[0], ds[1], ds[2], ds[3],
             vcs[0], vcs[1], vcs[2], vcs[3],
@@ -340,8 +363,48 @@ class MetalKernelBridge:
             os[0], os[1],
         ], dtype=mx.uint32)
 
+    def _prepare_radii_inputs(self, block: PolarKeyBlock) -> Tuple[mx.array, mx.array, mx.array, int, int]:
+        """Return (polar_radii_fp16, polar_radii_i8, radii_scales, int8_radii, log_radii)."""
+        if block.radii.dtype == mx.int8:
+            if block.radii_scales is None:
+                raise ValueError("int8 radii require radii_scales")
+            B, H, S, L, _ = block.radii.shape
+            # Dummy buffers must have more than one element so MLX treats them as
+            # device arrays rather than scalar constants.
+            polar_radii = mx.zeros((2,), dtype=mx.float16)
+            polar_radii_i8 = mx.contiguous(block.radii)
+            radii_scales = mx.contiguous(block.radii_scales.reshape(B, H, S))
+            int8_radii = 1
+            log_radii = 1 if block.metadata.get("log_radii", False) else 0
+        elif block.radii.dtype == mx.float16:
+            polar_radii = mx.contiguous(block.radii)
+            polar_radii_i8 = mx.zeros((2,), dtype=mx.int8)
+            radii_scales = mx.zeros((2, 2, 2), dtype=mx.float16)
+            int8_radii = 0
+            log_radii = 0
+        else:
+            raise ValueError(f"unsupported radii dtype: {block.radii.dtype}")
+        return polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii
+
+    def _metal_supports_block(self, block: PolarKeyBlock) -> bool:
+        """Return True only if the compiled Metal kernels can decode this block format."""
+        # Metal shaders now support fp16 or int8+log radii.
+        if block.radii.dtype == mx.int8:
+            if block.radii_scales is None:
+                return False
+        elif block.radii.dtype != mx.float16:
+            return False
+
+        l1_bits = block.metadata.get("l1_bits", 4)
+        deep_bits = block.metadata.get("deep_bits", 2)
+        if l1_bits not in (4, 8):
+            return False
+        if deep_bits not in (2, 4, 8):
+            return False
+        return True
+
     def execute_fused_qk(self, q: mx.array, block: PolarKeyBlock, config) -> mx.array:
-        if not self.threadgroup_supported:
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
             return self._cpu_fused_qk(q, block, config)
         B, H_q, S, L, _ = block.radii.shape
         H_kv = block.radii.shape[1]
@@ -349,13 +412,16 @@ class MetalKernelBridge:
         out_shape = (B, q.shape[1], S * L)
         out_dtype = mx.float16
         out_array = mx.zeros(out_shape, dtype=out_dtype)
-        q, radii, angle_l1, angle_deep = self._ensure_contiguous(
-            q, block.radii, block.angle_codes_l1, block.angle_codes_deep
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = self._prepare_radii_inputs(block)
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep = self._ensure_contiguous(
+            q, block.angle_codes_l1, block.angle_codes_deep
         )
-        strides = self._build_strides_qk(q, radii, angle_l1, angle_deep, out_array)
+        strides = self._build_strides_qk(q, radii_for_strides, radii_scales, angle_l1, angle_deep, out_array)
         return self._kernel_qk(
             inputs=[
-                q, radii, angle_l1, angle_deep,
+                q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 mx.array(config.head_dim, dtype=mx.uint32),
                 mx.array(getattr(config, "split_dim", config.head_dim // 2), dtype=mx.uint32),
                 mx.array(config.block_size, dtype=mx.uint32),
@@ -363,6 +429,10 @@ class MetalKernelBridge:
                 mx.array(float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16),
                 mx.array(config.attention_scale, dtype=mx.float16),
                 mx.array(num_queries_per_kv, dtype=mx.uint32),
+                mx.array(int8_radii, dtype=mx.uint32),
+                mx.array(log_radii, dtype=mx.uint32),
+                mx.array(int(block.metadata.get("l1_bits", 4)), dtype=mx.uint32),
+                mx.array(int(block.metadata.get("deep_bits", 2)), dtype=mx.uint32),
                 strides,
             ],
             output_shapes=[out_shape],
@@ -372,7 +442,7 @@ class MetalKernelBridge:
         )[0]
 
     def execute_fused_qk_qjl(self, q: mx.array, block: PolarKeyBlock, qjl_payload: QJLPayload, q_proj_signs: mx.array, config) -> mx.array:
-        if not self.threadgroup_supported:
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
             return self._cpu_fused_qk_qjl(q, block, qjl_payload, q_proj_signs, config)
         B, H_q, S, L, _ = block.radii.shape
         H_kv = block.radii.shape[1]
@@ -380,14 +450,17 @@ class MetalKernelBridge:
         out_shape = (B, q.shape[1], S * L)
         out_dtype = mx.float16
         out_array = mx.zeros(out_shape, dtype=out_dtype)
-        q, radii, angle_l1, angle_deep, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
-            q, block.radii, block.angle_codes_l1, block.angle_codes_deep,
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = self._prepare_radii_inputs(block)
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
+            q, block.angle_codes_l1, block.angle_codes_deep,
             qjl_payload.packed_signs, qjl_payload.norms, q_proj_signs
         )
-        strides = self._build_strides_qjl(q, radii, angle_l1, angle_deep, qjl_s, qjl_n, q_signs, out_array)
+        strides = self._build_strides_qjl(q, radii_for_strides, radii_scales, angle_l1, angle_deep, qjl_s, qjl_n, q_signs, out_array)
         return self._kernel_qk_qjl(
             inputs=[
-                q, radii, angle_l1, angle_deep,
+                q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 qjl_s, qjl_n, q_signs,
                 mx.array(config.head_dim, dtype=mx.uint32),
                 mx.array(getattr(config, "split_dim", config.head_dim // 2), dtype=mx.uint32),
@@ -397,6 +470,10 @@ class MetalKernelBridge:
                 mx.array(float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16),
                 mx.array(config.attention_scale, dtype=mx.float16),
                 mx.array(num_queries_per_kv, dtype=mx.uint32),
+                mx.array(int8_radii, dtype=mx.uint32),
+                mx.array(log_radii, dtype=mx.uint32),
+                mx.array(int(block.metadata.get("l1_bits", 4)), dtype=mx.uint32),
+                mx.array(int(block.metadata.get("deep_bits", 2)), dtype=mx.uint32),
                 strides,
             ],
             output_shapes=[out_shape],
@@ -429,7 +506,7 @@ class MetalKernelBridge:
         qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
             qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
-        if not self.threadgroup_supported:
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
             v_broadcast = mx.repeat(v_dense.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
             return self._cpu_online_attention(
                 q, block, v_broadcast, qjl_payload, q_proj_signs, config,
@@ -438,14 +515,17 @@ class MetalKernelBridge:
         out_shape = (B, q.shape[1], config.head_dim)
         out_dtype = mx.float16
         out_array = mx.zeros(out_shape, dtype=out_dtype)
-        q, radii, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
-            q, block.radii, block.angle_codes_l1, block.angle_codes_deep,
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = self._prepare_radii_inputs(block)
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
+            q, block.angle_codes_l1, block.angle_codes_deep,
             v_dense, qjl_s, qjl_n, q_proj
         )
-        strides = self._build_strides_attn_dense(q, radii, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs, out_array)
+        strides = self._build_strides_attn_dense(q, radii_for_strides, radii_scales, angle_l1, angle_deep, v, qjl_s, qjl_n, q_signs, out_array)
         output = self._kernel_attn_dense(
             inputs=[
-                q, radii, angle_l1, angle_deep,
+                q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 v, qjl_s, qjl_n, q_signs,
                 mx.array(config.head_dim, dtype=mx.uint32),
                 mx.array(getattr(config, "split_dim", config.head_dim // 2), dtype=mx.uint32),
@@ -456,6 +536,10 @@ class MetalKernelBridge:
                 mx.array(float(block.metadata.get("l1_scale", 15.0)), dtype=mx.float16),
                 mx.array(float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16),
                 mx.array(config.attention_scale, dtype=mx.float16),
+                mx.array(int8_radii, dtype=mx.uint32),
+                mx.array(log_radii, dtype=mx.uint32),
+                mx.array(int(block.metadata.get("l1_bits", 4)), dtype=mx.uint32),
+                mx.array(int(block.metadata.get("deep_bits", 2)), dtype=mx.uint32),
                 strides,
                 mx.array(actual_seq_len, dtype=mx.uint32),
                 mx.array(num_queries_per_kv, dtype=mx.uint32),
@@ -486,7 +570,7 @@ class MetalKernelBridge:
         qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
             qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
-        if not self.threadgroup_supported:
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
             v_dequant = GroupedVQuantizer(group_size=quant_v.group_size).dequantize_block(quant_v)
             v_broadcast = mx.repeat(v_dequant.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
             return self._cpu_online_attention(
@@ -496,14 +580,17 @@ class MetalKernelBridge:
         out_shape = (B, q.shape[1], config.head_dim)
         out_dtype = mx.float16
         out_array = mx.zeros(out_shape, dtype=out_dtype)
-        q, radii, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
-            q, block.radii, block.angle_codes_l1, block.angle_codes_deep,
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = self._prepare_radii_inputs(block)
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
+            q, block.angle_codes_l1, block.angle_codes_deep,
             quant_v.codes, quant_v.scales, qjl_s, qjl_n, q_proj
         )
-        strides = self._build_strides_attn_quant(q, radii, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs, out_array)
+        strides = self._build_strides_attn_quant(q, radii_for_strides, radii_scales, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs, out_array)
         output = self._kernel_attn_quant(
             inputs=[
-                q, radii, angle_l1, angle_deep,
+                q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 v_codes, v_scales, qjl_s, qjl_n, q_signs,
                 mx.array(config.head_dim, dtype=mx.uint32),
                 mx.array(getattr(config, "split_dim", config.head_dim // 2), dtype=mx.uint32),
@@ -515,6 +602,10 @@ class MetalKernelBridge:
                 mx.array(float(block.metadata.get("l1_scale", 15.0)), dtype=mx.float16),
                 mx.array(float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16),
                 mx.array(config.attention_scale, dtype=mx.float16),
+                mx.array(int8_radii, dtype=mx.uint32),
+                mx.array(log_radii, dtype=mx.uint32),
+                mx.array(int(block.metadata.get("l1_bits", 4)), dtype=mx.uint32),
+                mx.array(int(block.metadata.get("deep_bits", 2)), dtype=mx.uint32),
                 strides,
                 mx.array(actual_seq_len, dtype=mx.uint32),
                 mx.array(num_queries_per_kv, dtype=mx.uint32),

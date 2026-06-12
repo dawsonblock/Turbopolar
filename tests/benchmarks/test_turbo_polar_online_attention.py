@@ -140,6 +140,52 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
                 self.assertGreaterEqual(cosine, 0.999, f"cosine={cosine} at T={T}")
                 self.assertLessEqual(max_err, allowed_err, f"max_err={max_err} at T={T}")
 
+    def test_high_quality_config_online_attention(self):
+        """Metal online attention supports int8 log-radii + 8-bit deep angles."""
+        config = TurboPolarConfig(
+            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
+            num_q_heads=4, num_kv_heads=4, seed=2026,
+            use_int8_radii=True, k_angle_bits_deep=8,
+        )
+        polar_encoder = PolarQuantEncoder(config)
+        v_quantizer = GroupedVQuantizer(group_size=32)
+        decoder = PolarQuantDecoder()
+        bridge = MetalKernelBridge()
+        B, H, S, L, D = 1, 4, 2, 64, 128
+        mx.random.seed(config.seed)
+        q = mx.random.normal(shape=[B, H, D])
+        k_original = mx.random.normal(shape=[B, H, S * L, D])
+        v_original = mx.random.normal(shape=[B, H, S, L, D])
+        quant_v = v_quantizer.quantize_block(v_original)
+        v_dequant = v_quantizer.dequantize_block(quant_v)
+        k_blocked = k_original.reshape(B, H, S, L, D)
+        blocks = [polar_encoder.encode_block(k_blocked[:, :, s, :, :]) for s in range(S)]
+        unified = blocks[0].__class__(
+            radii=mx.stack([b.radii for b in blocks], axis=2),
+            angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
+            angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
+            radii_scales=mx.stack([b.radii_scales for b in blocks], axis=2),
+            shape=(B, H, S * L, D), block_size=L, head_dim=D,
+            metadata=blocks[0].metadata,
+        )
+        k_recon = decoder.decode_block(unified)
+        scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * config.attention_scale
+        weights = mx.softmax(scores, axis=-1)
+        ref_output = mx.sum(weights[:, :, :, None] * v_dequant.reshape(B, H, S * L, D), axis=-2)
+        gpu_output, trace = bridge.execute_online_attention_quant_v(
+            q, unified, quant_v, None, None, config, actual_seq_len=S*L, use_qjl=False
+        )
+        mx.eval(ref_output, gpu_output)
+        ref_np = np.array(ref_output)
+        gpu_np = np.array(gpu_output)
+        cosine = np.dot(ref_np.flatten(), gpu_np.flatten()) / (
+            np.linalg.norm(ref_np) * np.linalg.norm(gpu_np) + 1e-12
+        )
+        max_err = np.max(np.abs(ref_np - gpu_np))
+        self.assertFalse(np.isnan(gpu_np).any())
+        self.assertGreaterEqual(cosine, 0.999)
+        self.assertLessEqual(max_err, 1e-3)
+
     def test_gqa_quant_v_attention(self):
         """Test GQA with quantized V attention."""
         config = TurboPolarConfig(

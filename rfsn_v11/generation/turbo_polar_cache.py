@@ -95,6 +95,7 @@ class TurboPolarKVCacheRuntime:
             radii=mx.expand_dims(polar_block.radii, axis=2),
             angle_codes_l1=mx.expand_dims(polar_block.angle_codes_l1, axis=2),
             angle_codes_deep=mx.expand_dims(polar_block.angle_codes_deep, axis=2),
+            radii_scales=mx.expand_dims(polar_block.radii_scales, axis=2) if polar_block.radii_scales is not None else None,
             shape=(B, H, 1, L, D),
             block_size=L,
             head_dim=D,
@@ -128,6 +129,8 @@ class TurboPolarKVCacheRuntime:
             _nbytes(polar_block.angle_codes_l1) +
             _nbytes(polar_block.angle_codes_deep)
         )
+        if polar_block.radii_scales is not None:
+            self.bytes_written += _nbytes(polar_block.radii_scales)
         if quant_v is not None:
             self.bytes_written += _nbytes(quant_v.codes) + _nbytes(quant_v.scales)
         if dense_v is not None:
@@ -148,6 +151,7 @@ class TurboPolarKVCacheRuntime:
 
         polar_block = self.polar_encoder.encode_block(k_padded)
         radii = mx.expand_dims(polar_block.radii, axis=2)
+        radii_scales = mx.expand_dims(polar_block.radii_scales, axis=2) if polar_block.radii_scales is not None else None
         angle_l1 = mx.expand_dims(polar_block.angle_codes_l1, axis=2)
         angle_deep = mx.expand_dims(polar_block.angle_codes_deep, axis=2)
 
@@ -164,6 +168,7 @@ class TurboPolarKVCacheRuntime:
                 radii=radii,
                 angle_codes_l1=angle_l1,
                 angle_codes_deep=angle_deep,
+                radii_scales=radii_scales,
                 shape=(B, H, 1, L, D),
                 block_size=L,
                 head_dim=D,
@@ -175,6 +180,7 @@ class TurboPolarKVCacheRuntime:
 
         return {
             "radii": radii,
+            "radii_scales": radii_scales,
             "angle_l1": angle_l1,
             "angle_deep": angle_deep,
             "quant_v": quant_v,
@@ -197,6 +203,7 @@ class TurboPolarKVCacheRuntime:
                 radii=partial["radii"],
                 angle_codes_l1=partial["angle_l1"],
                 angle_codes_deep=partial["angle_deep"],
+                radii_scales=partial.get("radii_scales"),
                 shape=(partial["radii"].shape[0], partial["radii"].shape[1],
                        partial["radii"].shape[2] * partial["radii"].shape[3],
                        partial["radii"].shape[4] * 2),
@@ -209,6 +216,8 @@ class TurboPolarKVCacheRuntime:
         radii = mx.stack([b.radii for b in self.compressed_k_blocks], axis=2)
         angle_l1 = mx.stack([b.angle_codes_l1 for b in self.compressed_k_blocks], axis=2)
         angle_deep = mx.stack([b.angle_codes_deep for b in self.compressed_k_blocks], axis=2)
+        has_scales = all(b.radii_scales is not None for b in self.compressed_k_blocks)
+        radii_scales = mx.stack([b.radii_scales for b in self.compressed_k_blocks], axis=2) if has_scales else None
 
         partial_quant_v: Optional[QuantizedVBlock] = None
         partial_dense_v: Optional[mx.array] = None
@@ -218,6 +227,8 @@ class TurboPolarKVCacheRuntime:
             radii = mx.concatenate([radii, partial["radii"]], axis=2)
             angle_l1 = mx.concatenate([angle_l1, partial["angle_l1"]], axis=2)
             angle_deep = mx.concatenate([angle_deep, partial["angle_deep"]], axis=2)
+            if radii_scales is not None and partial.get("radii_scales") is not None:
+                radii_scales = mx.concatenate([radii_scales, partial["radii_scales"]], axis=2)
             partial_quant_v = partial["quant_v"]
             partial_dense_v = partial["dense_v"]
             partial_qjl = partial["qjl"]
@@ -226,6 +237,7 @@ class TurboPolarKVCacheRuntime:
             radii=radii,
             angle_codes_l1=angle_l1,
             angle_codes_deep=angle_deep,
+            radii_scales=radii_scales,
             shape=(radii.shape[0], radii.shape[1], radii.shape[2] * radii.shape[3], radii.shape[4] * 2),
             block_size=self.config.block_size,
             head_dim=self.config.head_dim,
@@ -279,6 +291,8 @@ class TurboPolarKVCacheRuntime:
                 _nbytes(block.angle_codes_l1) +
                 _nbytes(block.angle_codes_deep)
             )
+            if block.radii_scales is not None:
+                self.bytes_read += _nbytes(block.radii_scales)
             fetched.append(self.decoder.decode_block(block))
         return mx.concatenate(fetched, axis=2)
 

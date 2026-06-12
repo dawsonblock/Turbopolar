@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx_lm
@@ -25,11 +25,20 @@ from benchmarks.report_writer import write_json_report, write_markdown_report
 
 
 def _first_param_dtype(params):
+    """Find the first floating-point parameter dtype in a nested parameter dict."""
+    for v in params.values():
+        if isinstance(v, dict):
+            dtype = _first_param_dtype(v)
+            if dtype is not None:
+                return dtype
+        elif hasattr(v, "dtype"):
+            # Prefer float dtypes; skip integer metadata buffers common in quantized models.
+            if "float" in str(v.dtype):
+                return v.dtype
+    # Fallback: return the dtype of the first tensor if no float tensor was found.
     for v in params.values():
         if hasattr(v, "dtype"):
             return v.dtype
-        if isinstance(v, dict):
-            return _first_param_dtype(v)
     return "unknown"
 
 
@@ -240,7 +249,7 @@ def main():
 
     model_path = Path(args.model)
     print(f"Loading model: {model_path}")
-    model, tokenizer = load(model_path)
+    model, tokenizer = load(str(model_path))
 
     prompts = load_prompts(args.prompt_suite)
     if not prompts:
@@ -256,8 +265,8 @@ def main():
         print(f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x")
 
     # Decode speed measured separately on the first prompt so it does not corrupt per-prompt caches.
-    dense_decode_tok_per_sec = 0.0
-    turbo_decode_tok_per_sec = 0.0
+    dense_decode_tok_per_sec: Optional[float] = None
+    turbo_decode_tok_per_sec: Optional[float] = None
     if not args.skip_decode_speed and prompts:
         print("Measuring decode speed...")
         tokens = tokenizer.encode(prompts[0])[: args.max_tokens]
@@ -268,18 +277,33 @@ def main():
         turbo_decode_tok_per_sec = _measure_decode_speed(model, tokenizer, turbo_cache, tokens, args.num_decode)
         print(f"  dense: {dense_decode_tok_per_sec:.2f} tok/s  turbo: {turbo_decode_tok_per_sec:.2f} tok/s")
 
+    # Promotion gates are evaluated only on prompts long enough to exercise
+    # compressed blocks. Short prompts (< block_size) live entirely in the raw
+    # partial tail and distort compression / perplexity aggregates.
+    MIN_GATE_TOKENS = 64
+    gate_results = [r for r in results if r.prompt_tokens >= MIN_GATE_TOKENS]
+    if not gate_results:
+        print(f"WARNING: no prompts reached {MIN_GATE_TOKENS} tokens; gate metrics will be pessimistic.")
+        gate_results = results
+
     aggregate = {
-        "logit_cosine": float(np.mean([r.logit_cosine for r in results])),
-        "top5_overlap": float(np.mean([r.top5_overlap for r in results])),
-        "top10_overlap": float(np.mean([r.top10_overlap for r in results])),
-        "kl_divergence": float(np.mean([r.kl_divergence for r in results])),
-        "perplexity_delta": float(np.mean([r.perplexity_delta for r in results])),
-        "compression_ratio": float(np.mean([r.compression_ratio for r in results])),
+        "logit_cosine": float(np.mean([r.logit_cosine for r in gate_results])),
+        "top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])),
+        "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])),
+        "kl_divergence": float(np.mean([r.kl_divergence for r in gate_results])),
+        "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])),
+        "compression_ratio": float(np.mean([r.compression_ratio for r in gate_results])),
         "peak_kv_bytes_dense": int(np.max([r.peak_kv_bytes_dense for r in results])),
         "peak_kv_bytes_turbo": int(np.max([r.peak_kv_bytes_turbo for r in results])),
         "decode_speed_dense_tok_per_sec": dense_decode_tok_per_sec,
         "decode_speed_turbo_tok_per_sec": turbo_decode_tok_per_sec,
-        "decode_speed_ratio": turbo_decode_tok_per_sec / dense_decode_tok_per_sec if dense_decode_tok_per_sec > 0 else 0.0,
+        "decode_speed_ratio": (
+            turbo_decode_tok_per_sec / dense_decode_tok_per_sec
+            if dense_decode_tok_per_sec is not None and dense_decode_tok_per_sec > 0
+            else None
+        ),
+        "gate_eligible_prompts": len(gate_results),
+        "total_prompts": len(results),
     }
 
     report = BenchmarkReport(

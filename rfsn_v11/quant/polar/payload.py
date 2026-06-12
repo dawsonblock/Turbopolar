@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Tuple, Dict, Any
+from dataclasses import dataclass, field
+from typing import Tuple, Dict, Any, Optional
 import mlx.core as mx
 
 
@@ -12,3 +12,4 @@ class PolarKeyBlock:
     block_size: int
     head_dim: int
     metadata: Dict[str, Any]
+    radii_scales: Optional[mx.array] = field(default=None)

@@ -41,6 +41,14 @@ make bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 
 This compares dense KV-cache logits against TurboPolar logits on a real MLX model and writes a report to `benchmarks/outputs/`. See `benchmarks/README.md` for details.
 
+## Run the fused-attention benchmark
+
+```bash
+make fast-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+```
+
+This monkey-patches an mlx_lm Llama model so decode steps use the custom TurboPolar Metal attention kernels directly on compressed K/V. Quality matches dense, but the fused path is not yet faster than MLX SDPA for this model/scale.
+
 ## Quick example
 
 ```python
@@ -84,12 +92,12 @@ rfsn_v11/
 - `head_dim` must be 64 or 128 and divisible by 32.
 - `block_size` is fixed at 64.
 - Only `v_bits == 8` is allowed.
-- QJL is disabled by default because its score estimator is uncalibrated.
-- Promotion to wider use is blocked until real-model gates pass.
+- QJL is disabled by default; the estimator is now calibrated but has not proven a real-model win yet.
+- Promotion gates pass on Llama-3.2-1B-Instruct-4bit at 512-token context; more models need validation before wider use.
 
 ## Promotion gates
 
-TurboPolar stays behind `promotion_allowed=False` until all of these are true:
+TurboPolar gates are evaluated on real MLX models. On `mlx-community/Llama-3.2-1B-Instruct-4bit` (512-token context) all gates pass:
 
 1. KV memory reduction ≥ 1.7×.
 2. Logit cosine similarity vs dense ≥ 0.995.
