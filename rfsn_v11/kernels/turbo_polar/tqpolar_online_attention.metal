@@ -627,3 +627,205 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
         output[b * stride_o_b + q_head * stride_o_h + d] = half(acc[k] / l_stat);
     }
 }
+
+
+kernel void tqpolar_online_attention_quant_v_raw(
+    device const half* q                     [[buffer(0)]],
+    device const half* polar_radii           [[buffer(1)]],
+    device const int8_t* polar_radii_i8      [[buffer(2)]],
+    device const half* radii_scales          [[buffer(3)]],
+    device const uchar* angle_codes_l1       [[buffer(4)]],
+    device const uchar* angle_codes_deep     [[buffer(5)]],
+    device const int8_t* v_codes             [[buffer(6)]],
+    device const half* v_scales              [[buffer(7)]],
+    device const uchar* qjl_packed_signs     [[buffer(8)]],
+    device const half* qjl_norms             [[buffer(9)]],
+    device const uchar* q_proj_signs         [[buffer(10)]],
+    device float* out_weighted               [[buffer(11)]],
+    device float* out_max_score              [[buffer(12)]],
+    device float* out_exp_sum                [[buffer(13)]],
+    constant uint& head_dim                  [[buffer(14)]],
+    constant uint& split_dim                 [[buffer(15)]],
+    constant uint& block_size                [[buffer(16)]],
+    constant uint& total_blocks              [[buffer(17)]],
+    constant uint& qjl_proj_dim              [[buffer(18)]],
+    constant uint& group_size                [[buffer(19)]],
+    constant uint& use_qjl                   [[buffer(20)]],
+    constant half& l1_scale                  [[buffer(21)]],
+    constant half& deep_scale                [[buffer(22)]],
+    constant half& attention_scale           [[buffer(23)]],
+    constant uint& int8_radii                [[buffer(24)]],
+    constant uint& log_radii                 [[buffer(25)]],
+    constant uint& l1_bits                   [[buffer(26)]],
+    constant uint& deep_bits                 [[buffer(27)]],
+    device const uint* strides               [[buffer(28)]],
+    constant uint& actual_seq_len            [[buffer(29)]],
+    constant uint& num_queries_per_kv        [[buffer(30)]],
+    uint3 tgid                               [[threadgroup_position_in_grid]],
+    uint tid                                 [[thread_index_in_threadgroup]])
+{
+    uint b = tgid.x;
+    uint q_head = tgid.y;
+    uint kv_head = q_head / num_queries_per_kv;
+    uint half_d = head_dim / 2;
+    uint split_half_d = split_dim / 2;
+    uint qjl_bytes = qjl_proj_dim / 8;
+    uint num_elements_per_thread = head_dim / 32;
+
+    uint stride_q_b   = strides[0];  uint stride_q_h   = strides[1];
+    uint stride_r_b   = strides[2];  uint stride_r_h   = strides[3];  uint stride_r_s   = strides[4];  uint stride_r_l = strides[5];
+    uint stride_rs_b  = strides[6];  uint stride_rs_h  = strides[7];  uint stride_rs_s  = strides[8];
+    uint stride_c1_b  = strides[9];  uint stride_c1_h  = strides[10]; uint stride_c1_s  = strides[11]; uint stride_c1_l = strides[12];
+    uint stride_cd_b  = strides[13]; uint stride_cd_h  = strides[14]; uint stride_cd_s  = strides[15]; uint stride_cd_l = strides[16];
+    uint stride_vc_b  = strides[17]; uint stride_vc_h  = strides[18]; uint stride_vc_s  = strides[19]; uint stride_vc_l = strides[20];
+    uint stride_vs_b  = strides[21]; uint stride_vs_h  = strides[22]; uint stride_vs_s  = strides[23]; uint stride_vs_l = strides[24];
+    uint stride_qjl_b = strides[25]; uint stride_qjl_h = strides[26]; uint stride_qjl_s = strides[27]; uint stride_qjl_l = strides[28];
+    uint stride_qn_b  = strides[29]; uint stride_qn_h  = strides[30]; uint stride_qn_s  = strides[31]; uint stride_qn_l = strides[32];
+    uint stride_qp_b  = strides[33]; uint stride_qp_h  = strides[34];
+    uint stride_o_b   = strides[35]; uint stride_o_h   = strides[36];
+
+    float m_stat = -INFINITY;
+    float l_stat = 0.0f;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    threadgroup float shared_scores[64];
+    threadgroup float shared_q_norm[1];
+
+    if (tid == 0 && use_qjl != 0) {
+        float q_sum = 0.0f;
+        for (uint d = 0; d < head_dim; d++) {
+            float val = q[b * stride_q_b + q_head * stride_q_h + d];
+            q_sum += val * val;
+        }
+        shared_q_norm[0] = sqrt(q_sum);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
+
+    for (uint s = 0; s < total_blocks; s++) {
+        for (uint l = 0; l < block_size; l++) {
+            uint global_tok_idx = s * block_size + l;
+            if (global_tok_idx >= actual_seq_len) {
+                if (tid == 0) {
+                    shared_scores[l] = -INFINITY;
+                }
+                continue;
+            }
+            float private_sum = 0.0f;
+            for (uint j = tid; j < half_d; j += 32) {
+                uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
+                float r;
+                if (int8_radii == 0) {
+                    r = float(polar_radii[offset_r]);
+                } else {
+                    int8_t code = polar_radii_i8[offset_r];
+                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+                    float value = float(code) * scale;
+                    r = (log_radii != 0) ? exp(value) : value;
+                }
+                float norm_angle;
+                if (j < split_half_d) {
+                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                    uchar code;
+                    if (l1_bits == 8) {
+                        code = angle_codes_l1[offset_c1 + j];
+                    } else {
+                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
+                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    }
+                    norm_angle = float(static_cast<half>(code) / l1_scale);
+                } else {
+                    uint rel_j = j - split_half_d;
+                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                    uchar code;
+                    if (deep_bits == 8) {
+                        code = angle_codes_deep[offset_cd + rel_j];
+                    } else if (deep_bits == 4) {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
+                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                    } else {
+                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
+                        uint shift = (rel_j % 4) * 2;
+                        code = (byte >> shift) & 0x03;
+                    }
+                    norm_angle = float(static_cast<half>(code) / deep_scale);
+                }
+                float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
+                float k_x = r * cos(angle);
+                float k_y = r * sin(angle);
+                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+            }
+            uint local_hamming = 0;
+            if (use_qjl != 0) {
+                for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
+                    uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
+                    uchar k_byte = qjl_packed_signs[offset_qjl];
+                    uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
+                    local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
+                }
+            }
+            float total_polar_score = simd_sum(private_sum);
+            uint total_hamming_dist = simd_sum(local_hamming);
+            if (tid == 0) {
+                if (use_qjl != 0) {
+                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
+                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
+                    float sign_corr = match_score / float(qjl_proj_dim);
+                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
+                    float qjl_correction = (norm_E * q_norm) * cos_est;
+                    shared_scores[l] = total_polar_score + qjl_correction * float(attention_scale);
+                } else {
+                    shared_scores[l] = total_polar_score;
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float block_max = -INFINITY;
+        for (uint l = 0; l < block_size; l++) {
+            block_max = max(block_max, shared_scores[l]);
+        }
+        float m_new = max(m_stat, block_max);
+        float alpha = exp(m_stat - m_new);
+        float l_block = 0.0f;
+        for (uint l = 0; l < block_size; l++) {
+            uint global_tok_idx = s * block_size + l;
+            if (global_tok_idx < actual_seq_len) {
+                l_block += exp(shared_scores[l] - m_new);
+            }
+        }
+        float l_new = l_stat * alpha + l_block;
+
+        for (uint k = 0; k < num_elements_per_thread; k++) {
+            uint d = tid + k * 32;
+            float v_sum = 0.0f;
+            uint group_idx = d / group_size;
+            for (uint l = 0; l < block_size; l++) {
+                uint global_tok_idx = s * block_size + l;
+                if (global_tok_idx < actual_seq_len) {
+                    float p = exp(shared_scores[l] - m_new);
+                    uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
+                    uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
+                    int8_t v_code = v_codes[offset_vc];
+                    float v_scale = float(v_scales[offset_vs]);
+                    float dequantized_v = float(v_code) * v_scale;
+                    v_sum += p * dequantized_v;
+                }
+            }
+            acc[k] = acc[k] * alpha + v_sum;
+        }
+        m_stat = m_new;
+        l_stat = l_new;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0) {
+        out_max_score[b * num_queries_per_kv + q_head] = m_stat;
+        out_exp_sum[b * num_queries_per_kv + q_head] = l_stat;
+    }
+    for (uint k = 0; k < num_elements_per_thread; k++) {
+        uint d = tid + k * 32;
+        out_weighted[b * stride_o_b + q_head * stride_o_h + d] = acc[k];
+    }
+}

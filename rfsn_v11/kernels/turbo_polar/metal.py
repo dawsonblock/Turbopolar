@@ -265,6 +265,46 @@ class MetalKernelBridge:
             source=attn_quant_body,
         )
 
+        attn_quant_raw_header, attn_quant_raw_body = self._extract_kernel_parts(
+            attn_source, "tqpolar_online_attention_quant_v_raw"
+        )
+        self._kernel_attn_quant_raw = mx.fast.metal_kernel(
+            name="tqpolar_online_attention_quant_v_raw",
+            input_names=[
+                "q",
+                "polar_radii",
+                "polar_radii_i8",
+                "radii_scales",
+                "angle_codes_l1",
+                "angle_codes_deep",
+                "v_codes",
+                "v_scales",
+                "qjl_packed_signs",
+                "qjl_norms",
+                "q_proj_signs",
+                "head_dim",
+                "split_dim",
+                "block_size",
+                "total_blocks",
+                "qjl_proj_dim",
+                "group_size",
+                "use_qjl",
+                "l1_scale",
+                "deep_scale",
+                "attention_scale",
+                "int8_radii",
+                "log_radii",
+                "l1_bits",
+                "deep_bits",
+                "strides",
+                "actual_seq_len",
+                "num_queries_per_kv",
+            ],
+            output_names=["out_weighted", "out_max_score", "out_exp_sum"],
+            header=attn_quant_raw_header,
+            source=attn_quant_raw_body,
+        )
+
         attn_quant_dt_header, attn_quant_dt_body = self._extract_kernel_parts(
             attn_source, "tqpolar_online_attention_quant_v_dense_tail"
         )
@@ -525,6 +565,28 @@ class MetalKernelBridge:
             weighted_value_sum=new_weighted,
         )
 
+    def _online_softmax_combine_raw(
+        self,
+        state: "MetalKernelBridge.OnlineSoftmaxState",
+        page_max: mx.array,  # [B, H_q]
+        page_exp_sum: mx.array,  # [B, H_q]
+        page_weighted: mx.array,  # [B, H_q, D]
+    ) -> "MetalKernelBridge.OnlineSoftmaxState":
+        """Update an existing online-softmax state with raw page state."""
+        new_max = mx.maximum(state.max_score, page_max)
+        alpha = mx.exp(state.max_score - new_max)
+        beta = mx.exp(page_max - new_max)
+        new_exp_sum = state.exp_sum * alpha + page_exp_sum * beta
+        new_weighted = (
+            state.weighted_value_sum * alpha[:, :, None]
+            + page_weighted * beta[:, :, None]
+        )
+        return MetalKernelBridge.OnlineSoftmaxState(
+            max_score=new_max,
+            exp_sum=new_exp_sum,
+            weighted_value_sum=new_weighted,
+        )
+
     def execute_paged_online_attention(
         self,
         q: mx.array,
@@ -550,6 +612,9 @@ class MetalKernelBridge:
         B = q.shape[0]
         H_q = q.shape[1]
         D = config.head_dim
+        num_queries_per_kv = (
+            H_q // config.num_kv_heads if config.num_kv_heads > 0 else 1
+        )
 
         state = MetalKernelBridge.OnlineSoftmaxState(
             max_score=mx.full((B, H_q), -float("inf"), dtype=mx.float32),
@@ -558,9 +623,9 @@ class MetalKernelBridge:
         )
 
         total_tokens = 0
-        v_dequantizer = GroupedVQuantizer(group_size=32)
 
         qk_metal_used = False
+        attn_metal_used = False
         for page_view in pages:
             valid_blocks = page_view.valid_blocks
             if valid_blocks == 0:
@@ -583,12 +648,6 @@ class MetalKernelBridge:
                 metadata=page_view.metadata,
             )
 
-            prev_fused_qk = self._stats.fused_qk_calls
-            scores = self.execute_fused_qk(q, block, config)
-            if self._stats.fused_qk_calls > prev_fused_qk:
-                qk_metal_used = True
-            T_page = scores.shape[-1]
-
             # Dequantize V for this page.
             v_page = page_view.v_page
             quant_v = QuantizedVBlock(
@@ -596,17 +655,22 @@ class MetalKernelBridge:
                 scales=v_page.scales[:, :, :valid_blocks, :, :],
                 group_size=v_page.group_size,
             )
-            v_dense = v_dequantizer.dequantize_block(quant_v).reshape(
-                B, v_page.codes.shape[1], T_page, D
+
+            page_weighted, page_max, page_exp, _ = (
+                self.execute_online_attention_quant_v_raw(
+                    q,
+                    block,
+                    quant_v,
+                    config,
+                    actual_seq_len=valid_blocks * config.block_size,
+                )
             )
-
-            # GQA broadcast (note: _cpu_fused_qk already broadcasts K to H_q).
-            H_kv = v_page.codes.shape[1]
-            num_queries_per_kv = H_q // H_kv
-            v_dense = mx.repeat(v_dense, num_queries_per_kv, axis=1)
-
-            state = self._online_softmax_combine(state, scores, v_dense)
-            total_tokens += T_page
+            state = self._online_softmax_combine_raw(
+                state, page_max, page_exp, page_weighted
+            )
+            total_tokens += valid_blocks * config.block_size
+            if self._stats.online_attention_calls > 0:
+                attn_metal_used = True
 
         # Process dense tail.
         if tail_k is not None and tail_k.shape[2] > 0:
@@ -630,15 +694,16 @@ class MetalKernelBridge:
             self._stats.dense_tail_calls += 1
 
         trace = {
-            "kernel_name": "paged_online_attention_qk_metal",
-            "metal_used": qk_metal_used,
+            "kernel_name": "paged_online_attention_full_metal",
+            "metal_used": attn_metal_used,
             "qk_metal_used": qk_metal_used,
-            "fallback_used": not qk_metal_used,
+            "attn_metal_used": attn_metal_used,
+            "fallback_used": not attn_metal_used,
             "qjl_used": False,
             "quant_v_used": True,
             "actual_seq_len": actual_seq_len,
             "total_tokens_processed": total_tokens,
-            "num_queries_per_kv": H_q // H_kv if H_q > 0 else 1,
+            "num_queries_per_kv": num_queries_per_kv,
         }
         return output, trace
 
@@ -1392,6 +1457,136 @@ class MetalKernelBridge:
             "num_queries_per_kv": num_queries_per_kv,
         }
         return output, trace
+
+    def execute_online_attention_quant_v_raw(
+        self,
+        q: mx.array,
+        block: PolarKeyBlock,
+        quant_v: QuantizedVBlock,
+        config,
+        actual_seq_len: int,
+        use_qjl: bool = False,
+    ) -> Tuple[mx.array, mx.array, mx.array, Dict[str, Any]]:
+        """Return raw online-softmax state (weighted_sum, max_score, exp_sum) without normalizing."""
+        B, H_kv, S, L, _ = block.radii.shape
+        num_queries_per_kv = q.shape[1] // H_kv
+        qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
+            None, None, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
+        )
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
+            v_dequant = GroupedVQuantizer(
+                group_size=quant_v.group_size
+            ).dequantize_block(quant_v)
+            v_broadcast = mx.repeat(
+                v_dequant.reshape(B, H_kv, S * L, config.head_dim),
+                num_queries_per_kv,
+                axis=1,
+            )
+            scores = self._cpu_fused_qk(q, block, config)
+            max_score = mx.max(scores, axis=-1)
+            exp_sum = mx.sum(mx.exp(scores - max_score[..., None]), axis=-1)
+            weighted = mx.sum(
+                mx.exp(scores - max_score[..., None])[..., None] * v_broadcast,
+                axis=-2,
+            )
+            trace = {
+                "kernel_name": "tqpolar_online_attention_quant_v_raw_cpu",
+                "metal_used": False,
+                "fallback_used": True,
+                "qjl_used": use_qjl,
+                "quant_v_used": True,
+                "actual_seq_len": actual_seq_len,
+                "num_queries_per_kv": num_queries_per_kv,
+            }
+            return weighted, max_score, exp_sum, trace
+
+        out_shape = (B, q.shape[1], config.head_dim)
+        max_shape = (B, q.shape[1])
+        exp_shape = (B, q.shape[1])
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = (
+            self._prepare_radii_inputs(block)
+        )
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep, v_codes, v_scales, qjl_s, qjl_n, q_signs = (
+            self._ensure_contiguous(
+                q,
+                block.angle_codes_l1,
+                block.angle_codes_deep,
+                quant_v.codes,
+                quant_v.scales,
+                qjl_s,
+                qjl_n,
+                q_proj,
+            )
+        )
+        strides = self._build_strides_attn_quant(
+            q,
+            radii_for_strides,
+            radii_scales,
+            angle_l1,
+            angle_deep,
+            v_codes,
+            v_scales,
+            qjl_s,
+            qjl_n,
+            q_signs,
+            mx.zeros(out_shape, dtype=mx.float16),
+        )
+        result = self._kernel_attn_quant_raw(
+            inputs=[
+                q,
+                polar_radii,
+                polar_radii_i8,
+                radii_scales,
+                angle_l1,
+                angle_deep,
+                v_codes,
+                v_scales,
+                qjl_s,
+                qjl_n,
+                q_signs,
+                mx.array(config.head_dim, dtype=mx.uint32),
+                mx.array(
+                    getattr(config, "split_dim", config.head_dim // 2), dtype=mx.uint32
+                ),
+                mx.array(config.block_size, dtype=mx.uint32),
+                mx.array(S, dtype=mx.uint32),
+                mx.array(config.qjl_proj_dim, dtype=mx.uint32),
+                mx.array(quant_v.group_size, dtype=mx.uint32),
+                mx.array(1 if use_qjl else 0, dtype=mx.uint32),
+                mx.array(float(block.metadata.get("l1_scale", 15.0)), dtype=mx.float16),
+                mx.array(
+                    float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16
+                ),
+                mx.array(config.attention_scale, dtype=mx.float16),
+                mx.array(int8_radii, dtype=mx.uint32),
+                mx.array(log_radii, dtype=mx.uint32),
+                mx.array(int(block.metadata.get("l1_bits", 4)), dtype=mx.uint32),
+                mx.array(int(block.metadata.get("deep_bits", 2)), dtype=mx.uint32),
+                strides,
+                mx.array(actual_seq_len, dtype=mx.uint32),
+                mx.array(num_queries_per_kv, dtype=mx.uint32),
+            ],
+            output_shapes=[out_shape, max_shape, exp_shape],
+            output_dtypes=[mx.float32, mx.float32, mx.float32],
+            grid=self._compute_grid(B, q.shape[1], 1),
+            threadgroup=(self._tg_x, 1, 1),
+        )
+        weighted_sum = result[0]
+        max_score = result[1]
+        exp_sum = result[2]
+        trace = {
+            "kernel_name": "tqpolar_online_attention_quant_v_raw",
+            "metal_used": True,
+            "fallback_used": False,
+            "qjl_used": use_qjl,
+            "quant_v_used": True,
+            "actual_seq_len": actual_seq_len,
+            "num_queries_per_kv": num_queries_per_kv,
+        }
+        return weighted_sum, max_score, exp_sum, trace
 
     def execute_online_attention_quant_v_dense_tail(
         self,
