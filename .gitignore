@@ -37,6 +37,7 @@ env/
 artifacts/
 .pytest_cache/
 .mypy_cache/
+benchmarks/outputs/
 
 # OS
 .DS_Store
