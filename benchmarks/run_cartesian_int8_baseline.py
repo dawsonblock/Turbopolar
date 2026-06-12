@@ -62,21 +62,25 @@ def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> 
     k_prefill = mx.random.normal((B, H_kv, length, D), dtype=mx.float16)
     v_prefill = mx.random.normal((B, H_kv, length, D), dtype=mx.float16)
 
-    # TurboPolar
+    # Shared random decode token and query for a fair comparison.
+    k_decode = mx.random.normal((B, H_kv, 1, D), dtype=mx.float16)
+    v_decode = mx.random.normal((B, H_kv, 1, D), dtype=mx.float16)
+    q = mx.random.normal((B, H_q, 1, D), dtype=mx.float16)
+
+    # TurboPolar: prefill + decode via the public API.
     turbo = TurboPolarKVCacheRuntime(config)
     turbo.append_many(k_prefill, v_prefill)
-    q_turbo = mx.random.normal((B, H_q, 1, D), dtype=mx.float16)
     from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
     fast_cache = TurboPolarFastCache(config)
     fast_cache.runtime = turbo
-    turbo_out = fast_cache.decode_attention(q_turbo, k_prefill[:, :, -1:, :], v_prefill[:, :, -1:, :], scale)
+    turbo_out = fast_cache.decode_attention(q, k_decode, v_decode, scale)
 
-    # Cartesian
+    # Cartesian: prefill + same decode token, then dense attention with same query.
     cartesian = PagedCartesianInt8KVCache(block_size=config.block_size)
     cartesian.append(k_prefill, v_prefill)
+    cartesian.append(k_decode, v_decode)
     k_cart, v_cart = cartesian.get_history()
-    q_cart = mx.random.normal((B, H_q, 1, D), dtype=mx.float16)
-    cartesian_out = _dense_attention(q_cart, k_cart, v_cart, scale)
+    cartesian_out = _dense_attention(q, k_cart, v_cart, scale)
 
     mx.eval(turbo_out, cartesian_out)
     t = np.array(turbo_out.astype(mx.float32))
@@ -84,10 +88,10 @@ def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> 
     cosine = float(np.dot(t.flatten(), c.flatten()) / (np.linalg.norm(t) * np.linalg.norm(c) + 1e-12))
     mae = float(np.mean(np.abs(t - c)))
 
-    # Memory
+    # Memory: prefill only (decode token is negligible in comparison).
     turbo_stats = turbo.get_memory_stats()
     cartesian_bytes = cartesian.nbytes
-    dense_bytes = B * H_kv * length * D * 2 * 2  # fp16 K+V
+    dense_bytes = B * H_kv * (length + 1) * D * 2 * 2  # fp16 K+V including decode token
 
     return {
         "length": length,

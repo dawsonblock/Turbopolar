@@ -52,7 +52,7 @@ def main():
 
     mx.reset_peak_memory()
     runtime.append_many(k, v)
-    mx.eval(runtime.k_storage.block_count)
+    runtime._eval_state()
     peak = int(mx.get_peak_memory())
 
     stats = runtime.get_memory_stats()
