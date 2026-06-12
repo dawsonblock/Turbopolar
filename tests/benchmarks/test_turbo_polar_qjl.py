@@ -12,8 +12,13 @@ from rfsn_v11.quant.qjl.score_estimate import qjl_dot_estimate
 class TestTurboPolarQJL(unittest.TestCase):
     def setUp(self):
         self.config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=128,
-            num_q_heads=2, num_kv_heads=2, seed=42,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=128,
+            num_q_heads=2,
+            num_kv_heads=2,
+            seed=42,
         )
         self.polar_encoder = PolarQuantEncoder(self.config)
         self.polar_decoder = PolarQuantDecoder()
@@ -23,14 +28,20 @@ class TestTurboPolarQJL(unittest.TestCase):
         B, H, T, D = k_original.shape
         S = T // self.config.block_size
         k_blocked = k_original.reshape(B, H, S, self.config.block_size, D)
-        blocks = [self.polar_encoder.encode_block(k_blocked[:, :, s, :, :]) for s in range(S)]
+        blocks = [
+            self.polar_encoder.encode_block(k_blocked[:, :, s, :, :]) for s in range(S)
+        ]
         radii = mx.stack([b.radii for b in blocks], axis=2)
         angle_l1 = mx.stack([b.angle_codes_l1 for b in blocks], axis=2)
         angle_deep = mx.stack([b.angle_codes_deep for b in blocks], axis=2)
         return blocks[0].__class__(
-            radii=radii, angle_codes_l1=angle_l1, angle_codes_deep=angle_deep,
-            shape=(B, H, T, D), block_size=self.config.block_size, head_dim=D,
-            metadata=blocks[0].metadata
+            radii=radii,
+            angle_codes_l1=angle_l1,
+            angle_codes_deep=angle_deep,
+            shape=(B, H, T, D),
+            block_size=self.config.block_size,
+            head_dim=D,
+            metadata=blocks[0].metadata,
         )
 
     def _pack_q_signs(self, q_proj):
@@ -49,7 +60,9 @@ class TestTurboPolarQJL(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.polar_decoder.decode_block(unified)
         residual_E = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual_E.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual_E.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
         qjl_corr = qjl_dot_estimate(q, qjl_payload, q_packed)
@@ -60,7 +73,11 @@ class TestTurboPolarQJL(unittest.TestCase):
         dc = np.array(dense_corr).flatten()
         qc = np.array(qjl_corr).flatten()
         corr = np.dot(dc, qc) / (np.linalg.norm(dc) * np.linalg.norm(qc) + 1e-12)
-        self.assertGreater(corr, 0.0, "QJL correction is anti-correlated with dense residual dot product.")
+        self.assertGreater(
+            corr,
+            0.0,
+            "QJL correction is anti-correlated with dense residual dot product.",
+        )
 
     def test_qjl_calibrated_estimator_matches_cosine(self):
         """
@@ -69,7 +86,6 @@ class TestTurboPolarQJL(unittest.TestCase):
         the raw sign correlation.
         """
         D = self.config.head_dim
-        proj_dim = self.config.qjl_proj_dim
         rng = np.random.default_rng(self.config.seed)
         n_pairs = 200
 
@@ -107,11 +123,17 @@ class TestTurboPolarQJL(unittest.TestCase):
 
         linear_mse = np.mean((tc - le) ** 2)
         calibrated_mse = np.mean((tc - ce) ** 2)
-        self.assertLess(calibrated_mse, linear_mse,
-                        "Calibrated cosine estimator should be closer to true cosine than raw sign correlation.")
+        self.assertLess(
+            calibrated_mse,
+            linear_mse,
+            "Calibrated cosine estimator should be closer to true cosine than raw sign correlation.",
+        )
         # The calibrated estimator should be essentially unbiased on this synthetic data.
-        self.assertLess(np.abs(np.mean(ce - tc)), 0.05,
-                        "Calibrated estimator is biased on synthetic cosine targets.")
+        self.assertLess(
+            np.abs(np.mean(ce - tc)),
+            0.05,
+            "Calibrated estimator is biased on synthetic cosine targets.",
+        )
 
     def test_qjl_sign_packing_bitorder(self):
         """Sign packing and unpacking must round-trip with little-endian bit order."""

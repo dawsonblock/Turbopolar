@@ -14,10 +14,8 @@ Use ``--dry-run`` to synthesise evidence without a model (for CI smoke testing).
 
 import argparse
 import json
-import math
 import subprocess
 import sys
-import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -38,10 +36,8 @@ from rfsn_v11.promotion import (
     GitTreeState,
     KernelReport,
     MemoryReport,
-    PromotionDecision,
     PromotionEvidence,
     PromotionGate,
-    PromotionState,
     SpeedReport,
     TeacherForcedReport,
 )
@@ -51,7 +47,9 @@ from rfsn_v11.promotion.provenance import capture_provenance
 BENCHMARKS_DIR = project_root / "benchmarks"
 
 
-def _run(cmd: List[str], cwd: Path = project_root, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+def _run(
+    cmd: List[str], cwd: Path = project_root, timeout: Optional[int] = None
+) -> subprocess.CompletedProcess:
     print(f"  > {' '.join(cmd)}")
     return subprocess.run(
         cmd,
@@ -104,9 +102,7 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
     metal_passed: Set[str] = set()
     for testcase in testsuite.findall("testcase"):
         cls = testcase.get("classname", "")
-        failed = any(
-            child.tag in ("failure", "error") for child in testcase
-        )
+        failed = any(child.tag in ("failure", "error") for child in testcase)
         skipped_tc = any(child.tag == "skipped" for child in testcase)
         # Map class name to module prefix.
         parts = cls.split(".")
@@ -154,23 +150,31 @@ def _run_pytest(artifact_dir: Path) -> KernelReport:
     )
 
 
-def _run_benchmark(script: str, *args: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+def _run_benchmark(
+    script: str, *args: str, timeout: Optional[int] = None
+) -> Dict[str, Any]:
     cmd = [sys.executable, str(BENCHMARKS_DIR / script), *args]
     result = _run(cmd, timeout=timeout)
     if result.returncode != 0:
         print(result.stdout)
         print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"Benchmark {script} failed with exit code {result.returncode}")
+        raise RuntimeError(
+            f"Benchmark {script} failed with exit code {result.returncode}"
+        )
     return result
 
 
 def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     _run_benchmark(
         "run_dense_vs_turbopolar.py",
-        "--model", model,
-        "--output-dir", str(output_dir / "teacher_forced"),
-        "--max-tokens", "128",
-        "--num-decode", "32",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "teacher_forced"),
+        "--max-tokens",
+        "128",
+        "--num-decode",
+        "32",
         "--skip-decode-speed",
         timeout=1200,
     )
@@ -192,10 +196,18 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
 def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
     _run_benchmark(
         "run_fused_forced_decode.py",
-        "--model", model,
-        "--output-dir", str(output_dir / "fused_decode"),
-        "--contexts", "512", "2048", "4096", "8192", "16384",
-        "--forced-decode-tokens", "128",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "fused_decode"),
+        "--contexts",
+        "512",
+        "2048",
+        "4096",
+        "8192",
+        "16384",
+        "--forced-decode-tokens",
+        "128",
         timeout=1200,
     )
     report = _load_json(output_dir / "fused_decode" / "fused_decode.json")
@@ -218,11 +230,23 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
 def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     _run_benchmark(
         "run_speed_matrix.py",
-        "--model", model,
-        "--output-dir", str(output_dir / "speed_matrix"),
-        "--lengths", "64", "128", "256", "512", "1024", "2048", "4096", "8192",
-        "--num-decode", "64",
-        "--trials", "2",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "speed_matrix"),
+        "--lengths",
+        "64",
+        "128",
+        "256",
+        "512",
+        "1024",
+        "2048",
+        "4096",
+        "8192",
+        "--num-decode",
+        "64",
+        "--trials",
+        "2",
         timeout=1800,
     )
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
@@ -231,7 +255,11 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     speedups = [r.get("speedup") for r in records if r.get("speedup") is not None]
 
     def _ratios_at(min_len: int):
-        vals = [r["speedup"] for r in records if r["length"] >= min_len and r.get("speedup") is not None]
+        vals = [
+            r["speedup"]
+            for r in records
+            if r["length"] >= min_len and r.get("speedup") is not None
+        ]
         if not vals:
             return None, None, None
         return min(vals), max(vals), float(sorted(vals)[len(vals) // 2])
@@ -253,8 +281,17 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
 def _memory_report(output_dir: Path) -> MemoryReport:
     _run_benchmark(
         "run_memory_matrix.py",
-        "--lengths", "64", "128", "256", "512", "1024", "2048", "4096", "8192",
-        "--output-dir", str(output_dir / "memory_matrix"),
+        "--lengths",
+        "64",
+        "128",
+        "256",
+        "512",
+        "1024",
+        "2048",
+        "4096",
+        "8192",
+        "--output-dir",
+        str(output_dir / "memory_matrix"),
         timeout=600,
     )
     report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
@@ -264,24 +301,32 @@ def _memory_report(output_dir: Path) -> MemoryReport:
     long_records = [r for r in records if r["length"] >= 8192]
     long_record = long_records[-1] if long_records else (records[-1] if records else {})
 
-    hidden_dense = any(
-        r.get("hidden_dense_cache_detected", True) for r in records
-    )
+    hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
 
     return MemoryReport(
         contexts_evaluated=contexts,
         logical_kv_ratio=long_record.get("logical_kv_ratio"),
         persistent_storage_ratio=long_record.get("persistent_storage_ratio"),
-        peak_device_memory_ratio_at_8192_plus=long_record.get("peak_device_memory_ratio"),
+        peak_device_memory_ratio_at_8192_plus=long_record.get(
+            "peak_device_memory_ratio"
+        ),
         hidden_dense_cache_detected=hidden_dense,
     )
 
 
-def _baseline_comparison_report(model: str, output_dir: Path) -> BaselineComparisonReport:
+def _baseline_comparison_report(
+    model: str, output_dir: Path
+) -> BaselineComparisonReport:
     _run_benchmark(
         "run_cartesian_int8_baseline.py",
-        "--lengths", "64", "128", "256", "512", "1024",
-        "--output-dir", str(output_dir / "cartesian_baseline"),
+        "--lengths",
+        "64",
+        "128",
+        "256",
+        "512",
+        "1024",
+        "--output-dir",
+        str(output_dir / "cartesian_baseline"),
         timeout=1200,
     )
     report = _load_json(output_dir / "cartesian_baseline" / "report.json")
@@ -364,7 +409,9 @@ def _clean_dict(obj: Any) -> Any:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the full TurboPolar promotion suite")
+    parser = argparse.ArgumentParser(
+        description="Run the full TurboPolar promotion suite"
+    )
     parser.add_argument("--model", default=None, help="MLX model path or HF identifier")
     parser.add_argument(
         "--output-dir",
@@ -386,7 +433,10 @@ def main():
 
     # Immutable artifact directory: timestamp + short commit + config hash
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    commit = _run(["git", "rev-parse", "--short", "HEAD"], cwd=project_root).stdout.strip() or "unknown"
+    commit = (
+        _run(["git", "rev-parse", "--short", "HEAD"], cwd=project_root).stdout.strip()
+        or "unknown"
+    )
     config_hash = "dry-run" if args.dry_run else "TODO_config_hash"
     artifact_dir = args.output_dir / f"{timestamp}_{commit}_{config_hash}"
     artifact_dir.mkdir(parents=True, exist_ok=True)

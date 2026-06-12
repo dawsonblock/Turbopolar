@@ -3,12 +3,10 @@
 import unittest
 from pathlib import Path
 
-import mlx.core as mx
 import mlx_lm.models.llama as llama
 import numpy as np
 
 from benchmarks.prompt_fixtures import load_token_fixtures, normalize_prompts
-from benchmarks.report_schema import DecodeStepMetrics, ForcedDecodeFixtureResult
 from benchmarks.run_fused_forced_decode import (
     _aggregate_execution_stats,
     _compute_step_metrics,
@@ -90,6 +88,7 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         context_tokens = tokenizer.encode("hello world this is a test")
         continuation_tokens = tokenizer.encode(" forced continuation tokens ")
         from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+
         adapter = TurboPolarLlamaAdapter(
             TurboPolarConfig(
                 num_q_heads=4,
@@ -115,20 +114,26 @@ class TestRunFusedForcedDecode(unittest.TestCase):
             self.assertFalse(step.any_nan_or_inf)
 
     def test_normalize_text_prompts(self):
-        suite_path = Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"
+        suite_path = (
+            Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"
+        )
         normalized = normalize_prompts(_FakeTokenizer(), suite_path)
         self.assertIsInstance(normalized, list)
         self.assertTrue(all("tokens" in entry for entry in normalized))
 
     def test_load_token_fixtures_has_exact_lengths(self):
         fixtures_path = (
-            Path(__file__).resolve().parents[2] / "benchmarks" / "exact_token_fixtures.jsonl"
+            Path(__file__).resolve().parents[2]
+            / "benchmarks"
+            / "exact_token_fixtures.jsonl"
         )
         fixtures = load_token_fixtures(fixtures_path)
         self.assertTrue(len(fixtures) > 0)
         for fx in fixtures:
             self.assertEqual(len(fx["tokens"]), fx["length"])
-            self.assertIn(fx["category"], ("short", "boundary", "medium", "long", "stress"))
+            self.assertIn(
+                fx["category"], ("short", "boundary", "medium", "long", "stress")
+            )
 
 
 if __name__ == "__main__":

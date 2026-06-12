@@ -5,7 +5,10 @@ from typing import Any, Dict, List, Optional
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.attention import TurboPolarLlamaAttention
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
-from rfsn_v11.integrations.mlx_lm.support import validate_attention_module, validate_llama_model
+from rfsn_v11.integrations.mlx_lm.support import (
+    validate_attention_module,
+    validate_llama_model,
+)
 
 
 class TurboPolarLlamaAdapter:
@@ -74,7 +77,9 @@ class TurboPolarLlamaAdapter:
         original_attentions: Dict[int, Any] = {}
         try:
             for i, layer in enumerate(layers):
-                attention = getattr(layer, "attention", getattr(layer, "self_attn", None))
+                attention = getattr(
+                    layer, "attention", getattr(layer, "self_attn", None)
+                )
                 if attention is None:
                     raise ValueError(f"Layer {i}: no attention/self_attn attribute.")
                 validate_attention_module(attention, i)
@@ -109,7 +114,11 @@ class TurboPolarLlamaAdapter:
             self._installed = False
             return
 
-        layers = self._model.layers if hasattr(self._model, "layers") else self._model.model.layers
+        layers = (
+            self._model.layers
+            if hasattr(self._model, "layers")
+            else self._model.model.layers
+        )
         for i, orig in self._original_attentions.items():
             layer = layers[i]
             if hasattr(layer, "attention"):

@@ -22,6 +22,7 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
 def _dense_peak_bytes(B: int, H: int, T: int, D: int) -> int:
     import mlx.core as mx
+
     mx.reset_peak_memory()
     k = mx.zeros((B, H, T, D), dtype=mx.float16)
     v = mx.zeros((B, H, T, D), dtype=mx.float16)
@@ -29,22 +30,26 @@ def _dense_peak_bytes(B: int, H: int, T: int, D: int) -> int:
     return int(mx.get_peak_memory())
 
 
-def _measure_length(length: int, config: TurboPolarConfig, seed: int, worker: Path) -> Dict[str, Any]:
-    payload = json.dumps({
-        "length": length,
-        "seed": seed,
-        "config": {
-            "num_q_heads": config.num_q_heads,
-            "num_kv_heads": config.num_kv_heads,
-            "head_dim": config.head_dim,
-            "block_size": config.block_size,
-            "storage_mode": config.storage_mode,
-            "use_int8_radii": config.use_int8_radii,
-            "k_angle_bits_level1": config.k_angle_bits_level1,
-            "k_angle_bits_deep": config.k_angle_bits_deep,
-            "split_dim": config.split_dim,
-        },
-    })
+def _measure_length(
+    length: int, config: TurboPolarConfig, seed: int, worker: Path
+) -> Dict[str, Any]:
+    payload = json.dumps(
+        {
+            "length": length,
+            "seed": seed,
+            "config": {
+                "num_q_heads": config.num_q_heads,
+                "num_kv_heads": config.num_kv_heads,
+                "head_dim": config.head_dim,
+                "block_size": config.block_size,
+                "storage_mode": config.storage_mode,
+                "use_int8_radii": config.use_int8_radii,
+                "k_angle_bits_level1": config.k_angle_bits_level1,
+                "k_angle_bits_deep": config.k_angle_bits_deep,
+                "split_dim": config.split_dim,
+            },
+        }
+    )
     result = subprocess.run(
         [sys.executable, str(worker)],
         input=payload,
@@ -53,9 +58,7 @@ def _measure_length(length: int, config: TurboPolarConfig, seed: int, worker: Pa
         timeout=300,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"memory_worker failed for length={length}: {result.stderr}"
-        )
+        raise RuntimeError(f"memory_worker failed for length={length}: {result.stderr}")
     turbo = json.loads(result.stdout)
 
     B, H, D = 1, config.num_kv_heads, config.head_dim
@@ -64,7 +67,8 @@ def _measure_length(length: int, config: TurboPolarConfig, seed: int, worker: Pa
     turbo["dense_peak_bytes"] = dense_peak
     turbo["peak_device_memory_ratio"] = (
         dense_peak / turbo["peak_device_memory_bytes"]
-        if turbo["peak_device_memory_bytes"] > 0 else 0.0
+        if turbo["peak_device_memory_bytes"] > 0
+        else 0.0
     )
     return turbo
 

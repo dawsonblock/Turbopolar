@@ -12,8 +12,13 @@ from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 class TestTurboPolarKernelQK(unittest.TestCase):
     def setUp(self):
         self.config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-            num_q_heads=4, num_kv_heads=4, seed=42,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
         )
         self.encoder = PolarQuantEncoder(self.config)
         self.decoder = PolarQuantDecoder()
@@ -31,7 +36,9 @@ class TestTurboPolarKernelQK(unittest.TestCase):
             radii=mx.stack([b.radii for b in blocks], axis=2),
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
-            shape=(B, H, T, D), block_size=self.config.block_size, head_dim=D,
+            shape=(B, H, T, D),
+            block_size=self.config.block_size,
+            head_dim=D,
             metadata=blocks[0].metadata,
         )
 
@@ -42,7 +49,9 @@ class TestTurboPolarKernelQK(unittest.TestCase):
         q = mx.random.normal(shape=[B, H, D])
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
-        ref_scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+        ref_scores = (
+            mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+        )
         gpu_scores = self.bridge.execute_fused_qk(q, unified, self.config)
         mx.eval(ref_scores, gpu_scores)
         ref_np = np.array(ref_scores)
@@ -65,22 +74,32 @@ class TestTurboPolarKernelQK(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
         residual_E = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual_E.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual_E.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_signs = q_proj >= 0
         reshaped = q_signs.reshape(B, H, self.config.qjl_proj_dim // 8, 8)
         powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
         q_packed = mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
-        gpu_scores = self.bridge.execute_fused_qk_qjl(q, unified, qjl_payload, q_packed, self.config)
+        gpu_scores = self.bridge.execute_fused_qk_qjl(
+            q, unified, qjl_payload, q_packed, self.config
+        )
         mx.eval(gpu_scores)
         self.assertFalse(np.isnan(np.array(gpu_scores)).any())
 
     def test_high_quality_config_fused_qk(self):
         """Metal path supports int8 log-radii + 8-bit deep angles + split_dim=0."""
         config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, seed=42,
-            use_int8_radii=True, k_angle_bits_deep=8,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=0,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
+            use_int8_radii=True,
+            k_angle_bits_deep=8,
         )
         encoder = PolarQuantEncoder(config)
         decoder = PolarQuantDecoder()
@@ -96,11 +115,15 @@ class TestTurboPolarKernelQK(unittest.TestCase):
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
             radii_scales=mx.stack([b.radii_scales for b in blocks], axis=2),
-            shape=(B, H, S * L, D), block_size=L, head_dim=D,
+            shape=(B, H, S * L, D),
+            block_size=L,
+            head_dim=D,
             metadata=blocks[0].metadata,
         )
         k_recon = decoder.decode_block(unified)
-        ref_scores = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * config.attention_scale
+        ref_scores = (
+            mx.sum(q[:, :, None, :] * k_recon, axis=-1) * config.attention_scale
+        )
         gpu_scores = bridge.execute_fused_qk(q, unified, config)
         mx.eval(ref_scores, gpu_scores)
         ref_np = np.array(ref_scores)
@@ -116,8 +139,13 @@ class TestTurboPolarKernelQK(unittest.TestCase):
     def test_gqa_fused_qk(self):
         """Test GQA: 4 query heads, 2 KV heads."""
         config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-            num_q_heads=4, num_kv_heads=2, seed=42,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=64,
+            num_q_heads=4,
+            num_kv_heads=2,
+            seed=42,
         )
         encoder = PolarQuantEncoder(config)
         B, H_q, H_kv, S, L, D = 1, 4, 2, 2, 64, 128
@@ -131,7 +159,9 @@ class TestTurboPolarKernelQK(unittest.TestCase):
             radii=mx.stack([b.radii for b in blocks], axis=2),
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
-            shape=(B, H_kv, S * L, D), block_size=L, head_dim=D,
+            shape=(B, H_kv, S * L, D),
+            block_size=L,
+            head_dim=D,
             metadata=blocks[0].metadata,
         )
         # Bridge should handle GQA via num_queries_per_kv

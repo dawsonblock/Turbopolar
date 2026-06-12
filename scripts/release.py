@@ -32,7 +32,9 @@ def _bump_version(current: str, part: str) -> str:
     try:
         from packaging.version import Version
     except ImportError:
-        raise RuntimeError("packaging is required for version parsing; install it with: pip install packaging")
+        raise RuntimeError(
+            "packaging is required for version parsing; install it with: pip install packaging"
+        )
     v = Version(current)
     major, minor, micro = v.major, v.minor, v.micro
     if part == "major":
@@ -53,7 +55,7 @@ def _set_version(version: str) -> None:
     text = PYPROJECT.read_text()
     new_text = re.sub(
         r'^(version\s*=\s*")([^"]+)(")',
-        lambda m: f'{m.group(1)}{version}{m.group(3)}',
+        lambda m: f"{m.group(1)}{version}{m.group(3)}",
         text,
         flags=re.MULTILINE,
     )
@@ -80,9 +82,7 @@ def main():
         default=None,
         help="Bump the version part before building",
     )
-    parser.add_argument(
-        "--skip-tests", action="store_true", help="Skip the test suite"
-    )
+    parser.add_argument("--skip-tests", action="store_true", help="Skip the test suite")
     parser.add_argument(
         "--skip-build", action="store_true", help="Skip building sdist/wheel"
     )

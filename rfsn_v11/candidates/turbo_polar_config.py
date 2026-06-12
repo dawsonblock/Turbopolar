@@ -60,6 +60,7 @@ class TurboPolarConfig:
 
     Anything outside this narrow scope is unsupported and raises an error.
     """
+
     k_angle_bits_level1: int = 8
     k_angle_bits_deep: int = 8
     use_int8_radii: bool = True
@@ -87,15 +88,25 @@ class TurboPolarConfig:
             raise ValueError("num_q_heads must be divisible by num_kv_heads")
 
         if self.head_dim != 128:
-            raise ValueError("TurboPolar fused MLX path currently requires head_dim=128")
+            raise ValueError(
+                "TurboPolar fused MLX path currently requires head_dim=128"
+            )
         if self.block_size != 64:
-            raise ValueError("TurboPolar fused MLX path currently requires block_size=64")
+            raise ValueError(
+                "TurboPolar fused MLX path currently requires block_size=64"
+            )
         if self.use_qjl:
-            raise NotImplementedError("QJL is disabled until fused real-model validation passes")
+            raise NotImplementedError(
+                "QJL is disabled until fused real-model validation passes"
+            )
         if self.storage_mode != "kv_quant":
-            raise ValueError("TurboPolar only supports storage_mode='kv_quant' in this release")
+            raise ValueError(
+                "TurboPolar only supports storage_mode='kv_quant' in this release"
+            )
         if self.v_bits != 8:
-            raise ValueError("v_bits must be 8 (4-bit V quantization is not yet implemented)")
+            raise ValueError(
+                "v_bits must be 8 (4-bit V quantization is not yet implemented)"
+            )
 
         if self.k_angle_bits_level1 not in (4, 8):
             raise ValueError("k_angle_bits_level1 must be 4 or 8")
@@ -107,7 +118,11 @@ class TurboPolarConfig:
         if self.qjl_proj_dim % 8 != 0:
             raise ValueError("qjl_proj_dim must be divisible by 8 for bit packing")
 
-        if self.split_dim < 0 or self.split_dim > self.head_dim or self.split_dim % 2 != 0:
+        if (
+            self.split_dim < 0
+            or self.split_dim > self.head_dim
+            or self.split_dim % 2 != 0
+        ):
             raise ValueError("split_dim must be even and within [0, head_dim]")
 
         if self.finite_audit_interval < 0:

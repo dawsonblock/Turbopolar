@@ -89,17 +89,29 @@ class TestModelDecodeReplay(unittest.TestCase):
                 dense_last = np.array(dense_logits[:, -1, :].astype(mx.float32))
                 turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
 
-                self.assertFalse(np.isnan(dense_last).any(), f"NaN in dense logits at position {i}")
-                self.assertFalse(np.isnan(turbo_last).any(), f"NaN in turbo logits at position {i}")
-                self.assertFalse(np.isinf(dense_last).any(), f"Inf in dense logits at position {i}")
-                self.assertFalse(np.isinf(turbo_last).any(), f"Inf in turbo logits at position {i}")
+                self.assertFalse(
+                    np.isnan(dense_last).any(), f"NaN in dense logits at position {i}"
+                )
+                self.assertFalse(
+                    np.isnan(turbo_last).any(), f"NaN in turbo logits at position {i}"
+                )
+                self.assertFalse(
+                    np.isinf(dense_last).any(), f"Inf in dense logits at position {i}"
+                )
+                self.assertFalse(
+                    np.isinf(turbo_last).any(), f"Inf in turbo logits at position {i}"
+                )
         finally:
             adapter.uninstall()
 
         # Verify fused kernel was actually exercised.
-        total_online = sum(c.execution_stats().online_attention_calls for c in turbo_cache)
+        total_online = sum(
+            c.execution_stats().online_attention_calls for c in turbo_cache
+        )
         total_fallback = sum(c.execution_stats().fallback_calls for c in turbo_cache)
-        self.assertGreater(total_online, 0, "Fused decode did not exercise online_attention kernel")
+        self.assertGreater(
+            total_online, 0, "Fused decode did not exercise online_attention kernel"
+        )
         self.assertEqual(total_fallback, 0, "Fused decode produced fallback calls")
 
         # At least 16 fused decode positions.

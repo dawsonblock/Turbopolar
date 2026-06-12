@@ -18,7 +18,6 @@ from rfsn_v11.generation.paged_storage import (
     validate_quant_v_page_shape,
 )
 from rfsn_v11.quant.polar.encoder import PolarQuantEncoder
-from rfsn_v11.quant.polar.payload import PolarKeyBlock
 from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
@@ -58,7 +57,9 @@ def _make_block_storage(num_blocks: int):
     return polar_blocks, quant_v_blocks
 
 
-@pytest.mark.parametrize("block_count", [0, 1, 15, 16, 17, 31, 32, 33, 127, 128, 129, 255, 256])
+@pytest.mark.parametrize(
+    "block_count", [0, 1, 15, 16, 17, 31, 32, 33, 127, 128, 129, 255, 256]
+)
 def test_polar_page_rollover(block_count):
     """PolarK pages must maintain identical layout across rollovers."""
     polar_blocks, _ = _make_block_storage(max(block_count, 1))
@@ -74,7 +75,9 @@ def test_polar_page_rollover(block_count):
         storage.append(pb)
 
     expected_pages = (block_count + 15) // 16
-    assert storage.page_count == expected_pages, f"page_count mismatch for {block_count} blocks"
+    assert (
+        storage.page_count == expected_pages
+    ), f"page_count mismatch for {block_count} blocks"
 
     # Verify valid blocks per page
     total_valid = 0
@@ -83,14 +86,13 @@ def test_polar_page_rollover(block_count):
             assert page.valid_blocks == 16, f"Page {page_idx} should be full"
         else:
             expected_last = block_count % 16 if block_count % 16 != 0 else 16
-            assert page.valid_blocks == expected_last, f"Last page valid_blocks mismatch"
+            assert page.valid_blocks == expected_last, "Last page valid_blocks mismatch"
         total_valid += page.valid_blocks
 
     assert total_valid == block_count
     assert storage.total_valid_blocks == block_count
 
     # Every page must have identical rank (5D) and same layout
-    first_page = storage.pages[0]
     layout = storage.layout
     assert layout is not None
     for page in storage.pages:
@@ -109,7 +111,7 @@ def test_polar_page_rollover(block_count):
     if block_count >= 16:
         retrieved_indices.append(15)  # last block of first page
     if block_count > 16:
-        retrieved_indices.append(16)    # first block of second page
+        retrieved_indices.append(16)  # first block of second page
         retrieved_indices.append(block_count - 1)
 
     for idx in retrieved_indices:
@@ -119,11 +121,17 @@ def test_polar_page_rollover(block_count):
         original = blocks_to_append[idx]
         # Retrieved blocks are 5-D [B,H,1,L,...]; originals are 4-D [B,H,L,...]
         assert mx.allclose(mx.squeeze(retrieved.radii, axis=2), original.radii)
-        assert mx.allclose(mx.squeeze(retrieved.angle_codes_l1, axis=2), original.angle_codes_l1)
-        assert mx.allclose(mx.squeeze(retrieved.angle_codes_deep, axis=2), original.angle_codes_deep)
+        assert mx.allclose(
+            mx.squeeze(retrieved.angle_codes_l1, axis=2), original.angle_codes_l1
+        )
+        assert mx.allclose(
+            mx.squeeze(retrieved.angle_codes_deep, axis=2), original.angle_codes_deep
+        )
 
 
-@pytest.mark.parametrize("block_count", [0, 1, 15, 16, 17, 31, 32, 33, 127, 128, 129, 255, 256])
+@pytest.mark.parametrize(
+    "block_count", [0, 1, 15, 16, 17, 31, 32, 33, 127, 128, 129, 255, 256]
+)
 def test_quant_v_page_rollover(block_count):
     """QuantV pages must maintain identical layout across rollovers."""
     _, quant_v_blocks = _make_block_storage(max(block_count, 1))
@@ -153,7 +161,6 @@ def test_quant_v_page_rollover(block_count):
     assert total_valid == block_count
     assert storage.total_valid_blocks == block_count
 
-    first_page = storage.pages[0]
     layout = storage.layout
     assert layout is not None
     for page in storage.pages:
@@ -168,7 +175,7 @@ def test_quant_v_page_rollover(block_count):
     if block_count >= 16:
         retrieved_indices.append(15)  # last block of first page
     if block_count > 16:
-        retrieved_indices.append(16)    # first block of second page
+        retrieved_indices.append(16)  # first block of second page
         retrieved_indices.append(block_count - 1)
 
     for idx in retrieved_indices:

@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import mlx.core as mx
 
@@ -17,7 +17,9 @@ from rfsn_v11.promotion.schema import BenchmarkProvenance, GitTreeState
 
 def _run(cmd: list[str]) -> str:
     try:
-        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL, text=True
+        ).strip()
     except Exception:
         return ""
 
@@ -37,7 +39,9 @@ def _dir_sha256(directory: Path, glob: str = "*.metal") -> str:
 
 
 def _hash_jsonable(obj: Any) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, default=str).encode()
+    ).hexdigest()
 
 
 def _macos_version() -> str:
@@ -54,7 +58,7 @@ def _chip_model() -> str:
 def _system_memory_gb() -> float:
     try:
         mem_bytes = int(_run(["sysctl", "-n", "hw.memsize"]) or "0")
-        return mem_bytes / (1024 ** 3)
+        return mem_bytes / (1024**3)
     except Exception:
         return 0.0
 
@@ -90,6 +94,7 @@ def capture_provenance(
     mlx_lm_version = ""
     try:
         import mlx_lm
+
         mlx_lm_version = mlx_lm.__version__
     except Exception:
         pass

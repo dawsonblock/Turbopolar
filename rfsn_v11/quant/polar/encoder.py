@@ -16,8 +16,8 @@ class PolarQuantEncoder:
         self.split_dim = getattr(config, "split_dim", config.head_dim // 2)
         self.k_angle_bits_level1 = config.k_angle_bits_level1
         self.k_angle_bits_deep = config.k_angle_bits_deep
-        self.l1_levels = 2 ** self.k_angle_bits_level1
-        self.deep_levels = 2 ** self.k_angle_bits_deep
+        self.l1_levels = 2**self.k_angle_bits_level1
+        self.deep_levels = 2**self.k_angle_bits_deep
         self.l1_scale = float(self.l1_levels - 1)
         self.deep_scale = float(self.deep_levels - 1)
 
@@ -36,9 +36,13 @@ class PolarQuantEncoder:
             # relative error small across the large dynamic range seen in real keys.
             log_r = mx.log(mx.maximum(radii_fp, 1e-6)).astype(mx.float32)
             log_scale = mx.max(mx.abs(log_r), axis=(2, 3), keepdims=True)
-            log_scale = mx.where(log_scale == 0, mx.array(1e-6, dtype=mx.float32), log_scale)
+            log_scale = mx.where(
+                log_scale == 0, mx.array(1e-6, dtype=mx.float32), log_scale
+            )
             log_scale = (log_scale / 127.0).astype(mx.float16)
-            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(mx.int8)
+            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(
+                mx.int8
+            )
             radii_scale = log_scale
         else:
             radii_codes = radii_fp
@@ -48,11 +52,17 @@ class PolarQuantEncoder:
         norm_angles = shifted / (2.0 * np.pi)
         norm_angles = mx.clip(norm_angles, 0.0, 1.0)
         epsilon = 1e-6
-        norm_angles = mx.where(norm_angles > (1.0 - epsilon), mx.array(0.0), norm_angles)
+        norm_angles = mx.where(
+            norm_angles > (1.0 - epsilon), mx.array(0.0), norm_angles
+        )
         norm_l1 = norm_angles[..., :split_half]
         norm_deep = norm_angles[..., split_half:]
-        codes_l1 = mx.clip(mx.round(norm_l1 * self.l1_scale), 0, self.l1_levels - 1).astype(mx.uint8)
-        codes_deep = mx.clip(mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1).astype(mx.uint8)
+        codes_l1 = mx.clip(
+            mx.round(norm_l1 * self.l1_scale), 0, self.l1_levels - 1
+        ).astype(mx.uint8)
+        codes_deep = mx.clip(
+            mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1
+        ).astype(mx.uint8)
         # BIT-PACK level1 when 4-bit; keep 8-bit codes as-is.
         if self.k_angle_bits_level1 == 4:
             codes_l1_packed = self._pack_4bit(codes_l1)
@@ -61,7 +71,9 @@ class PolarQuantEncoder:
             codes_l1_packed = codes_l1
             l1_packed = False
         else:
-            raise ValueError(f"unsupported k_angle_bits_level1: {self.k_angle_bits_level1}")
+            raise ValueError(
+                f"unsupported k_angle_bits_level1: {self.k_angle_bits_level1}"
+            )
         # BIT-PACK deep codes using configured bit width
         if self.k_angle_bits_deep == 8:
             codes_deep_packed = codes_deep
@@ -118,9 +130,13 @@ class PolarQuantEncoder:
         if getattr(self.config, "use_int8_radii", False):
             log_r = mx.log(mx.maximum(radii_fp, 1e-6)).astype(mx.float32)
             log_scale = mx.max(mx.abs(log_r), axis=(3, 4), keepdims=True)
-            log_scale = mx.where(log_scale == 0, mx.array(1e-6, dtype=mx.float32), log_scale)
+            log_scale = mx.where(
+                log_scale == 0, mx.array(1e-6, dtype=mx.float32), log_scale
+            )
             log_scale = (log_scale / 127.0).astype(mx.float16)
-            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(mx.int8)
+            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(
+                mx.int8
+            )
             radii_scale = log_scale
         else:
             radii_codes = radii_fp
@@ -130,11 +146,17 @@ class PolarQuantEncoder:
         norm_angles = shifted / (2.0 * np.pi)
         norm_angles = mx.clip(norm_angles, 0.0, 1.0)
         epsilon = 1e-6
-        norm_angles = mx.where(norm_angles > (1.0 - epsilon), mx.array(0.0), norm_angles)
+        norm_angles = mx.where(
+            norm_angles > (1.0 - epsilon), mx.array(0.0), norm_angles
+        )
         norm_l1 = norm_angles[..., :split_half]
         norm_deep = norm_angles[..., split_half:]
-        codes_l1 = mx.clip(mx.round(norm_l1 * self.l1_scale), 0, self.l1_levels - 1).astype(mx.uint8)
-        codes_deep = mx.clip(mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1).astype(mx.uint8)
+        codes_l1 = mx.clip(
+            mx.round(norm_l1 * self.l1_scale), 0, self.l1_levels - 1
+        ).astype(mx.uint8)
+        codes_deep = mx.clip(
+            mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1
+        ).astype(mx.uint8)
         if self.k_angle_bits_level1 == 4:
             codes_l1_packed = self._pack_4bit(codes_l1)
             l1_packed = True
@@ -142,7 +164,9 @@ class PolarQuantEncoder:
             codes_l1_packed = codes_l1
             l1_packed = False
         else:
-            raise ValueError(f"unsupported k_angle_bits_level1: {self.k_angle_bits_level1}")
+            raise ValueError(
+                f"unsupported k_angle_bits_level1: {self.k_angle_bits_level1}"
+            )
         if self.k_angle_bits_deep == 8:
             codes_deep_packed = codes_deep
             deep_packed = False

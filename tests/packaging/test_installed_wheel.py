@@ -4,8 +4,6 @@ These tests pass in both editable and wheel installs.  CI runs them after
 ``pip install dist/*.whl`` in a fresh venv.
 """
 
-import sys
-
 import mlx.core as mx
 import pytest
 
@@ -36,7 +34,9 @@ class TestInstalledWheel:
         from importlib.resources import files
 
         kernel_dir = files("rfsn_v11.kernels.turbo_polar")
-        metal_files = [p.name for p in kernel_dir.iterdir() if p.name.endswith(".metal")]
+        metal_files = [
+            p.name for p in kernel_dir.iterdir() if p.name.endswith(".metal")
+        ]
         assert "tqpolar_fused_qk.metal" in metal_files
         assert "tqpolar_online_attention.metal" in metal_files
 
@@ -46,7 +46,9 @@ class TestInstalledWheel:
         assert cfg.block_size == 64
 
     def test_construct_cache(self):
-        cfg = TurboPolarConfig(num_q_heads=4, num_kv_heads=2, head_dim=128, block_size=64)
+        cfg = TurboPolarConfig(
+            num_q_heads=4, num_kv_heads=2, head_dim=128, block_size=64
+        )
         cache = TurboPolarFastCache(cfg)
         k = mx.random.normal((1, 2, 1, 128)).astype(mx.float16)
         v = mx.random.normal((1, 2, 1, 128)).astype(mx.float16)

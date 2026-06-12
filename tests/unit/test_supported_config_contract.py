@@ -59,21 +59,15 @@ class TestSupportedConfigContract(unittest.TestCase):
 
     def test_gqa_ratio_must_divide(self):
         with self.assertRaisesRegex(ValueError, "num_q_heads must be divisible"):
-            TurboPolarConfig(
-                head_dim=128, block_size=64, num_q_heads=7, num_kv_heads=4
-            )
+            TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=7, num_kv_heads=4)
 
     def test_zero_q_heads_rejected(self):
         with self.assertRaisesRegex(ValueError, "num_q_heads must be positive"):
-            TurboPolarConfig(
-                head_dim=128, block_size=64, num_q_heads=0, num_kv_heads=4
-            )
+            TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=0, num_kv_heads=4)
 
     def test_zero_kv_heads_rejected(self):
         with self.assertRaisesRegex(ValueError, "num_kv_heads must be positive"):
-            TurboPolarConfig(
-                head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=0
-            )
+            TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=0)
 
     def test_non_positive_attention_scale_rejected(self):
         with self.assertRaisesRegex(ValueError, "attention_scale must be positive"):
@@ -104,7 +98,9 @@ class TestSupportedConfigContract(unittest.TestCase):
             )
 
     def test_finite_audit_interval_non_negative(self):
-        with self.assertRaisesRegex(ValueError, "finite_audit_interval must be non-negative"):
+        with self.assertRaisesRegex(
+            ValueError, "finite_audit_interval must be non-negative"
+        ):
             TurboPolarConfig(
                 head_dim=128,
                 block_size=64,

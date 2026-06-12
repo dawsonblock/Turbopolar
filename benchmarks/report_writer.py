@@ -69,13 +69,15 @@ def _markdown_for_benchmark_report(report: BenchmarkReport) -> str:
         else:
             lines.append(f"| {k} | {v} |")
 
-    lines.extend([
-        "",
-        "## Per-Prompt Results",
-        "",
-        "| Prompt tokens | Cosine | Top-5 | Top-10 | PPL Δ | Compression |",
-        "|---------------|--------|-------|--------|-------|-------------|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Per-Prompt Results",
+            "",
+            "| Prompt tokens | Cosine | Top-5 | Top-10 | PPL Δ | Compression |",
+            "|---------------|--------|-------|--------|-------|-------------|",
+        ]
+    )
     for p in report.prompts:
         lines.append(
             f"| {p.prompt_tokens} | {p.logit_cosine:.4f} | {p.top5_overlap:.4f} | "
@@ -134,9 +136,15 @@ def _markdown_for_forced_decode_report(report: ForcedDecodeReport) -> str:
         "|---------|---------|--------------|-------------|------------|-------------|",
     ]
     for f in report.fixtures:
-        mean_cos = sum(s.logit_cosine for s in f.steps) / len(f.steps) if f.steps else 0.0
+        mean_cos = (
+            sum(s.logit_cosine for s in f.steps) / len(f.steps) if f.steps else 0.0
+        )
         min_cos = min((s.logit_cosine for s in f.steps), default=0.0)
-        top1 = sum(1 for s in f.steps if s.top1_agreement) / len(f.steps) if f.steps else 0.0
+        top1 = (
+            sum(1 for s in f.steps if s.top1_agreement) / len(f.steps)
+            if f.steps
+            else 0.0
+        )
         lines.append(
             f"| {f.fixture_id} | {f.context_length} | {f.continuation_length} | "
             f"{mean_cos:.4f} | {min_cos:.4f} | {top1:.4f} |"

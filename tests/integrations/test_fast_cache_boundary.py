@@ -52,7 +52,9 @@ class TestFastCacheBoundary(unittest.TestCase):
             v_new = mx.random.normal((self.B, self.H_kv, 1, self.D)).astype(mx.float16)
             k_tokens.append(k_new)
             v_tokens.append(v_new)
-            out = self.cache.decode_attention(q, k_new, v_new, self.config.attention_scale)
+            out = self.cache.decode_attention(
+                q, k_new, v_new, self.config.attention_scale
+            )
             self.assertEqual(out.shape, (self.B, self.H_q, self.D))
             mx.eval(out)
             self.assertFalse(np.isnan(np.array(out)).any())

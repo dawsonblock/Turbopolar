@@ -20,8 +20,13 @@ class TestQJLScaledOnlineAttention(unittest.TestCase):
         if not mx.metal.is_available():
             self.skipTest("Metal not available.")
         self.config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, seed=42,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=0,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
         )
         self.encoder = PolarQuantEncoder(self.config)
         self.decoder = PolarQuantDecoder()
@@ -38,7 +43,9 @@ class TestQJLScaledOnlineAttention(unittest.TestCase):
             radii=mx.stack([b.radii for b in blocks], axis=2),
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
-            shape=(B, H, T, D), block_size=self.config.block_size, head_dim=D,
+            shape=(B, H, T, D),
+            block_size=self.config.block_size,
+            head_dim=D,
             metadata=blocks[0].metadata,
         )
 
@@ -58,18 +65,28 @@ class TestQJLScaledOnlineAttention(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
         residual = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
 
         contributions = []
         for scale in (1.0, 0.5, 0.25):
             cfg = TurboPolarConfig(
-                head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-                num_q_heads=4, num_kv_heads=4, seed=42, attention_scale=scale,
+                head_dim=128,
+                qjl_proj_dim=64,
+                block_size=64,
+                split_dim=0,
+                num_q_heads=4,
+                num_kv_heads=4,
+                seed=42,
+                attention_scale=scale,
             )
             scores_no_qjl = self.bridge.execute_fused_qk(q, unified, cfg)
-            scores_qjl = self.bridge.execute_fused_qk_qjl(q, unified, qjl_payload, q_packed, cfg)
+            scores_qjl = self.bridge.execute_fused_qk_qjl(
+                q, unified, qjl_payload, q_packed, cfg
+            )
             mx.eval(scores_no_qjl, scores_qjl)
             contrib = float(mx.mean(mx.abs(scores_qjl - scores_no_qjl)).item())
             contributions.append(contrib / scale)
@@ -89,21 +106,43 @@ class TestQJLScaledOnlineAttention(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
         residual = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
 
         cfg = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, seed=42, attention_scale=0.25,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=0,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
+            attention_scale=0.25,
         )
 
         metal_out, _ = self.bridge.execute_online_attention_quant_v(
-            q, unified, quant_v, qjl_payload, q_packed, cfg, actual_seq_len=S * L, use_qjl=True
+            q,
+            unified,
+            quant_v,
+            qjl_payload,
+            q_packed,
+            cfg,
+            actual_seq_len=S * L,
+            use_qjl=True,
         )
         cpu_out, _ = self.bridge._cpu_online_attention(
-            q, unified, self.v_quantizer.dequantize_block(quant_v).reshape(B, H, S * L, D),
-            qjl_payload, q_packed, cfg, actual_seq_len=S * L, use_qjl=True, quant_v_used=True
+            q,
+            unified,
+            self.v_quantizer.dequantize_block(quant_v).reshape(B, H, S * L, D),
+            qjl_payload,
+            q_packed,
+            cfg,
+            actual_seq_len=S * L,
+            use_qjl=True,
+            quant_v_used=True,
         )
         mx.eval(metal_out, cpu_out)
 

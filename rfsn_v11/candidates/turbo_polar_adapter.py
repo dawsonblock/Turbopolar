@@ -1,23 +1,23 @@
 import mlx.core as mx
-import numpy as np
 import json
 import hashlib
 from pathlib import Path
 from typing import Dict, Any, Tuple
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.candidates.turbo_polar_metrics import mean_token_kl, topk_set_overlap_np, calculate_logit_deltas
-from rfsn_v11.quant.polar.encoder import PolarQuantEncoder
+from rfsn_v11.candidates.turbo_polar_metrics import (
+    mean_token_kl,
+    topk_set_overlap_np,
+    calculate_logit_deltas,
+)
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
-from rfsn_v11.quant.polar.payload import PolarKeyBlock
-from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder, QJLPayload
-from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer, QuantizedVBlock
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
 
 class TurboPolarAdapter:
     """DEPRECATED. Raises RuntimeError on instantiation."""
+
     def __init__(self, config: TurboPolarConfig):
         raise RuntimeError(
             "TurboPolarAdapter is deprecated and structurally broken. "
@@ -29,12 +29,15 @@ class TurboPolarOfflineEvaluator:
     """
     Offline validation harness with GQA and bit-packed PolarQuant support.
     """
+
     def __init__(self, config: TurboPolarConfig):
         self.config = config
         self.metal_bridge = MetalKernelBridge()
         self.decoder = PolarQuantDecoder()
 
-    def run_qjl_ablation(self, q: mx.array, k_original: mx.array) -> Tuple[bool, float, float]:
+    def run_qjl_ablation(
+        self, q: mx.array, k_original: mx.array
+    ) -> Tuple[bool, float, float]:
         B, H, T, D = k_original.shape
         cache = TurboPolarKVCacheRuntime(self.config)
         cache.append(k_original, mx.zeros_like(k_original))
@@ -48,8 +51,12 @@ class TurboPolarOfflineEvaluator:
 
         k_recon = self.decoder.decode_block(block)[:, :, :actual_len, :]
 
-        scores_ref = mx.sum(q[:, :, None, :] * k_original, axis=-1) * self.config.attention_scale
-        scores_polar = mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+        scores_ref = (
+            mx.sum(q[:, :, None, :] * k_original, axis=-1) * self.config.attention_scale
+        )
+        scores_polar = (
+            mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+        )
         error_without = float(mx.max(mx.abs(scores_ref - scores_polar)))
         topk_overlap_without = topk_set_overlap_np(scores_ref, scores_polar, k=10)
 
@@ -69,8 +76,8 @@ class TurboPolarOfflineEvaluator:
         topk_overlap_with = topk_set_overlap_np(scores_ref, scores_corrected, k=10)
 
         use_qjl = (
-            error_with <= error_without * 0.90 and
-            topk_overlap_with >= topk_overlap_without
+            error_with <= error_without * 0.90
+            and topk_overlap_with >= topk_overlap_without
         )
         return use_qjl, error_without, error_with
 
@@ -79,7 +86,7 @@ class TurboPolarOfflineEvaluator:
         baseline_logits: mx.array,
         candidate_logits: mx.array,
         token_sequence: list[int],
-        output_dir: Path
+        output_dir: Path,
     ) -> Dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,18 +97,18 @@ class TurboPolarOfflineEvaluator:
 
         flat_base = baseline_logits.flatten()
         flat_cand = candidate_logits.flatten()
-        norm_b = mx.sqrt(mx.sum(flat_base ** 2))
-        norm_c = mx.sqrt(mx.sum(flat_cand ** 2))
+        norm_b = mx.sqrt(mx.sum(flat_base**2))
+        norm_c = mx.sqrt(mx.sum(flat_cand**2))
         logit_cosine = float(mx.sum(flat_base * flat_cand) / (norm_b * norm_c + 1e-12))
 
         passed = (
-            logit_cosine >= 0.999 and
-            kl_div <= 0.05 and
-            top5_overlap >= 0.90 and
-            top10_overlap >= 0.95 and
-            deltas["mean_abs_logit_delta"] <= 0.02 and
-            deltas["p99_abs_logit_delta"] <= 0.2 and
-            deltas["max_logit_delta"] <= 1.0
+            logit_cosine >= 0.999
+            and kl_div <= 0.05
+            and top5_overlap >= 0.90
+            and top10_overlap >= 0.95
+            and deltas["mean_abs_logit_delta"] <= 0.02
+            and deltas["p99_abs_logit_delta"] <= 0.2
+            and deltas["max_logit_delta"] <= 1.0
         )
 
         seq_bytes = json.dumps(token_sequence).encode("utf-8")
@@ -118,8 +125,8 @@ class TurboPolarOfflineEvaluator:
                 "kl_divergence": kl_div,
                 "top5_overlap": top5_overlap,
                 "top10_overlap": top10_overlap,
-                **deltas
-            }
+                **deltas,
+            },
         }
 
         with open(output_dir / "results.json", "w") as f:

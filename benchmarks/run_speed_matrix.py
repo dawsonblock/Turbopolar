@@ -15,7 +15,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import mlx.core as mx
 import mlx_lm
@@ -29,7 +29,6 @@ sys.path.insert(0, str(project_root))
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
 from benchmarks.prompt_fixtures import normalize_prompts
-from benchmarks.report_writer import write_json_report
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 
 
@@ -66,7 +65,9 @@ def _model_cache_config(model: Any) -> Tuple[int, int, int]:
     return int(n_heads), int(n_kv_heads), int(hidden_size // n_heads)
 
 
-def _make_turbo_config(num_q_heads: int, num_kv_heads: int, head_dim: int) -> TurboPolarConfig:
+def _make_turbo_config(
+    num_q_heads: int, num_kv_heads: int, head_dim: int
+) -> TurboPolarConfig:
     return TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
@@ -138,11 +139,16 @@ def benchmark_length(
 
     The ``turbo_first`` flag alternates which path is measured first.
     """
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
 
     methods = [
         ("dense", lambda: _make_dense_cache(num_layers)),
-        ("turbo", lambda: make_turbo_caches(num_layers, num_q_heads, num_kv_heads, head_dim)),
+        (
+            "turbo",
+            lambda: make_turbo_caches(num_layers, num_q_heads, num_kv_heads, head_dim),
+        ),
     ]
     if turbo_first:
         methods = list(reversed(methods))
@@ -167,7 +173,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Decode speed matrix: dense KV cache vs fused TurboPolar"
     )
-    parser.add_argument("--model", required=True, help="MLX model path or HF identifier")
+    parser.add_argument(
+        "--model", required=True, help="MLX model path or HF identifier"
+    )
     parser.add_argument(
         "--token-fixtures",
         type=Path,
@@ -202,7 +210,9 @@ def main():
     model, tokenizer = load(str(args.model))
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-    adapter = TurboPolarLlamaAdapter(_make_turbo_config(num_q_heads, num_kv_heads, head_dim))
+    adapter = TurboPolarLlamaAdapter(
+        _make_turbo_config(num_q_heads, num_kv_heads, head_dim)
+    )
 
     normalized = normalize_prompts(tokenizer, args.token_fixtures)
     if not normalized:
@@ -211,9 +221,7 @@ def main():
     max_length = max(args.lengths)
     if len(base_tokens) < max_length:
         # Cycle through the fixture tokens to reach the required length.
-        base_tokens = [
-            base_tokens[i % len(base_tokens)] for i in range(max_length)
-        ]
+        base_tokens = [base_tokens[i % len(base_tokens)] for i in range(max_length)]
 
     records = []
     print(f"Benchmarking lengths: {args.lengths}")
@@ -247,7 +255,8 @@ def main():
             "turbo_std_tok_per_sec": float(np.std(turbo_rates)),
             "speedup": (
                 float(np.mean(turbo_rates) / np.mean(dense_rates))
-                if np.mean(dense_rates) > 0 else None
+                if np.mean(dense_rates) > 0
+                else None
             ),
         }
         records.append(record)

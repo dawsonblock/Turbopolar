@@ -64,7 +64,9 @@ class CartesianInt8Cache:
         v_dense = self._dequantize(self.v_codes, self.v_scales, original_dtype)
         return k_dense, v_dense
 
-    def make_mask(self, N: int, return_array: bool = False, window_size: Optional[int] = None):
+    def make_mask(
+        self, N: int, return_array: bool = False, window_size: Optional[int] = None
+    ):
         from mlx_lm.models.cache import create_attention_mask
 
         return create_attention_mask(N, self.offset, return_array, window_size)

@@ -1,6 +1,6 @@
 import mlx.core as mx
 import numpy as np
-from typing import Dict, Any
+from typing import Dict
 
 
 def _log_softmax(x: mx.array, axis: int = -1) -> mx.array:
@@ -30,11 +30,13 @@ def topk_set_overlap_np(base_logits: mx.array, cand_logits: mx.array, k: int) ->
     return float(np.mean(overlaps))
 
 
-def calculate_logit_deltas(baseline_logits: mx.array, candidate_logits: mx.array) -> Dict[str, float]:
+def calculate_logit_deltas(
+    baseline_logits: mx.array, candidate_logits: mx.array
+) -> Dict[str, float]:
     abs_diff = mx.abs(baseline_logits - candidate_logits)
     flat_diff = np.array(abs_diff).flatten()
     return {
         "mean_abs_logit_delta": float(np.mean(flat_diff)),
         "p99_abs_logit_delta": float(np.percentile(flat_diff, 99)),
-        "max_logit_delta": float(np.max(flat_diff))
+        "max_logit_delta": float(np.max(flat_diff)),
     }

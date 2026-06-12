@@ -18,8 +18,12 @@ def bench(seq_lens=[64, 128, 256, 512, 1024, 2048]):
     print(f"{'seq_len':>8} {'dense_mb':>10} {'cache_mb':>10} {'ratio':>8}")
     for seq_len in seq_lens:
         cache = TurboPolarKVCacheRuntime(cfg)
-        k = mx.random.normal((1, cfg.num_kv_heads, seq_len, cfg.head_dim)).astype(mx.float16)
-        v = mx.random.normal((1, cfg.num_kv_heads, seq_len, cfg.head_dim)).astype(mx.float16)
+        k = mx.random.normal((1, cfg.num_kv_heads, seq_len, cfg.head_dim)).astype(
+            mx.float16
+        )
+        v = mx.random.normal((1, cfg.num_kv_heads, seq_len, cfg.head_dim)).astype(
+            mx.float16
+        )
         cache.append(k, v)
 
         telem = cache.get_io_telemetry()

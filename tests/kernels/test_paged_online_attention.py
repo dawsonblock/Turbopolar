@@ -47,7 +47,7 @@ def test_paged_online_attention_matches_dense(num_tokens):
     """Paged online attention must match dense reference."""
     config = _make_config()
     k, v = _random_kv(1, 4, num_tokens, 128)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     # Build cache.
     cache = TurboPolarKVCacheRuntime(config)
@@ -58,13 +58,16 @@ def test_paged_online_attention_matches_dense(num_tokens):
     # Dense reference from decoded full history.
     from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
     from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
     decoder = PolarQuantDecoder()
     v_dequant = GroupedVQuantizer(group_size=32)
 
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     if block is not None:
         k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-        v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[:, :, :actual_len, :]
+        v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
+            :, :, :actual_len, :
+        ]
         if tail_k is not None and tail_k.shape[2] > 0:
             k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
             v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)
@@ -86,16 +89,16 @@ def test_paged_online_attention_matches_dense(num_tokens):
         view.total_tokens,
     )
 
-    assert mx.allclose(paged_out, dense_out, atol=2e-3), (
-        f"Paged attention mismatch for {num_tokens} tokens"
-    )
+    assert mx.allclose(
+        paged_out, dense_out, atol=2e-3
+    ), f"Paged attention mismatch for {num_tokens} tokens"
 
 
 def test_paged_attention_zero_pages_tail_only():
     """Paged attention with only a partial tail must match dense."""
     config = _make_config()
     k, v = _random_kv(1, 4, 32, 128)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     cache = TurboPolarKVCacheRuntime(config)
     cache.append(k, v)
@@ -123,7 +126,7 @@ def test_paged_attention_crosses_page_boundary():
     """65 tokens = 1 full block + 1 tail; crosses boundary."""
     config = _make_config()
     k, v = _random_kv(1, 4, 65, 128)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     cache = TurboPolarKVCacheRuntime(config)
     cache.append(k, v)
@@ -136,11 +139,14 @@ def test_paged_attention_crosses_page_boundary():
     # Dense reference from decompressed cache.
     from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
     from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
     decoder = PolarQuantDecoder()
     v_dequant = GroupedVQuantizer(group_size=32)
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[:, :, :actual_len, :]
+    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
+        :, :, :actual_len, :
+    ]
     if tail_k is not None and tail_k.shape[2] > 0:
         k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
         v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)
@@ -164,7 +170,7 @@ def test_paged_attention_multiple_pages():
     """256 tokens = 4 full pages."""
     config = _make_config()
     k, v = _random_kv(1, 4, 256, 128)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     cache = TurboPolarKVCacheRuntime(config)
     cache.append(k, v)
@@ -177,11 +183,14 @@ def test_paged_attention_multiple_pages():
     # Dense reference from decompressed cache.
     from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
     from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
     decoder = PolarQuantDecoder()
     v_dequant = GroupedVQuantizer(group_size=32)
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[:, :, :actual_len, :]
+    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
+        :, :, :actual_len, :
+    ]
     if tail_k is not None and tail_k.shape[2] > 0:
         k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
         v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)
@@ -205,7 +214,7 @@ def test_paged_attention_two_pages_plus_tail():
     """129 tokens = 2 full pages (128) + 1 tail."""
     config = _make_config()
     k, v = _random_kv(1, 4, 129, 128)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     cache = TurboPolarKVCacheRuntime(config)
     cache.append(k, v)
@@ -219,11 +228,14 @@ def test_paged_attention_two_pages_plus_tail():
     # Dense reference from decompressed cache.
     from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
     from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
     decoder = PolarQuantDecoder()
     v_dequant = GroupedVQuantizer(group_size=32)
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[:, :, :actual_len, :]
+    v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
+        :, :, :actual_len, :
+    ]
     if tail_k is not None and tail_k.shape[2] > 0:
         k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
         v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)
@@ -256,6 +268,6 @@ def test_fast_cache_decode_attention_uses_paged_path():
     for _ in range(128):
         fast_cache.runtime.append(k, v)
 
-    out = fast_cache.decode_attention(q, k, v, scale=1.0 / (128 ** 0.5))
+    out = fast_cache.decode_attention(q, k, v, scale=1.0 / (128**0.5))
     assert mx.isfinite(out).all().item()
     assert out.shape == (1, 4, 128)

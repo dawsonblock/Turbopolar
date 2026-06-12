@@ -9,9 +9,8 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import mlx.core as mx
 import numpy as np
@@ -38,7 +37,7 @@ def _dense_attention(q, k, v, scale):
 def _run_forced_decode(cache, q_tokens, k_tokens, v_tokens, scale):
     """Run a forced decode loop and return the final attention output."""
     for q, k, v in zip(q_tokens, k_tokens, v_tokens):
-        if hasattr(cache, 'decode_attention'):
+        if hasattr(cache, "decode_attention"):
             out = cache.decode_attention(q, k, v, scale)
         else:
             # Cartesian cache: update history then run dense attention
@@ -52,7 +51,9 @@ def _run_forced_decode(cache, q_tokens, k_tokens, v_tokens, scale):
     return out
 
 
-def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> Dict[str, Any]:
+def _compare_fixture(
+    length: int, num_decode: int, config: TurboPolarConfig
+) -> Dict[str, Any]:
     B, H_kv, D = 1, config.num_kv_heads, config.head_dim
     H_q = config.num_q_heads
     scale = config.attention_scale
@@ -71,6 +72,7 @@ def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> 
     turbo = TurboPolarKVCacheRuntime(config)
     turbo.append_many(k_prefill, v_prefill)
     from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
+
     fast_cache = TurboPolarFastCache(config)
     fast_cache.runtime = turbo
     turbo_out = fast_cache.decode_attention(q, k_decode, v_decode, scale)
@@ -85,7 +87,10 @@ def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> 
     mx.eval(turbo_out, cartesian_out)
     t = np.array(turbo_out.astype(mx.float32))
     c = np.array(cartesian_out.astype(mx.float32))
-    cosine = float(np.dot(t.flatten(), c.flatten()) / (np.linalg.norm(t) * np.linalg.norm(c) + 1e-12))
+    cosine = float(
+        np.dot(t.flatten(), c.flatten())
+        / (np.linalg.norm(t) * np.linalg.norm(c) + 1e-12)
+    )
     mae = float(np.mean(np.abs(t - c)))
 
     # Memory: prefill only (decode token is negligible in comparison).
@@ -106,9 +111,15 @@ def _compare_fixture(length: int, num_decode: int, config: TurboPolarConfig) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Cartesian int8 baseline comparison")
-    parser.add_argument("--lengths", type=int, nargs="+", default=[64, 128, 256, 512, 1024])
+    parser.add_argument(
+        "--lengths", type=int, nargs="+", default=[64, 128, 256, 512, 1024]
+    )
     parser.add_argument("--num-decode", type=int, default=1)
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent / "outputs" / "cartesian_baseline")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(__file__).parent / "outputs" / "cartesian_baseline",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -128,7 +139,9 @@ def main():
     for length in args.lengths:
         record = _compare_fixture(length, args.num_decode, config)
         records.append(record)
-        print(f"length={length:5d} cosine={record['cosine']:.4f} mae={record['mae']:.4f}")
+        print(
+            f"length={length:5d} cosine={record['cosine']:.4f} mae={record['mae']:.4f}"
+        )
 
     report = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

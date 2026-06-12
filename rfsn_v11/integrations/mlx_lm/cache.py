@@ -1,7 +1,7 @@
 """MLX-LM-compatible cache that uses fused Metal attention for TurboPolar decode."""
 
 import dataclasses
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 
@@ -58,7 +58,9 @@ class TurboPolarFastCache:
         packed = mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
         return packed
 
-    def update_and_fetch(self, keys: mx.array, values: mx.array) -> Tuple[mx.array, mx.array]:
+    def update_and_fetch(
+        self, keys: mx.array, values: mx.array
+    ) -> Tuple[mx.array, mx.array]:
         """Prefill path: append keys/values and return the decompressed full history."""
         original_dtype = keys.dtype
         if keys.dtype != mx.float16:
@@ -67,7 +69,9 @@ class TurboPolarFastCache:
             values = values.astype(mx.float16)
 
         self.runtime.append_many(keys, values)
-        block, quant_v, dense_v, _qjl, actual_len = self.runtime.get_blocks_for_attention()
+        block, quant_v, dense_v, _qjl, actual_len = (
+            self.runtime.get_blocks_for_attention()
+        )
         if block is None:
             raise RuntimeError("TurboPolar cache returned no blocks after append")
 
@@ -100,11 +104,17 @@ class TurboPolarFastCache:
         _, H_kv, T_k, _ = k_new.shape
         _, _, T_v, _ = v_new.shape
         if B != 1:
-            raise NotImplementedError("TurboPolar fused decode only supports batch size 1.")
+            raise NotImplementedError(
+                "TurboPolar fused decode only supports batch size 1."
+            )
         if T != 1 or T_k != 1 or T_v != 1:
-            raise ValueError("decode_attention only supports a single query/key/value token")
+            raise ValueError(
+                "decode_attention only supports a single query/key/value token"
+            )
         if D != 128:
-            raise NotImplementedError("TurboPolar fused decode only supports head_dim == 128.")
+            raise NotImplementedError(
+                "TurboPolar fused decode only supports head_dim == 128."
+            )
         if D != config.head_dim:
             raise ValueError(
                 f"decode_attention head_dim {D} does not match config {config.head_dim}"
@@ -166,7 +176,9 @@ class TurboPolarFastCache:
         )
         return output
 
-    def make_mask(self, N: int, return_array: bool = False, window_size: Optional[int] = None):
+    def make_mask(
+        self, N: int, return_array: bool = False, window_size: Optional[int] = None
+    ):
         from mlx_lm.models.cache import create_attention_mask
 
         return create_attention_mask(N, self.offset, return_array, window_size)

@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -27,7 +27,11 @@ def _serialize(obj: Any) -> Any:
 def _run_id(provenance: BenchmarkProvenance) -> str:
     ts = datetime.fromisoformat(provenance.timestamp_utc).strftime("%Y%m%d_%H%M%S")
     commit = provenance.git_commit[:8] if provenance.git_commit else "unknown"
-    cfg_hash = provenance.turbopolar_config_hash[:8] if provenance.turbopolar_config_hash else "unknown"
+    cfg_hash = (
+        provenance.turbopolar_config_hash[:8]
+        if provenance.turbopolar_config_hash
+        else "unknown"
+    )
     return f"{ts}_{cfg_hash}_{commit}"
 
 
@@ -77,7 +81,9 @@ def write_artifacts(
     if evidence.memory_report is not None:
         files["memory_report.json"] = _serialize(evidence.memory_report)
     if evidence.baseline_comparison_report is not None:
-        files["comparison_report.json"] = _serialize(evidence.baseline_comparison_report)
+        files["comparison_report.json"] = _serialize(
+            evidence.baseline_comparison_report
+        )
 
     if extra:
         for name, value in extra.items():

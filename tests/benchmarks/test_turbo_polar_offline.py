@@ -10,9 +10,15 @@ from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 class TestTurboPolarOffline(unittest.TestCase):
     def setUp(self):
         self.config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
-            num_q_heads=4, num_kv_heads=4, seed=42,
-            k_angle_bits_level1=4, k_angle_bits_deep=4,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
+            k_angle_bits_level1=4,
+            k_angle_bits_deep=4,
         )
         self.encoder = PolarQuantEncoder(self.config)
         self.decoder = PolarQuantDecoder()
@@ -42,9 +48,14 @@ class TestTurboPolarOffline(unittest.TestCase):
             radii_scales = mx.stack([b.radii_scales for b in blocks], axis=2)
 
         unified = blocks[0].__class__(
-            radii=radii, angle_codes_l1=angle_l1, angle_codes_deep=angle_deep,
+            radii=radii,
+            angle_codes_l1=angle_l1,
+            angle_codes_deep=angle_deep,
             radii_scales=radii_scales,
-            shape=(B, H, S * L, D), block_size=L, head_dim=D, metadata=blocks[0].metadata
+            shape=(B, H, S * L, D),
+            block_size=L,
+            head_dim=D,
+            metadata=blocks[0].metadata,
         )
 
         self.assertEqual(unified.radii.shape, (B, H, S, L, D // 2))
@@ -72,8 +83,12 @@ class TestTurboPolarOffline(unittest.TestCase):
         scores_recon = mx.sum(q[:, :, None, :] * k_recon, axis=-1)
         mx.eval(scores_ref, scores_recon)
 
-        score_cosine = np.dot(np.array(scores_ref).flatten(), np.array(scores_recon).flatten()) / (
-            np.linalg.norm(np.array(scores_ref)) * np.linalg.norm(np.array(scores_recon)) + 1e-12
+        score_cosine = np.dot(
+            np.array(scores_ref).flatten(), np.array(scores_recon).flatten()
+        ) / (
+            np.linalg.norm(np.array(scores_ref))
+            * np.linalg.norm(np.array(scores_recon))
+            + 1e-12
         )
         self.assertGreaterEqual(score_cosine, 0.92)
 
@@ -93,8 +108,13 @@ class TestTurboPolarOffline(unittest.TestCase):
             radii=mx.expand_dims(block.radii, axis=2),
             angle_codes_l1=mx.expand_dims(block.angle_codes_l1, axis=2),
             angle_codes_deep=mx.expand_dims(block.angle_codes_deep, axis=2),
-            radii_scales=mx.expand_dims(block.radii_scales, axis=2) if block.radii_scales is not None else None,
-            shape=(B, H, L, D), block_size=L, head_dim=D, metadata=block.metadata
+            radii_scales=mx.expand_dims(block.radii_scales, axis=2)
+            if block.radii_scales is not None
+            else None,
+            shape=(B, H, L, D),
+            block_size=L,
+            head_dim=D,
+            metadata=block.metadata,
         )
         k_recon = self.decoder.decode_block(unified)
         mx.eval(k, k_recon)

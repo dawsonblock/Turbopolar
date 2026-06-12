@@ -19,8 +19,13 @@ class TestQJLScaledFusedQK(unittest.TestCase):
         if not mx.metal.is_available():
             self.skipTest("Metal not available.")
         self.config = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, seed=42,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=0,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
         )
         self.encoder = PolarQuantEncoder(self.config)
         self.decoder = PolarQuantDecoder()
@@ -36,7 +41,9 @@ class TestQJLScaledFusedQK(unittest.TestCase):
             radii=mx.stack([b.radii for b in blocks], axis=2),
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
-            shape=(B, H, T, D), block_size=self.config.block_size, head_dim=D,
+            shape=(B, H, T, D),
+            block_size=self.config.block_size,
+            head_dim=D,
             metadata=blocks[0].metadata,
         )
 
@@ -56,21 +63,35 @@ class TestQJLScaledFusedQK(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
         residual = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
 
         for scale in (1.0, 0.5, 0.25):
             cfg = TurboPolarConfig(
-                head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-                num_q_heads=4, num_kv_heads=4, seed=42, attention_scale=scale,
+                head_dim=128,
+                qjl_proj_dim=64,
+                block_size=64,
+                split_dim=0,
+                num_q_heads=4,
+                num_kv_heads=4,
+                seed=42,
+                attention_scale=scale,
             )
             scores_no_qjl = self.bridge.execute_fused_qk(q, unified, cfg)
-            scores_qjl = self.bridge.execute_fused_qk_qjl(q, unified, qjl_payload, q_packed, cfg)
+            scores_qjl = self.bridge.execute_fused_qk_qjl(
+                q, unified, qjl_payload, q_packed, cfg
+            )
             mx.eval(scores_no_qjl, scores_qjl)
 
-            qjl_contribution = np.mean(np.abs(np.array(scores_qjl) - np.array(scores_no_qjl)))
-            self.assertGreater(qjl_contribution, 0.0, "QJL contribution should be nonzero")
+            qjl_contribution = np.mean(
+                np.abs(np.array(scores_qjl) - np.array(scores_no_qjl))
+            )
+            self.assertGreater(
+                qjl_contribution, 0.0, "QJL contribution should be nonzero"
+            )
             if scale != 1.0:
                 # We cannot compare across runs directly because the base scores also change,
                 # but the ratio of contribution to scale should be constant.
@@ -83,6 +104,7 @@ class TestQJLScaledFusedQK(unittest.TestCase):
     def _reference_contribution(self, q, qjl_payload, q_packed):
         """Mean absolute unscaled QJL correction from the estimator."""
         from rfsn_v11.quant.qjl.score_estimate import qjl_dot_estimate
+
         corr = qjl_dot_estimate(q, qjl_payload, q_packed)
         mx.eval(corr)
         return float(np.mean(np.abs(np.array(corr))))
@@ -96,17 +118,29 @@ class TestQJLScaledFusedQK(unittest.TestCase):
         unified = self._encode_unified(k_original)
         k_recon = self.decoder.decode_block(unified)
         residual = k_original - k_recon
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
 
         cfg = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, seed=42, attention_scale=0.25,
+            head_dim=128,
+            qjl_proj_dim=64,
+            block_size=64,
+            split_dim=0,
+            num_q_heads=4,
+            num_kv_heads=4,
+            seed=42,
+            attention_scale=0.25,
         )
 
-        metal_scores = self.bridge.execute_fused_qk_qjl(q, unified, qjl_payload, q_packed, cfg)
-        cpu_scores = self.bridge._cpu_fused_qk_qjl(q, unified, qjl_payload, q_packed, cfg)
+        metal_scores = self.bridge.execute_fused_qk_qjl(
+            q, unified, qjl_payload, q_packed, cfg
+        )
+        cpu_scores = self.bridge._cpu_fused_qk_qjl(
+            q, unified, qjl_payload, q_packed, cfg
+        )
         mx.eval(metal_scores, cpu_scores)
 
         # Metal accumulates in fp16; CPU uses fp32. Allow small absolute differences

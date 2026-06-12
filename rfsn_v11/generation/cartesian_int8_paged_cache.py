@@ -5,8 +5,8 @@ allocation strategy, but using per-token symmetric int8 quantization instead
 of polar encoding.
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 
@@ -14,6 +14,7 @@ import mlx.core as mx
 @dataclass
 class CartesianInt8Block:
     """One block of int8 K/V data."""
+
     k_codes: mx.array  # [B, H, L, D]
     k_scales: mx.array  # [B, H, L, 1]
     v_codes: mx.array  # [B, H, L, D]
@@ -23,6 +24,7 @@ class CartesianInt8Block:
 @dataclass
 class CartesianInt8Page:
     """One fixed-size page of Cartesian-int8 blocks."""
+
     k_codes: mx.array  # [B, H, C, L, D]
     k_scales: mx.array  # [B, H, C, L, 1]
     v_codes: mx.array  # [B, H, C, L, D]
@@ -41,14 +43,16 @@ class PagedCartesianInt8KStorage:
         self.reallocation_count = 0
 
     def _allocate_page(self, B: int, H: int, L: int, D: int, capacity_blocks: int = 16):
-        self.pages.append(CartesianInt8Page(
-            k_codes=mx.zeros((B, H, capacity_blocks, L, D), dtype=mx.int8),
-            k_scales=mx.zeros((B, H, capacity_blocks, L, 1), dtype=mx.float16),
-            v_codes=mx.zeros((B, H, capacity_blocks, L, D), dtype=mx.int8),
-            v_scales=mx.zeros((B, H, capacity_blocks, L, 1), dtype=mx.float16),
-            valid_blocks=0,
-            capacity_blocks=capacity_blocks,
-        ))
+        self.pages.append(
+            CartesianInt8Page(
+                k_codes=mx.zeros((B, H, capacity_blocks, L, D), dtype=mx.int8),
+                k_scales=mx.zeros((B, H, capacity_blocks, L, 1), dtype=mx.float16),
+                v_codes=mx.zeros((B, H, capacity_blocks, L, D), dtype=mx.int8),
+                v_scales=mx.zeros((B, H, capacity_blocks, L, 1), dtype=mx.float16),
+                valid_blocks=0,
+                capacity_blocks=capacity_blocks,
+            )
+        )
         self.capacity += capacity_blocks
         self.reallocation_count += 1
 
@@ -122,7 +126,6 @@ class PagedCartesianInt8KVCache:
 
     @staticmethod
     def _quantize_block(x: mx.array) -> Tuple[mx.array, mx.array]:
-        original_dtype = x.dtype
         x = x.astype(mx.float16)
         max_abs = mx.max(mx.abs(x), axis=-1, keepdims=True)
         scale = (max_abs / 127.0).astype(mx.float16)
@@ -155,10 +158,14 @@ class PagedCartesianInt8KVCache:
                 v_block = self.partial_v_buffer[:, :, :L, :]
                 k_codes, k_scales = self._quantize_block(k_block)
                 v_codes, v_scales = self._quantize_block(v_block)
-                self.storage.append(CartesianInt8Block(
-                    k_codes=k_codes, k_scales=k_scales,
-                    v_codes=v_codes, v_scales=v_scales,
-                ))
+                self.storage.append(
+                    CartesianInt8Block(
+                        k_codes=k_codes,
+                        k_scales=k_scales,
+                        v_codes=v_codes,
+                        v_scales=v_scales,
+                    )
+                )
                 self.partial_length = 0
                 self.partial_k_buffer = mx.zeros_like(self.partial_k_buffer)
                 self.partial_v_buffer = mx.zeros_like(self.partial_v_buffer)
@@ -168,8 +175,8 @@ class PagedCartesianInt8KVCache:
         if self.storage.block_count == 0:
             if self.partial_length > 0:
                 return (
-                    self.partial_k_buffer[:, :, :self.partial_length, :],
-                    self.partial_v_buffer[:, :, :self.partial_length, :],
+                    self.partial_k_buffer[:, :, : self.partial_length, :],
+                    self.partial_v_buffer[:, :, : self.partial_length, :],
                 )
             # Empty history: infer shape from buffers if allocated, else generic.
             if self.partial_k_buffer is not None:
@@ -188,14 +195,20 @@ class PagedCartesianInt8KVCache:
         v_dense = self._dequantize(mono.v_codes, mono.v_scales, mx.float16)
 
         if self.partial_length > 0:
-            k_dense = mx.concatenate([
-                k_dense,
-                self.partial_k_buffer[:, :, :self.partial_length, :],
-            ], axis=2)
-            v_dense = mx.concatenate([
-                v_dense,
-                self.partial_v_buffer[:, :, :self.partial_length, :],
-            ], axis=2)
+            k_dense = mx.concatenate(
+                [
+                    k_dense,
+                    self.partial_k_buffer[:, :, : self.partial_length, :],
+                ],
+                axis=2,
+            )
+            v_dense = mx.concatenate(
+                [
+                    v_dense,
+                    self.partial_v_buffer[:, :, : self.partial_length, :],
+                ],
+                axis=2,
+            )
 
         return k_dense, v_dense
 
@@ -203,8 +216,11 @@ class PagedCartesianInt8KVCache:
     def offset(self) -> int:
         return self.actual_seq_len
 
-    def make_mask(self, N: int, return_array: bool = False, window_size: Optional[int] = None):
+    def make_mask(
+        self, N: int, return_array: bool = False, window_size: Optional[int] = None
+    ):
         from mlx_lm.models.cache import create_attention_mask
+
         return create_attention_mask(N, self.offset, return_array, window_size)
 
     def size(self) -> int:

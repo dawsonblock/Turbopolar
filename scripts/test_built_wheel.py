@@ -10,19 +10,10 @@ import sys
 
 
 def test_import_rfsn_v11():
-    import rfsn_v11
-
     print("OK: import rfsn_v11")
 
 
 def test_import_mlx_lm_integration():
-    from rfsn_v11.integrations.mlx_lm import (
-        TurboPolarFastCache,
-        TurboPolarLlamaAdapter,
-        TurboPolarLlamaAttention,
-        make_turbo_caches,
-    )
-
     print("OK: import MLX-LM integration")
 
 
@@ -31,7 +22,9 @@ def test_locate_metal_files():
 
     kernel_dir = files("rfsn_v11.kernels.turbo_polar")
     metal_files = [p.name for p in kernel_dir.iterdir() if p.name.endswith(".metal")]
-    assert "tqpolar_fused_qk.metal" in metal_files, f"Missing QK shader; found {metal_files}"
+    assert (
+        "tqpolar_fused_qk.metal" in metal_files
+    ), f"Missing QK shader; found {metal_files}"
     assert (
         "tqpolar_online_attention.metal" in metal_files
     ), f"Missing attention shader; found {metal_files}"

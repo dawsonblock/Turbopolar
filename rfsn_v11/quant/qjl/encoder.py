@@ -39,6 +39,9 @@ class QJLResidualEncoder:
         packed = mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
         norms = mx.sqrt(mx.sum(residual_E * residual_E, axis=-1)).astype(mx.float16)
         return QJLPayload(
-            packed_signs=packed, norms=norms, proj_dim=self.proj_dim,
-            seed=self.seed, shape=(B, H, S, L, D),
+            packed_signs=packed,
+            norms=norms,
+            proj_dim=self.proj_dim,
+            seed=self.seed,
+            shape=(B, H, S, L, D),
         )

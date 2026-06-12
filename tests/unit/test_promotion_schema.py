@@ -9,7 +9,6 @@ from rfsn_v11.promotion import (
     GitTreeState,
     KernelReport,
     MemoryReport,
-    PromotionDecision,
     PromotionEvidence,
     PromotionGate,
     PromotionState,

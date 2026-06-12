@@ -25,6 +25,7 @@ class TestMissingEvidenceFails(unittest.TestCase):
 
     def test_partial_evidence_is_incomplete(self):
         from rfsn_v11.promotion import KernelReport
+
         evidence = PromotionEvidence(kernel_report=KernelReport())
         decision = self.gate.evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.INCOMPLETE)
@@ -41,6 +42,7 @@ class TestMissingEvidenceFails(unittest.TestCase):
             SpeedReport,
             TeacherForcedReport,
         )
+
         evidence = PromotionEvidence(
             kernel_report=KernelReport(all_unit_tests_passed=True),
             teacher_forced_report=TeacherForcedReport(

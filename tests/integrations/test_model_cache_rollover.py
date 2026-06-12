@@ -6,7 +6,6 @@ a dense reference.
 """
 
 import mlx.core as mx
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
@@ -60,14 +59,17 @@ class TestModelCacheRollover:
 
         # Verify attention output is finite
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
-        scale = 1.0 / (128 ** 0.5)
+        scale = 1.0 / (128**0.5)
 
-        block, quant_v, tail_k, tail_v, qjl, actual_len = cache.get_fused_attention_inputs()
+        block, quant_v, tail_k, tail_v, qjl, actual_len = (
+            cache.get_fused_attention_inputs()
+        )
         assert actual_len == 1025
 
         # Build dense reference
         if block is not None:
             from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
+
             decoder = PolarQuantDecoder()
             k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
         else:
@@ -77,6 +79,7 @@ class TestModelCacheRollover:
             v_dense = tail_v[:, :, :actual_len, :]
         elif quant_v is not None:
             from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
             v_dequant = GroupedVQuantizer(group_size=32).dequantize_block(quant_v)
             v_dense = v_dequant.reshape(1, 4, -1, 128)[:, :, :actual_len, :]
         else:
@@ -99,14 +102,17 @@ class TestModelCacheRollover:
         assert cache.v_storage._paged.page_count == 2
 
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
-        scale = 1.0 / (128 ** 0.5)
+        scale = 1.0 / (128**0.5)
 
-        block, quant_v, tail_k, tail_v, qjl, actual_len = cache.get_fused_attention_inputs()
+        block, quant_v, tail_k, tail_v, qjl, actual_len = (
+            cache.get_fused_attention_inputs()
+        )
         assert actual_len == 2048
         assert tail_k is None or tail_k.shape[2] == 0
 
         if block is not None:
             from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
+
             decoder = PolarQuantDecoder()
             k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
         else:
@@ -114,6 +120,7 @@ class TestModelCacheRollover:
 
         if quant_v is not None:
             from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
             v_dequant = GroupedVQuantizer(group_size=32).dequantize_block(quant_v)
             v_dense = v_dequant.reshape(1, 4, -1, 128)[:, :, :actual_len, :]
         else:
@@ -135,14 +142,17 @@ class TestModelCacheRollover:
         assert cache.v_storage._paged.page_count == 4
 
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
-        scale = 1.0 / (128 ** 0.5)
+        scale = 1.0 / (128**0.5)
 
-        block, quant_v, tail_k, tail_v, qjl, actual_len = cache.get_fused_attention_inputs()
+        block, quant_v, tail_k, tail_v, qjl, actual_len = (
+            cache.get_fused_attention_inputs()
+        )
         assert actual_len == 4096
         assert tail_k is None or tail_k.shape[2] == 0
 
         if block is not None:
             from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
+
             decoder = PolarQuantDecoder()
             k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
         else:
@@ -150,6 +160,7 @@ class TestModelCacheRollover:
 
         if quant_v is not None:
             from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
             v_dequant = GroupedVQuantizer(group_size=32).dequantize_block(quant_v)
             v_dense = v_dequant.reshape(1, 4, -1, 128)[:, :, :actual_len, :]
         else:

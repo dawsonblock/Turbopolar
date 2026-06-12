@@ -99,7 +99,9 @@ class PromotionGate:
         passed = set(kr.metal_tests_passed)
         missing = self.REQUIRED_NATIVE_METAL_TESTS - present
         if missing:
-            reasons.append(f"Required Metal tests missing from collection: {sorted(missing)}")
+            reasons.append(
+                f"Required Metal tests missing from collection: {sorted(missing)}"
+            )
         failed = self.REQUIRED_NATIVE_METAL_TESTS - passed
         if failed:
             reasons.append(f"Required Metal tests did not pass: {sorted(failed)}")
@@ -130,7 +132,10 @@ class PromotionGate:
             reasons.append(
                 f"Teacher-forced argmax agreement {tf.argmax_agreement} < {self.ARGMAX_AGREE}"
             )
-        if tf.mean_perplexity_delta is None or tf.mean_perplexity_delta > self.MAX_PPL_DELTA:
+        if (
+            tf.mean_perplexity_delta is None
+            or tf.mean_perplexity_delta > self.MAX_PPL_DELTA
+        ):
             reasons.append(
                 f"Teacher-forced perplexity delta {tf.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
             )
@@ -163,7 +168,10 @@ class PromotionGate:
             reasons.append(
                 f"Fused decode argmax agreement {fd.argmax_agreement} < {self.ARGMAX_AGREE}"
             )
-        if fd.mean_perplexity_delta is None or fd.mean_perplexity_delta > self.MAX_PPL_DELTA:
+        if (
+            fd.mean_perplexity_delta is None
+            or fd.mean_perplexity_delta > self.MAX_PPL_DELTA
+        ):
             reasons.append(
                 f"Fused decode perplexity delta {fd.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
             )
@@ -172,16 +180,25 @@ class PromotionGate:
 
         # Speed
         sr = evidence.speed_report
-        if sr.min_ratio_at_4096_plus is None or sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS:
+        if (
+            sr.min_ratio_at_4096_plus is None
+            or sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS
+        ):
             reasons.append(
                 f"Speed ratio at 4096+ minimum {sr.min_ratio_at_4096_plus} < {self.MAX_REGRESSION_AT_4096_PLUS}"
             )
-        if sr.max_ratio_at_4096_plus is None or sr.max_ratio_at_4096_plus < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT:
+        if (
+            sr.max_ratio_at_4096_plus is None
+            or sr.max_ratio_at_4096_plus < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT
+        ):
             reasons.append(
                 f"No long-context tier improved by >= {self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT}: "
                 f"max ratio {sr.max_ratio_at_4096_plus}"
             )
-        if sr.median_ratio_at_8192_plus is None or sr.median_ratio_at_8192_plus < self.MIN_MEDIAN_RATIO_AT_8192_PLUS:
+        if (
+            sr.median_ratio_at_8192_plus is None
+            or sr.median_ratio_at_8192_plus < self.MIN_MEDIAN_RATIO_AT_8192_PLUS
+        ):
             reasons.append(
                 f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < {self.MIN_MEDIAN_RATIO_AT_8192_PLUS}"
             )
@@ -192,11 +209,17 @@ class PromotionGate:
             reasons.append(
                 f"Logical KV ratio {mr.logical_kv_ratio} < {self.LOGICAL_KV_RATIO}"
             )
-        if mr.persistent_storage_ratio is None or mr.persistent_storage_ratio < self.PERSISTENT_STORAGE_RATIO:
+        if (
+            mr.persistent_storage_ratio is None
+            or mr.persistent_storage_ratio < self.PERSISTENT_STORAGE_RATIO
+        ):
             reasons.append(
                 f"Persistent storage ratio {mr.persistent_storage_ratio} < {self.PERSISTENT_STORAGE_RATIO}"
             )
-        if mr.peak_device_memory_ratio_at_8192_plus is None or mr.peak_device_memory_ratio_at_8192_plus < self.PEAK_MEMORY_RATIO_8192:
+        if (
+            mr.peak_device_memory_ratio_at_8192_plus is None
+            or mr.peak_device_memory_ratio_at_8192_plus < self.PEAK_MEMORY_RATIO_8192
+        ):
             reasons.append(
                 f"Peak memory ratio at 8192+ {mr.peak_device_memory_ratio_at_8192_plus} < {self.PEAK_MEMORY_RATIO_8192}"
             )
@@ -218,7 +241,9 @@ class PromotionGate:
 
         # Experiment completeness
         fd = evidence.fused_decode_report
-        contexts_set = set(fd.contexts_evaluated) if fd and fd.contexts_evaluated else set()
+        contexts_set = (
+            set(fd.contexts_evaluated) if fd and fd.contexts_evaluated else set()
+        )
         if contexts_set != self.REQUIRED_CONTEXTS:
             reasons.append(
                 f"Fused decode contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {contexts_set}"

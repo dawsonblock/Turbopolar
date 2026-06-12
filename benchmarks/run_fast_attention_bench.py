@@ -86,7 +86,9 @@ def _perplexity(logits: np.ndarray, tokens: List[int]) -> float:
     return float(np.exp(np.mean(token_log_probs))) if token_log_probs else float("inf")
 
 
-def _teacher_forced_logits(model, tokenizer, prompt_text: str, cache: List, max_tokens: int):
+def _teacher_forced_logits(
+    model, tokenizer, prompt_text: str, cache: List, max_tokens: int
+):
     tokens = tokenizer.encode(prompt_text)
     if len(tokens) > max_tokens:
         tokens = tokens[:max_tokens]
@@ -151,7 +153,9 @@ def main():
     model, tokenizer = load(args.model)
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
 
     prompt_text = (
         "The turbo-polar cache compresses key-value tensors for transformer decoding. "
@@ -222,7 +226,9 @@ def main():
     print(f"MLX: {mx.__version__}, mlx_lm: {mlx_lm.__version__}")
     print(f"use_qjl: {args.use_qjl}")
     print(f"Prompt tokens: {len(tokens)}")
-    print(f"Layers / heads / kv_heads / head_dim: {num_layers} / {num_q_heads} / {num_kv_heads} / {head_dim}")
+    print(
+        f"Layers / heads / kv_heads / head_dim: {num_layers} / {num_q_heads} / {num_kv_heads} / {head_dim}"
+    )
     print(f"Logit cosine similarity: {cosine:.6f}")
     print(f"Top-1 overlap: {top1:.4f}")
     print(f"Top-5 overlap: {top5:.4f}")
@@ -235,7 +241,9 @@ def main():
     print(f"Dense decode speed: {dense_decode_tok_s:.2f} tok/s")
     print(f"TurboPolar decode speed: {turbo_decode_tok_s:.2f} tok/s")
     if dense_decode_tok_s > 0:
-        print(f"Speed ratio (turbo/dense): {turbo_decode_tok_s / dense_decode_tok_s:.3f}")
+        print(
+            f"Speed ratio (turbo/dense): {turbo_decode_tok_s / dense_decode_tok_s:.3f}"
+        )
 
 
 if __name__ == "__main__":

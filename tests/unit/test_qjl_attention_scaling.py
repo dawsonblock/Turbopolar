@@ -38,7 +38,9 @@ class TestQJLAttentionScaling(unittest.TestCase):
         mx.random.seed(42)
         q = mx.random.normal((B, H, D))
         residual = mx.random.normal((B, H, S * L, D))
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
+        )
         q_proj = mx.matmul(q, self.qjl_encoder.W)
         q_packed = self._pack_q_signs(q_proj)
 
@@ -56,26 +58,16 @@ class TestQJLAttentionScaling(unittest.TestCase):
         mx.random.seed(42)
         q = mx.random.normal((B, H, D))
         residual = mx.random.normal((B, H, S * L, D))
-        qjl_payload = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
         q_proj = mx.matmul(q, self.qjl_encoder.W)
-        q_packed = self._pack_q_signs(q_proj)
 
         # Estimate should not depend on the config attention_scale.
-        config_scale_1 = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, use_qjl=False, attention_scale=1.0,
+        qjl_payload = self.qjl_encoder.compute_residual_sketch(
+            residual.reshape(B, H, S, L, D)
         )
-        config_scale_05 = TurboPolarConfig(
-            head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=0,
-            num_q_heads=4, num_kv_heads=4, use_qjl=False, attention_scale=0.5,
-        )
-        encoder_05 = QJLResidualEncoder(config_scale_05)
-        # Use the same W but the same payload; only the estimator should matter.
-        qjl_payload_same = self.qjl_encoder.compute_residual_sketch(residual.reshape(B, H, S, L, D))
-        q_packed_same = self._pack_q_signs(q_proj)
+        q_packed = self._pack_q_signs(q_proj)
 
-        corr_1 = qjl_dot_estimate(q, qjl_payload_same, q_packed_same)
-        corr_05 = qjl_dot_estimate(q, qjl_payload_same, q_packed_same)
+        corr_1 = qjl_dot_estimate(q, qjl_payload, q_packed)
+        corr_05 = qjl_dot_estimate(q, qjl_payload, q_packed)
         mx.eval(corr_1, corr_05)
 
         np.testing.assert_allclose(np.array(corr_1), np.array(corr_05), rtol=1e-6)

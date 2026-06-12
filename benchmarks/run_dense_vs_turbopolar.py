@@ -70,7 +70,9 @@ def _make_dense_cache(num_layers: int):
     return [KVCache() for _ in range(num_layers)]
 
 
-def _make_turbo_cache(num_layers: int, num_q_heads: int, num_kv_heads: int, head_dim: int):
+def _make_turbo_cache(
+    num_layers: int, num_q_heads: int, num_kv_heads: int, head_dim: int
+):
     if head_dim not in (64, 128):
         raise ValueError(f"TurboPolar only supports head_dim 64 or 128, got {head_dim}")
     config = TurboPolarConfig(
@@ -89,7 +91,9 @@ def _run_forward(model, tokens: mx.array, cache: List):
     return model(tokens, cache=cache)
 
 
-def _teacher_forced_logits(model, tokenizer, prompt_text: str, cache: List, max_tokens: int):
+def _teacher_forced_logits(
+    model, tokenizer, prompt_text: str, cache: List, max_tokens: int
+):
     tokens = tokenizer.encode(prompt_text)
     if len(tokens) > max_tokens:
         tokens = tokens[:max_tokens]
@@ -165,7 +169,9 @@ def _peak_kv_bytes_turbo(cache: List[TurboPolarMLXLMCache]) -> int:
     return sum(c.nbytes for c in cache)
 
 
-def _measure_decode_speed(model, tokenizer, cache: List, tokens: List[int], num_decode: int = 64) -> float:
+def _measure_decode_speed(
+    model, tokenizer, cache: List, tokens: List[int], num_decode: int = 64
+) -> float:
     """Rough decode tokens/sec for the last layer only is not trivial; measure full-model decode."""
     # Prime the cache with prompt tokens.
     prompt_mx = mx.array(tokens)[None, :]
@@ -184,15 +190,23 @@ def _measure_decode_speed(model, tokenizer, cache: List, tokens: List[int], num_
     return num_decode / elapsed if elapsed > 0 else 0.0
 
 
-def benchmark_prompt(model, tokenizer, prompt_text: str, max_tokens: int, num_decode: int) -> PromptResult:
+def benchmark_prompt(
+    model, tokenizer, prompt_text: str, max_tokens: int, num_decode: int
+) -> PromptResult:
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
 
     dense_cache = _make_dense_cache(num_layers)
-    dense_logits, tokens, dense_cache = _teacher_forced_logits(model, tokenizer, prompt_text, dense_cache, max_tokens)
+    dense_logits, tokens, dense_cache = _teacher_forced_logits(
+        model, tokenizer, prompt_text, dense_cache, max_tokens
+    )
 
     turbo_cache = _make_turbo_cache(num_layers, num_q_heads, num_kv_heads, head_dim)
-    turbo_logits, _tokens, turbo_cache = _teacher_forced_logits(model, tokenizer, prompt_text, turbo_cache, max_tokens)
+    turbo_logits, _tokens, turbo_cache = _teacher_forced_logits(
+        model, tokenizer, prompt_text, turbo_cache, max_tokens
+    )
 
     if _tokens != tokens:
         raise RuntimeError("Token mismatch between dense and TurboPolar runs")
@@ -211,7 +225,9 @@ def benchmark_prompt(model, tokenizer, prompt_text: str, max_tokens: int, num_de
         top5_overlap=_topk_overlap(dense_logits, turbo_logits, k=5),
         top10_overlap=_topk_overlap(dense_logits, turbo_logits, k=10),
         kl_divergence=_kl_divergence(dense_logits, turbo_logits),
-        perplexity_delta=abs(_perplexity(dense_logits, tokens) - _perplexity(turbo_logits, tokens)),
+        perplexity_delta=abs(
+            _perplexity(dense_logits, tokens) - _perplexity(turbo_logits, tokens)
+        ),
         compression_ratio=compression_ratio,
         peak_kv_bytes_turbo=peak_turbo,
         peak_kv_bytes_dense=peak_dense,
@@ -234,14 +250,30 @@ def load_prompts(path: Path) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dense vs TurboPolar benchmark on an MLX model")
-    parser.add_argument("--model", required=True, help="MLX model path or Hugging Face identifier")
-    parser.add_argument("--prompt-suite", type=Path, default=Path(__file__).parent / "prompt_suite.jsonl")
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent / "outputs")
+    parser = argparse.ArgumentParser(
+        description="Dense vs TurboPolar benchmark on an MLX model"
+    )
+    parser.add_argument(
+        "--model", required=True, help="MLX model path or Hugging Face identifier"
+    )
+    parser.add_argument(
+        "--prompt-suite",
+        type=Path,
+        default=Path(__file__).parent / "prompt_suite.jsonl",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path(__file__).parent / "outputs"
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-tokens", type=int, default=128, help="Max prompt length in tokens")
-    parser.add_argument("--num-decode", type=int, default=32, help="Tokens to measure decode speed")
-    parser.add_argument("--skip-decode-speed", action="store_true", help="Skip decode speed measurement")
+    parser.add_argument(
+        "--max-tokens", type=int, default=128, help="Max prompt length in tokens"
+    )
+    parser.add_argument(
+        "--num-decode", type=int, default=32, help="Tokens to measure decode speed"
+    )
+    parser.add_argument(
+        "--skip-decode-speed", action="store_true", help="Skip decode speed measurement"
+    )
     args = parser.parse_args()
 
     mx.random.seed(args.seed)
@@ -255,14 +287,22 @@ def main():
     if not prompts:
         raise ValueError(f"No prompts found in {args.prompt_suite}")
 
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
 
     results = []
     for i, prompt in enumerate(prompts):
-        print(f"Benchmarking prompt {i + 1}/{len(prompts)} ({len(tokenizer.encode(prompt))} tokens)")
-        result = benchmark_prompt(model, tokenizer, prompt, args.max_tokens, args.num_decode)
+        print(
+            f"Benchmarking prompt {i + 1}/{len(prompts)} ({len(tokenizer.encode(prompt))} tokens)"
+        )
+        result = benchmark_prompt(
+            model, tokenizer, prompt, args.max_tokens, args.num_decode
+        )
         results.append(result)
-        print(f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x")
+        print(
+            f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x"
+        )
 
     # Decode speed measured separately on the first prompt so it does not corrupt per-prompt caches.
     dense_decode_tok_per_sec: Optional[float] = None
@@ -272,10 +312,16 @@ def main():
         tokens = tokenizer.encode(prompts[0])[: args.max_tokens]
         num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
         dense_cache = _make_dense_cache(num_layers)
-        dense_decode_tok_per_sec = _measure_decode_speed(model, tokenizer, dense_cache, tokens, args.num_decode)
+        dense_decode_tok_per_sec = _measure_decode_speed(
+            model, tokenizer, dense_cache, tokens, args.num_decode
+        )
         turbo_cache = _make_turbo_cache(num_layers, num_q_heads, num_kv_heads, head_dim)
-        turbo_decode_tok_per_sec = _measure_decode_speed(model, tokenizer, turbo_cache, tokens, args.num_decode)
-        print(f"  dense: {dense_decode_tok_per_sec:.2f} tok/s  turbo: {turbo_decode_tok_per_sec:.2f} tok/s")
+        turbo_decode_tok_per_sec = _measure_decode_speed(
+            model, tokenizer, turbo_cache, tokens, args.num_decode
+        )
+        print(
+            f"  dense: {dense_decode_tok_per_sec:.2f} tok/s  turbo: {turbo_decode_tok_per_sec:.2f} tok/s"
+        )
 
     # Promotion gates are evaluated only on prompts long enough to exercise
     # compressed blocks. Short prompts (< block_size) live entirely in the raw
@@ -283,7 +329,9 @@ def main():
     MIN_GATE_TOKENS = 64
     gate_results = [r for r in results if r.prompt_tokens >= MIN_GATE_TOKENS]
     if not gate_results:
-        print(f"WARNING: no prompts reached {MIN_GATE_TOKENS} tokens; gate metrics will be pessimistic.")
+        print(
+            f"WARNING: no prompts reached {MIN_GATE_TOKENS} tokens; gate metrics will be pessimistic."
+        )
         gate_results = results
 
     aggregate = {
@@ -292,7 +340,9 @@ def main():
         "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])),
         "kl_divergence": float(np.mean([r.kl_divergence for r in gate_results])),
         "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])),
-        "compression_ratio": float(np.mean([r.compression_ratio for r in gate_results])),
+        "compression_ratio": float(
+            np.mean([r.compression_ratio for r in gate_results])
+        ),
         "peak_kv_bytes_dense": int(np.max([r.peak_kv_bytes_dense for r in results])),
         "peak_kv_bytes_turbo": int(np.max([r.peak_kv_bytes_turbo for r in results])),
         "decode_speed_dense_tok_per_sec": dense_decode_tok_per_sec,

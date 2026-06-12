@@ -84,7 +84,9 @@ class TestLongContextGates(unittest.TestCase):
         evidence = self._evidence_with_speed(max_ratio_at_4096_plus=1.01)
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
-        self.assertTrue(any("No long-context tier improved" in r for r in decision.reasons))
+        self.assertTrue(
+            any("No long-context tier improved" in r for r in decision.reasons)
+        )
 
     def test_low_median_at_8192_blocks(self):
         evidence = self._evidence_with_speed(median_ratio_at_8192_plus=1.01)

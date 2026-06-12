@@ -293,11 +293,10 @@ class PromotionEvidence:
             speed_report=_optional(SpeedReport.from_dict, data.get("speed_report")),
             memory_report=_optional(MemoryReport.from_dict, data.get("memory_report")),
             baseline_comparison_report=_optional(
-                BaselineComparisonReport.from_dict, data.get("baseline_comparison_report")
+                BaselineComparisonReport.from_dict,
+                data.get("baseline_comparison_report"),
             ),
-            provenance=_optional(
-                BenchmarkProvenance.from_dict, data.get("provenance")
-            ),
+            provenance=_optional(BenchmarkProvenance.from_dict, data.get("provenance")),
         )
 
 

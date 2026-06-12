@@ -57,6 +57,9 @@ include = ["rfsn_v11*"]
 "rfsn_v11.kernels.turbo_polar" = ["*.metal"]
 "rfsn_v11.kernels.cartesian_int8" = ["*.metal"]
 
+[tool.ruff.lint]
+ignore = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

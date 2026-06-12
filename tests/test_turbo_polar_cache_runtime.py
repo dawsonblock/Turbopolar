@@ -1,6 +1,5 @@
 import unittest
 import mlx.core as mx
-import numpy as np
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
@@ -15,6 +14,7 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
       D = 64 and 128
       H_q/H_kv = 1:1 and 4:1
     """
+
     def _make_config(self, gqa_ratio=1):
         return TurboPolarConfig(
             head_dim=128,
@@ -73,7 +73,9 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         block, quant_v, _, _, actual_len = cache.get_blocks_for_attention()
         self.assertEqual(actual_len, 64)
         decoder = PolarQuantDecoder()
-        k_recon = decoder.decode_block(block).reshape(1, config.num_kv_heads, 64, config.head_dim)
+        k_recon = decoder.decode_block(block).reshape(
+            1, config.num_kv_heads, 64, config.head_dim
+        )
         recon_error = float(mx.mean(mx.abs(k_recon - k)))
         self.assertLess(recon_error, 0.5)
 
@@ -83,14 +85,26 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         with self.assertRaises(ValueError):
             TurboPolarConfig(head_dim=128, block_size=32, num_q_heads=4, num_kv_heads=4)
         with self.assertRaises(NotImplementedError):
-            TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, use_qjl=True)
+            TurboPolarConfig(
+                head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, use_qjl=True
+            )
         with self.assertRaises(ValueError):
-            TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, storage_mode="dense_v_debug")
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                num_q_heads=4,
+                num_kv_heads=4,
+                storage_mode="dense_v_debug",
+            )
 
     def test_qjl_optional_not_stored(self):
         config = TurboPolarConfig(
-            head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4,
-            use_qjl=False, storage_mode="kv_quant",
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+            storage_mode="kv_quant",
         )
         cache = TurboPolarKVCacheRuntime(config)
         k = mx.random.normal(shape=[1, 4, 64, 128])
@@ -102,8 +116,12 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
 
     def test_gqa_attention_payload(self):
         config = TurboPolarConfig(
-            head_dim=128, block_size=64, num_q_heads=8, num_kv_heads=2,
-            use_qjl=False, storage_mode="kv_quant",
+            head_dim=128,
+            block_size=64,
+            num_q_heads=8,
+            num_kv_heads=2,
+            use_qjl=False,
+            storage_mode="kv_quant",
         )
         cache = TurboPolarKVCacheRuntime(config)
         k = mx.random.normal(shape=[1, 2, 64, 128])
@@ -134,20 +152,28 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
 
         # Mismatched k/v shape
         with self.assertRaises(ValueError):
-            cache.append(mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 2, 128)))
+            cache.append(
+                mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 2, 128))
+            )
 
         # Wrong number of KV heads
         with self.assertRaises(ValueError):
-            cache.append(mx.random.normal((1, 2, 1, 128)), mx.random.normal((1, 2, 1, 128)))
+            cache.append(
+                mx.random.normal((1, 2, 1, 128)), mx.random.normal((1, 2, 1, 128))
+            )
 
         # Wrong head dimension
         with self.assertRaises(ValueError):
-            cache.append(mx.random.normal((1, 4, 1, 64)), mx.random.normal((1, 4, 1, 64)))
+            cache.append(
+                mx.random.normal((1, 4, 1, 64)), mx.random.normal((1, 4, 1, 64))
+            )
 
         # Batch size changes after first append
         cache.append(mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 1, 128)))
         with self.assertRaises(ValueError):
-            cache.append(mx.random.normal((2, 4, 1, 128)), mx.random.normal((2, 4, 1, 128)))
+            cache.append(
+                mx.random.normal((2, 4, 1, 128)), mx.random.normal((2, 4, 1, 128))
+            )
 
 
 if __name__ == "__main__":

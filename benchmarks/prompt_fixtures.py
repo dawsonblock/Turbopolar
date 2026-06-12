@@ -23,7 +23,9 @@ CATEGORY_LENGTHS: List[Tuple[str, int]] = [
 ]
 
 
-def _token_sequence(length: int, start_id: int = 10, vocab_stride: int = 80) -> List[int]:
+def _token_sequence(
+    length: int, start_id: int = 10, vocab_stride: int = 80
+) -> List[int]:
     """Return a deterministic token-id sequence of the requested length."""
     return [(start_id + (i % vocab_stride)) for i in range(length)]
 
@@ -113,24 +115,32 @@ def normalize_prompts(
             obj = json.loads(line)
             if isinstance(obj, dict) and "tokens" in obj:
                 tokens = [int(t) for t in obj["tokens"]]
-                normalized.append({
-                    "category": obj.get("category", "default"),
-                    "tokens": tokens,
-                    "text": tokenizer.decode(tokens) if hasattr(tokenizer, "decode") else "",
-                })
+                normalized.append(
+                    {
+                        "category": obj.get("category", "default"),
+                        "tokens": tokens,
+                        "text": tokenizer.decode(tokens)
+                        if hasattr(tokenizer, "decode")
+                        else "",
+                    }
+                )
             elif isinstance(obj, dict):
                 text = obj.get("prompt", obj.get("text", ""))
                 tokens = tokenizer.encode(text)
-                normalized.append({
-                    "category": "default",
-                    "tokens": tokens,
-                    "text": text,
-                })
+                normalized.append(
+                    {
+                        "category": "default",
+                        "tokens": tokens,
+                        "text": text,
+                    }
+                )
             elif isinstance(obj, str):
                 tokens = tokenizer.encode(obj)
-                normalized.append({
-                    "category": "default",
-                    "tokens": tokens,
-                    "text": obj,
-                })
+                normalized.append(
+                    {
+                        "category": "default",
+                        "tokens": tokens,
+                        "text": obj,
+                    }
+                )
     return normalized

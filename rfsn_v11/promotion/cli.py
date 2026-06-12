@@ -2,7 +2,6 @@
 
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 from rfsn_v11.promotion.gate import PromotionGate
@@ -10,7 +9,9 @@ from rfsn_v11.promotion.schema import PromotionEvidence
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate TurboPolar promotion evidence.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate TurboPolar promotion evidence."
+    )
     parser.add_argument(
         "--evidence",
         type=Path,

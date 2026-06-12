@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import mlx.core as mx
 
@@ -49,11 +49,13 @@ def _measure_length(length: int, config: TurboPolarConfig) -> Dict[str, Any]:
         "length": length,
         "logical_kv_ratio": (
             dense_equivalent / stats.logical_payload_bytes
-            if stats.logical_payload_bytes > 0 else 0.0
+            if stats.logical_payload_bytes > 0
+            else 0.0
         ),
         "persistent_storage_ratio": (
             dense_equivalent / stats.allocated_capacity_bytes
-            if stats.allocated_capacity_bytes > 0 else 0.0
+            if stats.allocated_capacity_bytes > 0
+            else 0.0
         ),
         "peak_device_memory_ratio": (
             dense_peak / turbo_peak if turbo_peak > 0 else 0.0

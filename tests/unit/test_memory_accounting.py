@@ -91,10 +91,11 @@ class TestMemoryAccounting(unittest.TestCase):
             + B * H * page_capacity * 1 * 1 * 2
         )
         expected_v_allocated = (
-            B * H * page_capacity * L * D
-            + B * H * page_capacity * L * num_groups * 2
+            B * H * page_capacity * L * D + B * H * page_capacity * L * num_groups * 2
         )
-        expected_allocated = expected_k_allocated + expected_v_allocated + allocated_tail_buffers
+        expected_allocated = (
+            expected_k_allocated + expected_v_allocated + allocated_tail_buffers
+        )
         self.assertEqual(stats.logical_payload_bytes, expected_logical)
         self.assertEqual(stats.allocated_capacity_bytes, expected_allocated)
         self.assertEqual(stats.dense_tail_bytes, 0)

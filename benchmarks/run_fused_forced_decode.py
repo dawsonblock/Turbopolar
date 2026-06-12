@@ -18,11 +18,9 @@ during numerical comparison.
 """
 
 import argparse
-import json
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import mlx.core as mx
 import mlx_lm
@@ -154,10 +152,15 @@ def _compute_step_metrics(
 
     dense_probs = _softmax(dense_last)
     turbo_probs = _softmax(turbo_last)
-    dense_argmax_prob_delta = float(abs(dense_probs[dense_argmax] - turbo_probs[dense_argmax]))
+    dense_argmax_prob_delta = float(
+        abs(dense_probs[dense_argmax] - turbo_probs[dense_argmax])
+    )
 
     nll_delta = float(
-        abs(-np.log(dense_probs[forced_token] + 1e-12) + np.log(turbo_probs[forced_token] + 1e-12))
+        abs(
+            -np.log(dense_probs[forced_token] + 1e-12)
+            + np.log(turbo_probs[forced_token] + 1e-12)
+        )
     )
 
     return DecodeStepMetrics(
@@ -207,7 +210,9 @@ def benchmark_forced_decode_fixture(
     adapter: TurboPolarLlamaAdapter,
 ) -> ForcedDecodeFixtureResult:
     """Run one forced-decode fixture and return per-step metrics."""
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
 
     dense_cache = [KVCache() for _ in range(num_layers)]
@@ -239,7 +244,9 @@ def benchmark_forced_decode_fixture(
         dense_prefill_last = np.array(dense_prefill[:, -1, :].astype(mx.float32))
         turbo_prefill_last = np.array(turbo_prefill[:, -1, :].astype(mx.float32))
         if len(continuation_tokens) > 0:
-            step = _compute_step_metrics(dense_prefill_last, turbo_prefill_last, continuation_tokens[0], 0)
+            step = _compute_step_metrics(
+                dense_prefill_last, turbo_prefill_last, continuation_tokens[0], 0
+            )
             steps.append(step)
             dense_nlls.append(_nll(dense_prefill_last, continuation_tokens[0]))
             turbo_nlls.append(_nll(turbo_prefill_last, continuation_tokens[0]))
@@ -287,7 +294,9 @@ def benchmark_forced_decode_fixture(
     )
 
 
-def _compute_aggregate(results: List[ForcedDecodeFixtureResult]) -> ForcedDecodeAggregate:
+def _compute_aggregate(
+    results: List[ForcedDecodeFixtureResult],
+) -> ForcedDecodeAggregate:
     all_cosines = [s.logit_cosine for r in results for s in r.steps]
     all_top1 = [float(s.top1_agreement) for r in results for s in r.steps]
     all_top5 = [s.top5_overlap for r in results for s in r.steps]
@@ -425,32 +434,40 @@ def main():
     prompt_source = args.token_fixtures
     normalized = normalize_prompts(tokenizer, prompt_source) if prompt_source else []
     if not normalized:
-        print("No token fixtures provided; generating synthetic deterministic sequences.")
+        print(
+            "No token fixtures provided; generating synthetic deterministic sequences."
+        )
         fixtures = []
         for ctx_len in args.contexts:
             # Deterministic synthetic context.
             rng = np.random.RandomState(args.seed + ctx_len)
-            context_tokens = [int(rng.randint(0, tokenizer.vocab_size)) for _ in range(ctx_len)]
+            context_tokens = [
+                int(rng.randint(0, tokenizer.vocab_size)) for _ in range(ctx_len)
+            ]
             continuation_tokens = [
                 int(rng.randint(0, tokenizer.vocab_size))
                 for _ in range(args.forced_decode_tokens)
             ]
-            fixtures.append({
-                "tokens": context_tokens + continuation_tokens,
-                "context_length": ctx_len,
-                "continuation_length": args.forced_decode_tokens,
-            })
+            fixtures.append(
+                {
+                    "tokens": context_tokens + continuation_tokens,
+                    "context_length": ctx_len,
+                    "continuation_length": args.forced_decode_tokens,
+                }
+            )
     else:
         fixtures = []
         for entry in normalized:
             tokens = entry["tokens"]
             for ctx_len in args.contexts:
                 if len(tokens) >= ctx_len + args.forced_decode_tokens:
-                    fixtures.append({
-                        "tokens": tokens,
-                        "context_length": ctx_len,
-                        "continuation_length": args.forced_decode_tokens,
-                    })
+                    fixtures.append(
+                        {
+                            "tokens": tokens,
+                            "context_length": ctx_len,
+                            "continuation_length": args.forced_decode_tokens,
+                        }
+                    )
                     break
 
     if not fixtures:
@@ -459,7 +476,10 @@ def main():
     results: List[ForcedDecodeFixtureResult] = []
     for i, fixture in enumerate(fixtures):
         ctx = fixture["tokens"][: fixture["context_length"]]
-        cont = fixture["tokens"][fixture["context_length"] : fixture["context_length"] + fixture["continuation_length"]]
+        cont = fixture["tokens"][
+            fixture["context_length"] : fixture["context_length"]
+            + fixture["continuation_length"]
+        ]
         print(
             f"Fixture {i + 1}/{len(fixtures)}: context={len(ctx)} continuation={len(cont)}"
         )
@@ -485,7 +505,9 @@ def main():
         mlx_lm_version=mlx_lm.__version__,
         dtype="unknown",
         seed=args.seed,
-        num_layers=len(model.layers) if hasattr(model, "layers") else len(model.model.layers),
+        num_layers=len(model.layers)
+        if hasattr(model, "layers")
+        else len(model.model.layers),
         forced_decode_tokens=args.forced_decode_tokens,
         aggregate=aggregate,
         fixtures=results,

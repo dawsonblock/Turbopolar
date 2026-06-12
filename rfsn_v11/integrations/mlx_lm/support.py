@@ -2,8 +2,6 @@
 
 from typing import Any, Tuple
 
-import mlx.core as mx
-
 
 SUPPORTED_MODULE_NAME = "mlx_lm.models.llama.Attention"
 
@@ -34,15 +32,21 @@ def validate_llama_model(model: Any) -> Tuple[int, int, int]:
         layers = model.model.layers
 
     if layers is None:
-        raise ValueError("Model has no layers attribute; not a supported Llama implementation.")
+        raise ValueError(
+            "Model has no layers attribute; not a supported Llama implementation."
+        )
 
     if len(layers) == 0:
         raise ValueError("Model has no layers.")
 
     first_layer = layers[0]
-    attention = getattr(first_layer, "attention", getattr(first_layer, "self_attn", None))
+    attention = getattr(
+        first_layer, "attention", getattr(first_layer, "self_attn", None)
+    )
     if attention is None:
-        raise ValueError("Layer has no attention/self_attn attribute; not a supported Llama implementation.")
+        raise ValueError(
+            "Layer has no attention/self_attn attribute; not a supported Llama implementation."
+        )
 
     fqn = _module_fqn(attention)
     if fqn != SUPPORTED_MODULE_NAME:
@@ -56,7 +60,9 @@ def validate_llama_model(model: Any) -> Tuple[int, int, int]:
         raise ValueError("Attention module missing n_heads or n_kv_heads.")
 
     if n_heads % n_kv_heads != 0:
-        raise ValueError(f"GQA ratio does not divide: n_heads={n_heads}, n_kv_heads={n_kv_heads}")
+        raise ValueError(
+            f"GQA ratio does not divide: n_heads={n_heads}, n_kv_heads={n_kv_heads}"
+        )
 
     # Infer head_dim from q_proj weight shape: [hidden_size, head_dim] per head?
     # In mlx_lm Llama, q_proj.weight shape is (n_heads * head_dim, hidden_size).
@@ -67,11 +73,15 @@ def validate_llama_model(model: Any) -> Tuple[int, int, int]:
 
     hidden_size = q_proj.weight.shape[0]
     if hidden_size % n_heads != 0:
-        raise ValueError(f"hidden_size {hidden_size} not divisible by n_heads {n_heads}")
+        raise ValueError(
+            f"hidden_size {hidden_size} not divisible by n_heads {n_heads}"
+        )
 
     head_dim = hidden_size // n_heads
     if head_dim != 128:
-        raise ValueError(f"TurboPolar adapter only supports head_dim=128, got {head_dim}")
+        raise ValueError(
+            f"TurboPolar adapter only supports head_dim=128, got {head_dim}"
+        )
 
     return int(n_heads), int(n_kv_heads), int(head_dim)
 
@@ -80,9 +90,20 @@ def validate_attention_module(attn: Any, layer_index: int):
     """Validate a single attention module within a Llama model."""
     fqn = _module_fqn(attn)
     if fqn != SUPPORTED_MODULE_NAME:
-        raise ValueError(f"Layer {layer_index}: expected {SUPPORTED_MODULE_NAME}, got {fqn}")
+        raise ValueError(
+            f"Layer {layer_index}: expected {SUPPORTED_MODULE_NAME}, got {fqn}"
+        )
 
-    required = ("q_proj", "k_proj", "v_proj", "o_proj", "rope", "n_heads", "n_kv_heads", "scale")
+    required = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "rope",
+        "n_heads",
+        "n_kv_heads",
+        "scale",
+    )
     for attr in required:
         if not hasattr(attn, attr):
             raise ValueError(f"Layer {layer_index}: attention module missing {attr}")

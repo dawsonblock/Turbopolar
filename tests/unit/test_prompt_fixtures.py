@@ -25,7 +25,9 @@ class TestPromptFixtures(unittest.TestCase):
         self.assertEqual(len(fixtures), len(set(f["length"] for f in fixtures)))
         for fx in fixtures:
             self.assertEqual(len(fx["tokens"]), fx["length"])
-            self.assertIn(fx["category"], ("short", "boundary", "medium", "long", "stress"))
+            self.assertIn(
+                fx["category"], ("short", "boundary", "medium", "long", "stress")
+            )
 
     def test_token_fixtures_are_deterministic(self):
         a = build_exact_token_fixtures()
@@ -43,7 +45,9 @@ class TestPromptFixtures(unittest.TestCase):
         path.unlink()
 
     def test_normalize_text_prompts_returns_tokens(self):
-        suite_path = Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"
+        suite_path = (
+            Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"
+        )
         normalized = normalize_prompts(_FakeTokenizer(), suite_path)
         self.assertTrue(len(normalized) > 0)
         for entry in normalized:
@@ -54,13 +58,19 @@ class TestPromptFixtures(unittest.TestCase):
 
     def test_normalize_token_fixtures_returns_exact_lengths(self):
         fixtures_path = (
-            Path(__file__).resolve().parents[2] / "benchmarks" / "exact_token_fixtures.jsonl"
+            Path(__file__).resolve().parents[2]
+            / "benchmarks"
+            / "exact_token_fixtures.jsonl"
         )
         normalized = normalize_prompts(_FakeTokenizer(), fixtures_path)
         self.assertTrue(len(normalized) > 0)
         for entry in normalized:
-            self.assertIn(entry["category"], ("short", "boundary", "medium", "long", "stress"))
-            self.assertEqual(len(entry["tokens"]), len(_FakeTokenizer().encode(entry["text"])))
+            self.assertIn(
+                entry["category"], ("short", "boundary", "medium", "long", "stress")
+            )
+            self.assertEqual(
+                len(entry["tokens"]), len(_FakeTokenizer().encode(entry["text"]))
+            )
 
 
 if __name__ == "__main__":

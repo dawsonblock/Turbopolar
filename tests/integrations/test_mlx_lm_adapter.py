@@ -2,7 +2,6 @@
 
 import unittest
 
-import mlx.core as mx
 from mlx_lm.models import llama
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
@@ -107,7 +106,9 @@ class TestMLXLMAdapter(unittest.TestCase):
         adapter.uninstall()
 
     def test_unsupported_head_dim_rejected(self):
-        model = _make_tiny_llama(hidden_size=128, num_attention_heads=2, num_key_value_heads=1)
+        model = _make_tiny_llama(
+            hidden_size=128, num_attention_heads=2, num_key_value_heads=1
+        )
         adapter = TurboPolarLlamaAdapter(self.config)
         with self.assertRaises(ValueError):
             adapter.install(model)

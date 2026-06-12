@@ -39,7 +39,9 @@ def _dense_attention(q, k_hist, v_hist, scale):
     return mx.sum(weights[:, :, :, None] * v_rep, axis=-2)
 
 
-@pytest.mark.parametrize("num_tokens", [1, 63, 64, 65, 127, 128, 129, 1024, 1025, 2048, 4096])
+@pytest.mark.parametrize(
+    "num_tokens", [1, 63, 64, 65, 127, 128, 129, 1024, 1025, 2048, 4096]
+)
 def test_append_many_matches_token_loop(num_tokens):
     """Vectorized append_many must produce identical cache state to token-loop append."""
     config = _make_config()
@@ -59,11 +61,16 @@ def test_append_many_matches_token_loop(num_tokens):
     # Same decoded K/V from paged storage
     from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
     from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
+
     decoder = PolarQuantDecoder()
     v_dequant = GroupedVQuantizer(group_size=32)
 
-    block_loop, quant_v_loop, tail_k_loop, tail_v_loop, _, actual_len_loop = cache_loop.get_fused_attention_inputs()
-    block_batch, quant_v_batch, tail_k_batch, tail_v_batch, _, actual_len_batch = cache_batch.get_fused_attention_inputs()
+    block_loop, quant_v_loop, tail_k_loop, tail_v_loop, _, actual_len_loop = (
+        cache_loop.get_fused_attention_inputs()
+    )
+    block_batch, quant_v_batch, tail_k_batch, tail_v_batch, _, actual_len_batch = (
+        cache_batch.get_fused_attention_inputs()
+    )
 
     assert actual_len_batch == actual_len_loop == num_tokens
 
@@ -77,42 +84,66 @@ def test_append_many_matches_token_loop(num_tokens):
 
     if tail_k_loop is not None and tail_k_loop.shape[2] > 0:
         assert tail_k_batch is not None and tail_k_batch.shape[2] > 0
-        assert mx.allclose(tail_k_loop[:, :, :actual_len_loop, :], tail_k_batch[:, :, :actual_len_batch, :], atol=1e-3)
+        assert mx.allclose(
+            tail_k_loop[:, :, :actual_len_loop, :],
+            tail_k_batch[:, :, :actual_len_batch, :],
+            atol=1e-3,
+        )
     else:
         assert tail_k_batch is None or tail_k_batch.shape[2] == 0
 
     if quant_v_loop is not None:
         assert quant_v_batch is not None
-        v_dense_loop = v_dequant.dequantize_block(quant_v_loop).reshape(1, 4, -1, 128)[:, :, :actual_len_loop, :]
-        v_dense_batch = v_dequant.dequantize_block(quant_v_batch).reshape(1, 4, -1, 128)[:, :, :actual_len_batch, :]
+        v_dense_loop = v_dequant.dequantize_block(quant_v_loop).reshape(1, 4, -1, 128)[
+            :, :, :actual_len_loop, :
+        ]
+        v_dense_batch = v_dequant.dequantize_block(quant_v_batch).reshape(
+            1, 4, -1, 128
+        )[:, :, :actual_len_batch, :]
         assert mx.allclose(v_dense_loop, v_dense_batch, atol=1e-3)
 
     if tail_v_loop is not None and tail_v_loop.shape[2] > 0:
         assert tail_v_batch is not None and tail_v_batch.shape[2] > 0
-        assert mx.allclose(tail_v_loop[:, :, :actual_len_loop, :], tail_v_batch[:, :, :actual_len_batch, :], atol=1e-3)
+        assert mx.allclose(
+            tail_v_loop[:, :, :actual_len_loop, :],
+            tail_v_batch[:, :, :actual_len_batch, :],
+            atol=1e-3,
+        )
     else:
         assert tail_v_batch is None or tail_v_batch.shape[2] == 0
 
     # Same attention output
     q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
-    scale = 1.0 / (128 ** 0.5)
+    scale = 1.0 / (128**0.5)
 
     if block_loop is not None:
         k_full_loop = decoder.decode_block(block_loop)[:, :, :actual_len_loop, :]
-        v_full_loop = v_dequant.dequantize_block(quant_v_loop).reshape(1, 4, -1, 128)[:, :, :actual_len_loop, :]
+        v_full_loop = v_dequant.dequantize_block(quant_v_loop).reshape(1, 4, -1, 128)[
+            :, :, :actual_len_loop, :
+        ]
         if tail_k_loop is not None and tail_k_loop.shape[2] > 0:
-            k_full_loop = mx.concatenate([k_full_loop, tail_k_loop[:, :, :actual_len_loop, :]], axis=2)
-            v_full_loop = mx.concatenate([v_full_loop, tail_v_loop[:, :, :actual_len_loop, :]], axis=2)
+            k_full_loop = mx.concatenate(
+                [k_full_loop, tail_k_loop[:, :, :actual_len_loop, :]], axis=2
+            )
+            v_full_loop = mx.concatenate(
+                [v_full_loop, tail_v_loop[:, :, :actual_len_loop, :]], axis=2
+            )
     else:
         k_full_loop = tail_k_loop[:, :, :actual_len_loop, :]
         v_full_loop = tail_v_loop[:, :, :actual_len_loop, :]
 
     if block_batch is not None:
         k_full_batch = decoder.decode_block(block_batch)[:, :, :actual_len_batch, :]
-        v_full_batch = v_dequant.dequantize_block(quant_v_batch).reshape(1, 4, -1, 128)[:, :, :actual_len_batch, :]
+        v_full_batch = v_dequant.dequantize_block(quant_v_batch).reshape(1, 4, -1, 128)[
+            :, :, :actual_len_batch, :
+        ]
         if tail_k_batch is not None and tail_k_batch.shape[2] > 0:
-            k_full_batch = mx.concatenate([k_full_batch, tail_k_batch[:, :, :actual_len_batch, :]], axis=2)
-            v_full_batch = mx.concatenate([v_full_batch, tail_v_batch[:, :, :actual_len_batch, :]], axis=2)
+            k_full_batch = mx.concatenate(
+                [k_full_batch, tail_k_batch[:, :, :actual_len_batch, :]], axis=2
+            )
+            v_full_batch = mx.concatenate(
+                [v_full_batch, tail_v_batch[:, :, :actual_len_batch, :]], axis=2
+            )
     else:
         k_full_batch = tail_k_batch[:, :, :actual_len_batch, :]
         v_full_batch = tail_v_batch[:, :, :actual_len_batch, :]

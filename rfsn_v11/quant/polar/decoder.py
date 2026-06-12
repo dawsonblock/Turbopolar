@@ -34,9 +34,11 @@ class PolarQuantDecoder:
         deep_orig = block.metadata.get("deep_original_len", D // 2 - split_half)
 
         # Unpack level1 (4-bit or 8-bit)
-        l1_bits = block.metadata.get("l1_bits", 4)
         if block.metadata.get("l1_packed", False):
-            norm_l1 = self._unpack_4bit(block.angle_codes_l1, l1_orig).astype(mx.float32) / l1_scale
+            norm_l1 = (
+                self._unpack_4bit(block.angle_codes_l1, l1_orig).astype(mx.float32)
+                / l1_scale
+            )
         else:
             norm_l1 = block.angle_codes_l1[..., :l1_orig].astype(mx.float32) / l1_scale
 
@@ -44,21 +46,38 @@ class PolarQuantDecoder:
         deep_bits = block.metadata.get("deep_bits", 2)
         if block.metadata.get("deep_packed", False):
             if deep_bits == 4:
-                norm_deep = self._unpack_4bit(block.angle_codes_deep, deep_orig).astype(mx.float32) / deep_scale
+                norm_deep = (
+                    self._unpack_4bit(block.angle_codes_deep, deep_orig).astype(
+                        mx.float32
+                    )
+                    / deep_scale
+                )
             elif deep_bits == 2:
-                norm_deep = self._unpack_2bit(block.angle_codes_deep, deep_orig).astype(mx.float32) / deep_scale
+                norm_deep = (
+                    self._unpack_2bit(block.angle_codes_deep, deep_orig).astype(
+                        mx.float32
+                    )
+                    / deep_scale
+                )
             else:
                 raise ValueError(f"unsupported deep_bits: {deep_bits}")
         else:
-            norm_deep = block.angle_codes_deep[..., :deep_orig].astype(mx.float32) / deep_scale
+            norm_deep = (
+                block.angle_codes_deep[..., :deep_orig].astype(mx.float32) / deep_scale
+            )
 
         norm_angles = mx.concatenate([norm_l1, norm_deep], axis=-1)
         angles = norm_angles * (2.0 * np.pi) - np.pi
         if block.radii_scales is not None:
             if block.metadata.get("log_radii", False):
-                radii_fp = mx.exp(block.radii.astype(mx.float32) * block.radii_scales.astype(mx.float32))
+                radii_fp = mx.exp(
+                    block.radii.astype(mx.float32)
+                    * block.radii_scales.astype(mx.float32)
+                )
             else:
-                radii_fp = block.radii.astype(mx.float32) * block.radii_scales.astype(mx.float32)
+                radii_fp = block.radii.astype(mx.float32) * block.radii_scales.astype(
+                    mx.float32
+                )
         else:
             radii_fp = block.radii.astype(mx.float32)
         k_x = radii_fp * mx.cos(angles)
@@ -81,5 +100,7 @@ class PolarQuantDecoder:
         b1 = (packed >> 2) & 0x03
         b2 = (packed >> 4) & 0x03
         b3 = (packed >> 6) & 0x03
-        interleaved = mx.stack([b0, b1, b2, b3], axis=-1).reshape(packed.shape[:-1] + (-1,))
+        interleaved = mx.stack([b0, b1, b2, b3], axis=-1).reshape(
+            packed.shape[:-1] + (-1,)
+        )
         return interleaved[..., :original_len]

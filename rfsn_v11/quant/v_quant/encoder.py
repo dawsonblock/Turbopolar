@@ -56,7 +56,9 @@ class GroupedVQuantizer:
     def dequantize_block(self, block: QuantizedVBlock) -> mx.array:
         B, H, S, L, D = block.codes.shape
         num_groups = D // block.group_size
-        reshaped_codes = block.codes.reshape(B, H, S, L, num_groups, block.group_size).astype(mx.float32)
+        reshaped_codes = block.codes.reshape(
+            B, H, S, L, num_groups, block.group_size
+        ).astype(mx.float32)
         reshaped_scales = mx.expand_dims(block.scales, axis=-1).astype(mx.float32)
         dequantized = reshaped_codes * reshaped_scales
         return dequantized.reshape(B, H, S, L, D).astype(mx.float16)

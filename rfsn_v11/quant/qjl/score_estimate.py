@@ -3,7 +3,9 @@ import numpy as np
 from rfsn_v11.quant.qjl.encoder import QJLPayload
 
 
-def qjl_dot_estimate(q: mx.array, qjl_payload: QJLPayload, q_proj_signs: mx.array) -> mx.array:
+def qjl_dot_estimate(
+    q: mx.array, qjl_payload: QJLPayload, q_proj_signs: mx.array
+) -> mx.array:
     """
     Estimate q · E (the residual dot-product) from packed QJL sign sketches.
 

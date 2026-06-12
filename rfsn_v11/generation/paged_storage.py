@@ -233,11 +233,21 @@ class PagedPolarKStorage:
 
         idx = last_page.valid_blocks
         # block fields are 4-D [B, H, L, ...]; page fields are 5-D [B, H, C, L, ...]
-        last_page.radii = _set_block(last_page.radii, idx, mx.expand_dims(block.radii, axis=2))
-        last_page.angle_codes_l1 = _set_block(last_page.angle_codes_l1, idx, mx.expand_dims(block.angle_codes_l1, axis=2))
-        last_page.angle_codes_deep = _set_block(last_page.angle_codes_deep, idx, mx.expand_dims(block.angle_codes_deep, axis=2))
+        last_page.radii = _set_block(
+            last_page.radii, idx, mx.expand_dims(block.radii, axis=2)
+        )
+        last_page.angle_codes_l1 = _set_block(
+            last_page.angle_codes_l1, idx, mx.expand_dims(block.angle_codes_l1, axis=2)
+        )
+        last_page.angle_codes_deep = _set_block(
+            last_page.angle_codes_deep,
+            idx,
+            mx.expand_dims(block.angle_codes_deep, axis=2),
+        )
         if block.radii_scales is not None:
-            last_page.radii_scales = _set_block(last_page.radii_scales, idx, mx.expand_dims(block.radii_scales, axis=2))
+            last_page.radii_scales = _set_block(
+                last_page.radii_scales, idx, mx.expand_dims(block.radii_scales, axis=2)
+            )
         last_page.valid_blocks += 1
         self.total_valid_blocks += 1
 
@@ -257,11 +267,13 @@ class PagedPolarKStorage:
         for page in self.pages:
             if page.valid_blocks == 0:
                 continue
-            all_radii.append(page.radii[:, :, :page.valid_blocks, :, :])
-            all_angle_l1.append(page.angle_codes_l1[:, :, :page.valid_blocks, :, :])
-            all_angle_deep.append(page.angle_codes_deep[:, :, :page.valid_blocks, :, :])
+            all_radii.append(page.radii[:, :, : page.valid_blocks, :, :])
+            all_angle_l1.append(page.angle_codes_l1[:, :, : page.valid_blocks, :, :])
+            all_angle_deep.append(
+                page.angle_codes_deep[:, :, : page.valid_blocks, :, :]
+            )
             if page.radii_scales is not None:
-                all_scales.append(page.radii_scales[:, :, :page.valid_blocks, :, :])
+                all_scales.append(page.radii_scales[:, :, : page.valid_blocks, :, :])
 
         radii = mx.concatenate(all_radii, axis=2)
         angle_l1 = mx.concatenate(all_angle_l1, axis=2)
@@ -291,11 +303,13 @@ class PagedPolarKStorage:
             for arr in (page.radii, page.angle_codes_l1, page.angle_codes_deep):
                 allocated += _nbytes(arr)
                 if page.valid_blocks > 0:
-                    logical += _nbytes(arr[:, :, :page.valid_blocks, :, :])
+                    logical += _nbytes(arr[:, :, : page.valid_blocks, :, :])
             if page.radii_scales is not None:
                 allocated += _nbytes(page.radii_scales)
                 if page.valid_blocks > 0:
-                    logical += _nbytes(page.radii_scales[:, :, :page.valid_blocks, :, :])
+                    logical += _nbytes(
+                        page.radii_scales[:, :, : page.valid_blocks, :, :]
+                    )
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> PolarKeyBlock:
@@ -306,11 +320,22 @@ class PagedPolarKStorage:
                 f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
             )
         return PolarKeyBlock(
-            radii=page.radii[:, :, block_index:block_index + 1, :, :],
-            angle_codes_l1=page.angle_codes_l1[:, :, block_index:block_index + 1, :, :],
-            angle_codes_deep=page.angle_codes_deep[:, :, block_index:block_index + 1, :, :],
-            radii_scales=page.radii_scales[:, :, block_index:block_index + 1, :, :] if page.radii_scales is not None else None,
-            shape=(self.layout.batch_size, self.layout.num_kv_heads, self.block_size, self.head_dim),
+            radii=page.radii[:, :, block_index : block_index + 1, :, :],
+            angle_codes_l1=page.angle_codes_l1[
+                :, :, block_index : block_index + 1, :, :
+            ],
+            angle_codes_deep=page.angle_codes_deep[
+                :, :, block_index : block_index + 1, :, :
+            ],
+            radii_scales=page.radii_scales[:, :, block_index : block_index + 1, :, :]
+            if page.radii_scales is not None
+            else None,
+            shape=(
+                self.layout.batch_size,
+                self.layout.num_kv_heads,
+                self.block_size,
+                self.head_dim,
+            ),
             block_size=self.block_size,
             head_dim=self.head_dim,
             metadata=self.metadata,
@@ -338,7 +363,9 @@ class PagedQuantVStorage:
     def append(self, block: QuantizedVBlock):
         if not self.pages:
             self.group_size = block.group_size
-            self.layout = compute_quant_v_page_layout(block, DEFAULT_PAGE_CAPACITY_BLOCKS)
+            self.layout = compute_quant_v_page_layout(
+                block, DEFAULT_PAGE_CAPACITY_BLOCKS
+            )
             self._allocate_page()
 
         last_page = self.pages[-1]
@@ -366,8 +393,8 @@ class PagedQuantVStorage:
         for page in self.pages:
             if page.valid_blocks == 0:
                 continue
-            all_codes.append(page.codes[:, :, :page.valid_blocks, :, :])
-            all_scales.append(page.scales[:, :, :page.valid_blocks, :, :])
+            all_codes.append(page.codes[:, :, : page.valid_blocks, :, :])
+            all_scales.append(page.scales[:, :, : page.valid_blocks, :, :])
 
         codes = mx.concatenate(all_codes, axis=2)
         scales = mx.concatenate(all_scales, axis=2)
@@ -389,7 +416,7 @@ class PagedQuantVStorage:
             for arr in (page.codes, page.scales):
                 allocated += _nbytes(arr)
                 if page.valid_blocks > 0:
-                    logical += _nbytes(arr[:, :, :page.valid_blocks, :, :])
+                    logical += _nbytes(arr[:, :, : page.valid_blocks, :, :])
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> QuantizedVBlock:
@@ -400,8 +427,8 @@ class PagedQuantVStorage:
                 f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
             )
         return QuantizedVBlock(
-            codes=page.codes[:, :, block_index:block_index + 1, :, :],
-            scales=page.scales[:, :, block_index:block_index + 1, :, :],
+            codes=page.codes[:, :, block_index : block_index + 1, :, :],
+            scales=page.scales[:, :, block_index : block_index + 1, :, :],
             group_size=self.group_size,
         )
 
