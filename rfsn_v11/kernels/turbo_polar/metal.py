@@ -165,6 +165,21 @@ class MetalKernelBridge:
             source=attn_quant_body,
         )
 
+        attn_quant_dt_header, attn_quant_dt_body = self._extract_kernel_parts(attn_source, "tqpolar_online_attention_quant_v_dense_tail")
+        self._kernel_attn_quant_dense_tail = mx.fast.metal_kernel(
+            name="tqpolar_online_attention_quant_v_dense_tail",
+            input_names=[
+                "q", "polar_radii", "polar_radii_i8", "radii_scales",
+                "angle_codes_l1", "angle_codes_deep",
+                "v_codes", "v_scales", "tail_k", "tail_v",
+                "qjl_packed_signs", "qjl_norms", "q_proj_signs",
+                "constants", "l1_scale", "deep_scale", "attention_scale", "strides",
+            ],
+            output_names=["output"],
+            header=attn_quant_dt_header,
+            source=attn_quant_dt_body,
+        )
+
         self.threadgroup_supported, self.grid_semantics = _probe_metal_dispatch()
         self._tg_x = 32
 
@@ -247,7 +262,7 @@ class MetalKernelBridge:
     def _cpu_fused_qk_qjl(self, q: mx.array, block: PolarKeyBlock, qjl_payload: QJLPayload, q_proj_signs: mx.array, config) -> mx.array:
         scores = self._cpu_fused_qk(q, block, config)
         qjl_corr = qjl_dot_estimate(q, qjl_payload, q_proj_signs)
-        return scores + qjl_corr
+        return scores + qjl_corr * config.attention_scale
 
     def _cpu_online_attention(
         self, q: mx.array, block: PolarKeyBlock, v: mx.array,
@@ -257,7 +272,7 @@ class MetalKernelBridge:
         scores = self._cpu_fused_qk(q, block, config)
         if use_qjl:
             qjl_corr = qjl_dot_estimate(q, qjl_payload, q_proj_signs)
-            scores = scores + qjl_corr
+            scores = scores + qjl_corr * config.attention_scale
 
         B, H_q, T = scores.shape
         seq_mask = mx.arange(T) < actual_seq_len
@@ -272,6 +287,47 @@ class MetalKernelBridge:
             "quant_v_used": quant_v_used,
             "actual_seq_len": actual_seq_len,
             "num_queries_per_kv": H_q // block.radii.shape[1],
+        }
+        return output, trace
+
+    def _cpu_online_attention_dense_tail(
+        self, q: mx.array, block: PolarKeyBlock, quant_v: QuantizedVBlock,
+        tail_k: mx.array, tail_v: mx.array,
+        qjl_payload: QJLPayload, q_proj_signs: mx.array, config,
+        actual_seq_len: int, use_qjl: bool,
+    ) -> Tuple[mx.array, Dict[str, Any]]:
+        v_dequant = GroupedVQuantizer(group_size=quant_v.group_size).dequantize_block(quant_v)
+        k_comp = PolarQuantDecoder().decode_block(block)
+        B, H_kv, S, L, _ = block.radii.shape
+        num_queries_per_kv = q.shape[1] // H_kv
+        k_comp_flat = k_comp.reshape(B, H_kv, S * L, config.head_dim)
+        v_comp_flat = v_dequant.reshape(B, H_kv, S * L, config.head_dim)
+        full_k = mx.concatenate([k_comp_flat, tail_k], axis=2)
+        full_v = mx.concatenate([v_comp_flat, tail_v], axis=2)
+        full_k = mx.repeat(full_k, num_queries_per_kv, axis=1)
+        full_v = mx.repeat(full_v, num_queries_per_kv, axis=1)
+        scores = mx.sum(q[:, :, None, :] * full_k, axis=-1) * config.attention_scale
+        if use_qjl:
+            comp_len = S * L
+            tail_len = tail_k.shape[2]
+            qjl_corr = qjl_dot_estimate(q, qjl_payload, q_proj_signs)
+            qjl_corr = qjl_corr.reshape(B, q.shape[1], comp_len) * config.attention_scale
+            qjl_corr = mx.concatenate([qjl_corr, mx.zeros((B, q.shape[1], tail_len), dtype=qjl_corr.dtype)], axis=2)
+            scores = scores + qjl_corr
+        T = full_k.shape[2]
+        seq_mask = mx.arange(T) < actual_seq_len
+        scores = mx.where(seq_mask[None, None, :], scores, mx.array(-1e9, dtype=scores.dtype))
+        weights = mx.softmax(scores, axis=-1)
+        output = mx.sum(weights[:, :, :, None] * full_v, axis=-2)
+        trace = {
+            "kernel_name": "cpu_online_attention_dense_tail",
+            "metal_used": False,
+            "fallback_used": True,
+            "qjl_used": use_qjl,
+            "quant_v_used": True,
+            "tail_length": tail_k.shape[2],
+            "actual_seq_len": actual_seq_len,
+            "num_queries_per_kv": num_queries_per_kv,
         }
         return output, trace
 
@@ -357,6 +413,38 @@ class MetalKernelBridge:
             ds[0], ds[1], ds[2], ds[3],
             vcs[0], vcs[1], vcs[2], vcs[3],
             vss[0], vss[1], vss[2], vss[3],
+            ss[0], ss[1], ss[2], ss[3],
+            ns[0], ns[1], ns[2], ns[3],
+            ps[0], ps[1],
+            os[0], os[1],
+        ], dtype=mx.uint32)
+
+    def _build_strides_attn_quant_dense_tail(self, q, radii, radii_scales, angle_l1, angle_deep,
+                                             v_codes, v_scales, tail_k, tail_v,
+                                             qjl_s, qjl_n, q_proj_signs, out_array):
+        qs = self._contiguous_strides(q.shape)
+        rs = self._contiguous_strides(radii.shape)
+        rss = self._contiguous_strides(radii_scales.shape)
+        l1s = self._contiguous_strides(angle_l1.shape)
+        ds = self._contiguous_strides(angle_deep.shape)
+        vcs = self._contiguous_strides(v_codes.shape)
+        vss = self._contiguous_strides(v_scales.shape)
+        tks = self._contiguous_strides(tail_k.shape)
+        tvs = self._contiguous_strides(tail_v.shape)
+        ss = self._contiguous_strides(qjl_s.shape)
+        ns = self._contiguous_strides(qjl_n.shape)
+        ps = self._contiguous_strides(q_proj_signs.shape)
+        os = self._contiguous_strides(out_array.shape)
+        return mx.array([
+            qs[0], qs[1],
+            rs[0], rs[1], rs[2], rs[3],
+            rss[0], rss[1], rss[2],
+            l1s[0], l1s[1], l1s[2], l1s[3],
+            ds[0], ds[1], ds[2], ds[3],
+            vcs[0], vcs[1], vcs[2], vcs[3],
+            vss[0], vss[1], vss[2], vss[3],
+            tks[0], tks[1], tks[2], tks[3],
+            tvs[0], tvs[1], tvs[2], tvs[3],
             ss[0], ss[1], ss[2], ss[3],
             ns[0], ns[1], ns[2], ns[3],
             ps[0], ps[1],
@@ -621,6 +709,83 @@ class MetalKernelBridge:
             "fallback_used": False,
             "qjl_used": use_qjl,
             "quant_v_used": True,
+            "actual_seq_len": actual_seq_len,
+            "num_queries_per_kv": num_queries_per_kv,
+        }
+        return output, trace
+
+    def execute_online_attention_quant_v_dense_tail(
+        self, q: mx.array, block: PolarKeyBlock, quant_v: QuantizedVBlock,
+        tail_k: mx.array, tail_v: mx.array,
+        qjl_payload: Optional[QJLPayload], q_proj_signs: Optional[mx.array], config,
+        actual_seq_len: int, use_qjl: bool = False,
+    ) -> Tuple[mx.array, Dict[str, Any]]:
+        B, H_kv, S, L, _ = block.radii.shape
+        tail_length = tail_k.shape[2]
+        num_queries_per_kv = q.shape[1] // H_kv
+        qjl_s, qjl_n, q_proj = self._resolve_qjl_tensors(
+            qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
+        )
+        if not self.threadgroup_supported or not self._metal_supports_block(block):
+            return self._cpu_online_attention_dense_tail(
+                q, block, quant_v, tail_k, tail_v,
+                qjl_payload, q_proj_signs, config,
+                actual_seq_len, use_qjl,
+            )
+        out_shape = (B, q.shape[1], config.head_dim)
+        out_dtype = mx.float16
+        out_array = mx.zeros(out_shape, dtype=out_dtype)
+
+        polar_radii, polar_radii_i8, radii_scales, int8_radii, log_radii = self._prepare_radii_inputs(block)
+        radii_for_strides = polar_radii_i8 if int8_radii else polar_radii
+        q, angle_l1, angle_deep, v_codes, v_scales, tail_k, tail_v, qjl_s, qjl_n, q_signs = self._ensure_contiguous(
+            q, block.angle_codes_l1, block.angle_codes_deep,
+            quant_v.codes, quant_v.scales,
+            tail_k.astype(mx.float16), tail_v.astype(mx.float16),
+            qjl_s, qjl_n, q_proj
+        )
+        strides = self._build_strides_attn_quant_dense_tail(
+            q, radii_for_strides, radii_scales, angle_l1, angle_deep,
+            v_codes, v_scales, tail_k, tail_v, qjl_s, qjl_n, q_signs, out_array
+        )
+        constants = mx.array([
+            config.head_dim,
+            getattr(config, "split_dim", config.head_dim // 2),
+            config.block_size,
+            S,
+            tail_length,
+            config.qjl_proj_dim,
+            quant_v.group_size,
+            1 if use_qjl else 0,
+            int8_radii,
+            log_radii,
+            int(block.metadata.get("l1_bits", 4)),
+            int(block.metadata.get("deep_bits", 2)),
+            actual_seq_len,
+            num_queries_per_kv,
+        ], dtype=mx.uint32)
+        output = self._kernel_attn_quant_dense_tail(
+            inputs=[
+                q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
+                v_codes, v_scales, tail_k, tail_v, qjl_s, qjl_n, q_signs,
+                constants,
+                mx.array(float(block.metadata.get("l1_scale", 15.0)), dtype=mx.float16),
+                mx.array(float(block.metadata.get("deep_scale", 3.0)), dtype=mx.float16),
+                mx.array(config.attention_scale, dtype=mx.float16),
+                strides,
+            ],
+            output_shapes=[out_shape],
+            output_dtypes=[out_dtype],
+            grid=self._compute_grid(B, q.shape[1], 1),
+            threadgroup=(self._tg_x, 1, 1),
+        )[0]
+        trace = {
+            "kernel_name": "tqpolar_online_attention_quant_v_dense_tail",
+            "metal_used": True,
+            "fallback_used": False,
+            "qjl_used": use_qjl,
+            "quant_v_used": True,
+            "tail_length": tail_length,
             "actual_seq_len": actual_seq_len,
             "num_queries_per_kv": num_queries_per_kv,
         }

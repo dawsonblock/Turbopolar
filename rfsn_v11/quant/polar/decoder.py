@@ -10,10 +10,16 @@ class PolarQuantDecoder:
             radii = mx.expand_dims(block.radii, axis=2)
             angle_l1 = mx.expand_dims(block.angle_codes_l1, axis=2)
             angle_deep = mx.expand_dims(block.angle_codes_deep, axis=2)
+            radii_scales = (
+                mx.expand_dims(block.radii_scales, axis=2)
+                if block.radii_scales is not None
+                else None
+            )
             block = PolarKeyBlock(
                 radii=radii,
                 angle_codes_l1=angle_l1,
                 angle_codes_deep=angle_deep,
+                radii_scales=radii_scales,
                 shape=block.shape[:2] + (1,) + block.shape[2:],
                 block_size=block.block_size,
                 head_dim=block.head_dim,

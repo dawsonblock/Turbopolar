@@ -317,12 +317,11 @@ def main():
         prompts=results,
         aggregate=aggregate,
     )
-    report.evaluate_gates()
 
     write_json_report(report, args.output_dir)
     write_markdown_report(report, args.output_dir)
     print(f"Report written to {args.output_dir}")
-    print(f"Promotion allowed: {report.promotion_allowed}")
+    print("Promotion status: locked; use rfsn_v11.promotion.gate to evaluate evidence.")
 
 
 if __name__ == "__main__":

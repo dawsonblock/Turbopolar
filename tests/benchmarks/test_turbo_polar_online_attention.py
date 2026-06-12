@@ -218,6 +218,46 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
         self.assertEqual(trace["num_queries_per_kv"], 2)
         self.assertFalse(np.isnan(np.array(gpu_output)).any())
 
+    def test_phase_9_dense_tail_gate(self):
+        """Fused attention over compressed blocks plus an unencoded dense tail."""
+        B, H, S, L, D = 1, 2, 2, 64, 128
+        tail_len = 37
+        mx.random.seed(self.config.seed)
+        q = mx.random.normal(shape=[B, H, D])
+        k_original = mx.random.normal(shape=[B, H, S * L, D])
+        v_original = mx.random.normal(shape=[B, H, S * L, D])
+        quant_v = self.v_quantizer.quantize_block(v_original.reshape(B, H, S, L, D))
+        v_dequant = self.v_quantizer.dequantize_block(quant_v).reshape(B, H, S * L, D)
+        unified = self._encode_unified(k_original)
+        k_recon = self.polar_decoder.decode_block(unified)
+
+        tail_k = mx.random.normal(shape=[B, H, tail_len, D])
+        tail_v = mx.random.normal(shape=[B, H, tail_len, D])
+        full_k = mx.concatenate([k_recon, tail_k], axis=2)
+        full_v = mx.concatenate([v_dequant, tail_v], axis=2)
+        actual_seq_len = S * L + tail_len
+
+        scores = mx.sum(q[:, :, None, :] * full_k, axis=-1) * self.config.attention_scale
+        seq_mask = mx.arange(actual_seq_len) < actual_seq_len
+        scores = mx.where(seq_mask[None, None, :], scores, mx.array(-1e9, dtype=scores.dtype))
+        weights = mx.softmax(scores, axis=-1)
+        ref_output = mx.sum(weights[:, :, :, None] * full_v, axis=-2)
+
+        gpu_output, trace = self.bridge.execute_online_attention_quant_v_dense_tail(
+            q, unified, quant_v, tail_k, tail_v, None, None, self.config,
+            actual_seq_len=actual_seq_len, use_qjl=False,
+        )
+        mx.eval(ref_output, gpu_output)
+        ref_np = np.array(ref_output)
+        gpu_np = np.array(gpu_output)
+        cosine = np.dot(ref_np.flatten(), gpu_np.flatten()) / (
+            np.linalg.norm(ref_np) * np.linalg.norm(gpu_np) + 1e-12
+        )
+        max_err = np.max(np.abs(ref_np - gpu_np))
+        self.assertEqual(trace["kernel_name"], "tqpolar_online_attention_quant_v_dense_tail")
+        self.assertGreaterEqual(cosine, 0.999)
+        self.assertLessEqual(max_err, 1e-3)
+
 
 if __name__ == "__main__":
     unittest.main()

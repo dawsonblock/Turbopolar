@@ -227,7 +227,7 @@ kernel void tqpolar_fused_dequant_qk_qjl(
             half cos_est = sin((M_PI_H / 2.0h) * sign_corr);
             half qjl_correction = (norm_E * q_norm) * cos_est;
             uint dest_idx = b * stride_s_b + q_head * stride_s_h + (s * block_size + l) * stride_s_tok;
-            scores[dest_idx] = total_polar_score + qjl_correction;
+            scores[dest_idx] = total_polar_score + qjl_correction * attention_scale;
         }
     }
 }

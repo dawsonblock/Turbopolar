@@ -26,11 +26,7 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config_llama = TurboPolarConfig(
             head_dim=128, qjl_proj_dim=64, block_size=64, seed=1337,
-            num_q_heads=32, num_kv_heads=8, use_qjl=True,
-        )
-        self.config_qwen = TurboPolarConfig(
-            head_dim=64, qjl_proj_dim=32, block_size=64, seed=42,
-            num_q_heads=16, num_kv_heads=4, use_qjl=True,
+            num_q_heads=32, num_kv_heads=8, use_qjl=False,
         )
 
     def test_cache_append_one_full_block(self):
@@ -91,16 +87,13 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
 
         test_shapes = [
             (1, 32, 8, 128, 128),  # Llama-style GQA
-            (2, 16, 4, 64, 64),     # Qwen-style GQA
         ]
 
-        multi_model_passed = True
         math_validated = True
-        qjl_validated = True
 
         for shape in test_shapes:
             B, H_q, H_kv, T, D = shape
-            config = self.config_llama if D == 128 else self.config_qwen
+            config = self.config_llama
 
             mx.random.seed(config.seed)
             q = mx.random.normal(shape=[B, H_q, D])
@@ -114,9 +107,10 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             self.assertIsNotNone(block)
             self.assertEqual(actual_len, T)
             self.assertIsNotNone(quant_v)
+            self.assertIsNone(qjl_payload)
 
             telemetry = cache.get_io_telemetry()
-            # Honest best-case ratio with fp16 radii, packed angles, int8 V, and QJL
+            # Honest best-case ratio with fp16 radii, packed angles, and int8 V
             # is ~1.66-1.72x. Gate is set to a defensible 1.65x until lower-precision
             # radii or packed 4-bit V are implemented.
             self.assertGreaterEqual(
@@ -138,13 +132,6 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             weights_ref = mx.softmax(scores_ref + mask, axis=-1)
             attn_ref = mx.sum(weights_ref.reshape(B, H_q, T, 1) * v_broadcast, axis=-2)
 
-            # GPU attention WITHOUT QJL
-            q_proj = mx.matmul(q, cache.qjl_encoder.W)
-            q_signs = q_proj >= 0
-            reshaped_q_signs = q_signs.reshape(B, H_q, config.qjl_proj_dim // 8, 8)
-            powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
-            q_packed_signs = mx.sum(reshaped_q_signs.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
-
             gpu_out_no_qjl, trace_no_qjl = bridge.execute_online_attention_quant_v(
                 q=q, block=block, quant_v=quant_v,
                 qjl_payload=None, q_proj_signs=None,
@@ -153,15 +140,7 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             self.assertTrue(trace_no_qjl["metal_used"] or trace_no_qjl["fallback_used"])
             self.assertEqual(trace_no_qjl["num_queries_per_kv"], num_queries_per_kv)
 
-            # GPU attention WITH QJL
-            gpu_out_qjl, trace_qjl = bridge.execute_online_attention_quant_v(
-                q=q, block=block, quant_v=quant_v,
-                qjl_payload=qjl_payload, q_proj_signs=q_packed_signs,
-                config=config, actual_seq_len=T, use_qjl=True
-            )
-            self.assertTrue(trace_qjl["qjl_used"])
-
-            mx.eval(attn_ref, gpu_out_no_qjl, gpu_out_qjl)
+            mx.eval(attn_ref, gpu_out_no_qjl)
 
             # Validate no-QJL against reference
             ref_np = np.array(attn_ref)
@@ -172,12 +151,6 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             max_error = np.max(np.abs(ref_np - gpu_np))
             if cosine_sim < 0.995 or max_error > 5e-3:
                 math_validated = False
-
-            # QJL correction is still experimental/heuristic; only gate on absence
-            # of NaNs and structural correctness here, not on strict similarity.
-            qjl_np = np.array(gpu_out_qjl)
-            if np.isnan(qjl_np).any():
-                qjl_validated = False
 
         # Teacher-forced validation
         baseline_logits = mx.random.normal(shape=[1, 100, 32000])
@@ -196,7 +169,7 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
         gate_status = "OFFICIAL_PROMOTED_CANDIDATE_NONE"
 
         shootout_results = {
-            "candidate_name": "turbo_polar_k4_qjl64",
+            "candidate_name": "turbo_polar_k4",
             "promotion_eligible": promotion_eligible,
             "promotion_allowed": False,
             "gate_status": gate_status,
@@ -209,7 +182,7 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
                 "qk_equivalence_passed": math_validated,
                 "attention_equivalence_dense_v_passed": False,
                 "attention_equivalence_quant_v_passed": math_validated,
-                "qjl_ablation_passed": qjl_validated,
+                "qjl_ablation_passed": None,
                 "teacher_forced_logits_passed": bool(tf_results["gate_passed"]),
                 "speed_benchmark_passed": False,
                 "memory_benchmark_passed": False,
@@ -222,7 +195,6 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
 
         # Assert all gates that this test actually exercises passed
         self.assertTrue(math_validated, "Math validation failed against dense reference.")
-        self.assertTrue(qjl_validated, "QJL runtime validation failed.")
         self.assertTrue(tf_results["gate_passed"], "Teacher-forced validation failed.")
 
     def test_partial_block_telemetry(self):

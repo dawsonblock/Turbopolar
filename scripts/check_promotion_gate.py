@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check whether TurboPolar promotion gates are satisfied (synthetic smoke only)."""
+"""Synthetic smoke check for the TurboPolar cache. Does not declare promotion."""
 
 import mlx.core as mx
 
@@ -17,19 +17,17 @@ def check():
 
     telem = cache.get_io_telemetry()
     seq_len = telem["total_blocks"] * cfg.block_size + telem["partial_tokens"]
-    gates = {
-        "kv_reduction_ge_1_7x": telem["compression_ratio"] >= 1.7,
-        "no_tail_crash": seq_len == 256,
-    }
 
-    print("Promotion gate status (synthetic only):")
-    for name, ok in gates.items():
-        print(f"  {name}: {'PASS' if ok else 'FAIL'}")
+    print("Synthetic smoke check (not a promotion decision):")
+    print(f"  sequence length: {seq_len}")
+    print(f"  compression ratio: {telem['compression_ratio']:.3f}x")
+    print(f"  total blocks: {telem['total_blocks']}")
+    print(f"  partial tokens: {telem['partial_tokens']}")
 
-    if all(gates.values()):
-        print("All synthetic gates passed. Real model validation still required before promotion.")
+    if seq_len == 256 and telem["compression_ratio"] >= 1.7:
+        print("Smoke check passed. Real-model evidence is required for promotion.")
     else:
-        print("Some synthetic gates failed.")
+        print("Smoke check failed.")
 
 
 if __name__ == "__main__":

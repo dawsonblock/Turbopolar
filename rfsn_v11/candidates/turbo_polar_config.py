@@ -16,7 +16,6 @@ class TurboPolarConfig:
     head_dim: int = 128
     qjl_proj_dim: int = 64
     use_qjl: bool = False
-    use_metal: bool = True
     storage_mode: str = "kv_quant"
     seed: int = 42
     split_dim: int = 64
@@ -41,11 +40,13 @@ class TurboPolarConfig:
         if self.storage_mode not in {"k_only_first", "kv_quant", "dense_v_debug"}:
             raise ValueError("unknown storage_mode")
         if self.block_size != 64:
-            raise ValueError("current Metal kernels require block_size == 64")
-        if self.head_dim % 32 != 0:
-            raise ValueError("current Metal kernels require head_dim divisible by 32")
-        if self.head_dim > 128:
-            raise ValueError("current Metal kernels only support head_dim <= 128")
+            raise ValueError("TurboPolar only supports block_size == 64 in this release")
+        if self.head_dim != 128:
+            raise ValueError("TurboPolar only supports head_dim == 128 in this release")
+        if self.use_qjl:
+            raise ValueError("QJL is not supported in this release; set use_qjl=False")
+        if self.storage_mode != "kv_quant":
+            raise ValueError("TurboPolar only supports storage_mode='kv_quant' in this release")
         if self.split_dim < 0 or self.split_dim > self.head_dim or self.split_dim % 2 != 0:
             raise ValueError("split_dim must be even and within [0, head_dim]")
         if self.num_q_heads % self.num_kv_heads != 0:

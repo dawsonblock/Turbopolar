@@ -1,17 +1,11 @@
-"""Schema and promotion gates for dense-vs-TurboPolar benchmark reports."""
+"""Schema for dense-vs-TurboPolar benchmark reports.
+
+Promotion decisions are owned exclusively by rfsn_v11.promotion.gate.
+This module only defines report shapes used by benchmark scripts.
+"""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Tuple
-
-
-PROMOTION_GATES = {
-    "kv_compression_ratio": 1.7,
-    "logit_cosine": 0.995,
-    "top5_overlap": 0.95,
-    "top10_overlap": 0.95,
-    "perplexity_delta": 0.02,
-    "decode_tokens_per_sec": 1.0,  # relative to dense baseline
-}
+from typing import Any, Dict, List, Tuple
 
 
 @dataclass
@@ -39,30 +33,5 @@ class BenchmarkReport:
     seed: int
     num_layers: int
     num_prompts: int
-    promotion_allowed: bool = False
-    gate_passed: Dict[str, bool] = field(default_factory=dict)
     aggregate: Dict[str, Any] = field(default_factory=dict)
     prompts: List[PromptResult] = field(default_factory=list)
-    visible_drift: bool = False
-
-    def evaluate_gates(self) -> None:
-        agg = self.aggregate
-        self.gate_passed = {
-            "kv_compression_ratio": agg.get("compression_ratio", 0.0) >= PROMOTION_GATES["kv_compression_ratio"],
-            "logit_cosine": agg.get("logit_cosine", 0.0) >= PROMOTION_GATES["logit_cosine"],
-            "top5_overlap": agg.get("top5_overlap", 0.0) >= PROMOTION_GATES["top5_overlap"],
-            "top10_overlap": agg.get("top10_overlap", 0.0) >= PROMOTION_GATES["top10_overlap"],
-            "perplexity_delta": abs(agg.get("perplexity_delta", float("inf"))) <= PROMOTION_GATES["perplexity_delta"],
-            "decode_speed": (
-                True
-                if agg.get("decode_speed_ratio") is None
-                else agg.get("decode_speed_ratio", 0.0) >= PROMOTION_GATES["decode_tokens_per_sec"]
-            ),
-        }
-        self.promotion_allowed = all(self.gate_passed.values())
-        self.visible_drift = not all([
-            self.gate_passed["logit_cosine"],
-            self.gate_passed["top5_overlap"],
-            self.gate_passed["top10_overlap"],
-            self.gate_passed["perplexity_delta"],
-        ])

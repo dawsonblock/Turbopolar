@@ -13,6 +13,10 @@ def qjl_dot_estimate(q: mx.array, qjl_payload: QJLPayload, q_proj_signs: mx.arra
     NOTE: This currently uses a sign-agreement heuristic. A calibrated estimator
     (hamming -> angular -> cosine -> dot) is desirable, but the finite sketch
     dimension and arbitrary q/E geometry make variance high on random data.
+
+    CONTRACT: This function returns an UNSCALED dot-product estimate. The caller
+    is responsible for multiplying by attention_scale before adding to already-
+    scaled attention scores.
     """
     B, H_kv, S, L, _ = qjl_payload.shape
     H_q = q_proj_signs.shape[1]

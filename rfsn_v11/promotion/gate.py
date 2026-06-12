@@ -1,0 +1,211 @@
+"""Single promotion authority for TurboPolar.
+
+No other component may declare promotion. All required evidence must be present
+and passing; missing evidence results in INCOMPLETE/FAILED.
+"""
+
+from typing import List
+
+from rfsn_v11.promotion.schema import (
+    PromotionDecision,
+    PromotionEvidence,
+    PromotionState,
+)
+
+
+class PromotionGate:
+    """Evaluate PromotionEvidence and render a single PromotionDecision."""
+
+    # Correctness thresholds
+    MEAN_COSINE = 0.995
+    P05_COSINE = 0.990
+    MIN_COSINE = 0.975
+    MEAN_TOP5 = 0.95
+    MEAN_TOP10 = 0.97
+    ARGMAX_AGREE = 0.97
+    MAX_PPL_DELTA = 0.02
+
+    # Memory thresholds
+    LOGICAL_KV_RATIO = 1.85
+    PERSISTENT_STORAGE_RATIO = 1.75
+    PEAK_MEMORY_RATIO_8192 = 1.20
+
+    # Speed thresholds
+    MAX_REGRESSION_AT_4096_PLUS = 0.97  # no more than 3% regression
+    MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT = 1.05
+    MIN_MEDIAN_RATIO_AT_8192_PLUS = 1.03
+
+    def evaluate(self, evidence: PromotionEvidence) -> PromotionDecision:
+        reasons: List[str] = []
+
+        if evidence is None:
+            return PromotionDecision(
+                state=PromotionState.INCOMPLETE,
+                reasons=["No promotion evidence provided."],
+            )
+
+        # Missing reports are failures, not successes.
+        required_reports = [
+            ("kernel_report", evidence.kernel_report),
+            ("teacher_forced_report", evidence.teacher_forced_report),
+            ("fused_decode_report", evidence.fused_decode_report),
+            ("speed_report", evidence.speed_report),
+            ("memory_report", evidence.memory_report),
+            ("baseline_comparison_report", evidence.baseline_comparison_report),
+            ("provenance", evidence.provenance),
+        ]
+        for name, report in required_reports:
+            if report is None:
+                reasons.append(f"Missing required report: {name}")
+
+        if reasons:
+            return PromotionDecision(
+                state=PromotionState.INCOMPLETE,
+                reasons=reasons,
+                evidence=evidence,
+            )
+
+        # Kernel correctness
+        kr = evidence.kernel_report
+        if not kr.all_unit_tests_passed:
+            reasons.append("Unit tests did not all pass.")
+        if not kr.all_kernel_tests_passed:
+            reasons.append("Kernel tests did not all pass.")
+        if not kr.all_integration_tests_passed:
+            reasons.append("Integration tests did not all pass.")
+
+        # Teacher-forced quality
+        tf = evidence.teacher_forced_report
+        if tf.mean_logit_cosine is None or tf.mean_logit_cosine < self.MEAN_COSINE:
+            reasons.append(
+                f"Teacher-forced mean cosine {tf.mean_logit_cosine} < {self.MEAN_COSINE}"
+            )
+        if tf.p05_logit_cosine is None or tf.p05_logit_cosine < self.P05_COSINE:
+            reasons.append(
+                f"Teacher-forced p05 cosine {tf.p05_logit_cosine} < {self.P05_COSINE}"
+            )
+        if tf.min_logit_cosine is None or tf.min_logit_cosine < self.MIN_COSINE:
+            reasons.append(
+                f"Teacher-forced min cosine {tf.min_logit_cosine} < {self.MIN_COSINE}"
+            )
+        if tf.mean_top5_overlap is None or tf.mean_top5_overlap < self.MEAN_TOP5:
+            reasons.append(
+                f"Teacher-forced top-5 overlap {tf.mean_top5_overlap} < {self.MEAN_TOP5}"
+            )
+        if tf.mean_top10_overlap is None or tf.mean_top10_overlap < self.MEAN_TOP10:
+            reasons.append(
+                f"Teacher-forced top-10 overlap {tf.mean_top10_overlap} < {self.MEAN_TOP10}"
+            )
+        if tf.argmax_agreement is None or tf.argmax_agreement < self.ARGMAX_AGREE:
+            reasons.append(
+                f"Teacher-forced argmax agreement {tf.argmax_agreement} < {self.ARGMAX_AGREE}"
+            )
+        if tf.mean_perplexity_delta is None or tf.mean_perplexity_delta > self.MAX_PPL_DELTA:
+            reasons.append(
+                f"Teacher-forced perplexity delta {tf.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
+            )
+        if tf.any_nans_or_infs:
+            reasons.append("Teacher-forced run contained NaNs or infinities.")
+
+        # Fused decode quality
+        fd = evidence.fused_decode_report
+        if fd.mean_logit_cosine is None or fd.mean_logit_cosine < self.MEAN_COSINE:
+            reasons.append(
+                f"Fused decode mean cosine {fd.mean_logit_cosine} < {self.MEAN_COSINE}"
+            )
+        if fd.p05_logit_cosine is None or fd.p05_logit_cosine < self.P05_COSINE:
+            reasons.append(
+                f"Fused decode p05 cosine {fd.p05_logit_cosine} < {self.P05_COSINE}"
+            )
+        if fd.min_logit_cosine is None or fd.min_logit_cosine < self.MIN_COSINE:
+            reasons.append(
+                f"Fused decode min cosine {fd.min_logit_cosine} < {self.MIN_COSINE}"
+            )
+        if fd.mean_top5_overlap is None or fd.mean_top5_overlap < self.MEAN_TOP5:
+            reasons.append(
+                f"Fused decode top-5 overlap {fd.mean_top5_overlap} < {self.MEAN_TOP5}"
+            )
+        if fd.mean_top10_overlap is None or fd.mean_top10_overlap < self.MEAN_TOP10:
+            reasons.append(
+                f"Fused decode top-10 overlap {fd.mean_top10_overlap} < {self.MEAN_TOP10}"
+            )
+        if fd.argmax_agreement is None or fd.argmax_agreement < self.ARGMAX_AGREE:
+            reasons.append(
+                f"Fused decode argmax agreement {fd.argmax_agreement} < {self.ARGMAX_AGREE}"
+            )
+        if fd.mean_perplexity_delta is None or fd.mean_perplexity_delta > self.MAX_PPL_DELTA:
+            reasons.append(
+                f"Fused decode perplexity delta {fd.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
+            )
+        if fd.any_nans_or_infs:
+            reasons.append("Fused decode run contained NaNs or infinities.")
+
+        # Speed
+        sr = evidence.speed_report
+        if sr.min_ratio_at_4096_plus is None or sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS:
+            reasons.append(
+                f"Speed ratio at 4096+ minimum {sr.min_ratio_at_4096_plus} < {self.MAX_REGRESSION_AT_4096_PLUS}"
+            )
+        if sr.max_ratio_at_4096_plus is None or sr.max_ratio_at_4096_plus < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT:
+            reasons.append(
+                f"No long-context tier improved by >= {self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT}: "
+                f"max ratio {sr.max_ratio_at_4096_plus}"
+            )
+        if sr.median_ratio_at_8192_plus is None or sr.median_ratio_at_8192_plus < self.MIN_MEDIAN_RATIO_AT_8192_PLUS:
+            reasons.append(
+                f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < {self.MIN_MEDIAN_RATIO_AT_8192_PLUS}"
+            )
+
+        # Memory
+        mr = evidence.memory_report
+        if mr.logical_kv_ratio is None or mr.logical_kv_ratio < self.LOGICAL_KV_RATIO:
+            reasons.append(
+                f"Logical KV ratio {mr.logical_kv_ratio} < {self.LOGICAL_KV_RATIO}"
+            )
+        if mr.persistent_storage_ratio is None or mr.persistent_storage_ratio < self.PERSISTENT_STORAGE_RATIO:
+            reasons.append(
+                f"Persistent storage ratio {mr.persistent_storage_ratio} < {self.PERSISTENT_STORAGE_RATIO}"
+            )
+        if mr.peak_device_memory_ratio_at_8192_plus is None or mr.peak_device_memory_ratio_at_8192_plus < self.PEAK_MEMORY_RATIO_8192:
+            reasons.append(
+                f"Peak memory ratio at 8192+ {mr.peak_device_memory_ratio_at_8192_plus} < {self.PEAK_MEMORY_RATIO_8192}"
+            )
+        if mr.hidden_dense_cache_detected:
+            reasons.append("Hidden dense full-history cache detected.")
+
+        # Baseline comparison
+        br = evidence.baseline_comparison_report
+        if not br.cartesian_int8_baseline_implemented:
+            reasons.append("Cartesian int8 baseline not implemented.")
+        elif not (
+            br.turbo_polar_wins_on_quality
+            or br.turbo_polar_wins_on_memory
+            or br.turbo_polar_wins_on_speed
+        ):
+            reasons.append(
+                "TurboPolar does not differentiate from Cartesian int8 on quality, memory, or speed."
+            )
+
+        # Provenance
+        pv = evidence.provenance
+        if pv.git_dirty:
+            reasons.append(
+                f"Source tree was dirty (diff hash {pv.git_diff_hash}); promotion requires a clean tree."
+            )
+        if not pv.model_repo_id or not pv.model_revision:
+            reasons.append("Model provenance incomplete.")
+        if not pv.turbopolar_config_hash:
+            reasons.append("TurboPolar config hash missing.")
+
+        if reasons:
+            return PromotionDecision(
+                state=PromotionState.FAILED,
+                reasons=reasons,
+                evidence=evidence,
+            )
+
+        return PromotionDecision(
+            state=PromotionState.PROMOTED_EXPERIMENTAL,
+            reasons=["All required evidence present and passing."],
+            evidence=evidence,
+        )

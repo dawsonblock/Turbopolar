@@ -85,6 +85,24 @@ class TurboPolarFastCache:
 
         return k_dense, v_dense
 
+    @staticmethod
+    def _validate_decode_shape(q: mx.array, k_new: mx.array, v_new: mx.array, config: TurboPolarConfig):
+        if q.ndim != 4 or k_new.ndim != 4 or v_new.ndim != 4:
+            raise ValueError("decode_attention inputs must be 4-D (B, H, T, D)")
+        B, H_q, T, D = q.shape
+        _, H_kv, T_k, _ = k_new.shape
+        _, _, T_v, _ = v_new.shape
+        if B != 1:
+            raise NotImplementedError("TurboPolar fused decode only supports batch size 1.")
+        if T != 1 or T_k != 1 or T_v != 1:
+            raise ValueError("decode_attention only supports a single query/key/value token")
+        if D != 128:
+            raise NotImplementedError("TurboPolar fused decode only supports head_dim == 128.")
+        if D != config.head_dim:
+            raise ValueError(f"decode_attention head_dim {D} does not match config {config.head_dim}")
+        if H_q % H_kv != 0:
+            raise ValueError(f"decode_attention requires GQA ratio to divide evenly, got {H_q} and {H_kv}")
+
     def decode_attention(
         self,
         q: mx.array,
@@ -103,15 +121,7 @@ class TurboPolarFastCache:
         Returns:
             [B, H_q, D] attention output.
         """
-        B, H_q, T, D = q.shape
-        if T != 1:
-            raise ValueError("decode_attention only supports a single query token")
-        _, H_kv, T_k, _ = k_new.shape
-        if T_k != 1:
-            raise ValueError("decode_attention only supports a single key/value token")
-        _, _H_v, T_v, _ = v_new.shape
-        if T_v != 1:
-            raise ValueError("decode_attention only supports a single key/value token")
+        self._validate_decode_shape(q, k_new, v_new, self.config)
 
         if k_new.dtype != mx.float16:
             k_new = k_new.astype(mx.float16)
@@ -120,13 +130,11 @@ class TurboPolarFastCache:
 
         self.runtime.append(k_new, v_new)
 
-        block, quant_v, _dense_v, qjl_payload, actual_seq_len = (
-            self.runtime.get_blocks_for_attention()
+        block, quant_v, tail_k, tail_v, qjl_payload, actual_seq_len = (
+            self.runtime.get_fused_attention_inputs()
         )
-        if block is None:
+        if block is None and tail_k is None:
             raise RuntimeError("TurboPolar cache returned no blocks after append")
-        if quant_v is None:
-            raise RuntimeError("Fused attention requires kv_quant storage mode")
 
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
 
@@ -137,16 +145,46 @@ class TurboPolarFastCache:
             q_proj_signs = self._compute_qjl_signs(q_squeezed)
 
         cfg = dataclasses.replace(self.config, attention_scale=scale)
-        output, _ = self.bridge.execute_online_attention_quant_v(
-            q_squeezed,
-            block,
-            quant_v,
-            qjl_payload,
-            q_proj_signs,
-            cfg,
-            actual_seq_len,
-            self.config.use_qjl,
-        )
+
+        # No completed compressed blocks yet: pure dense tail attention.
+        if block is None:
+            H_kv = tail_k.shape[1]
+            num_queries_per_kv = q_squeezed.shape[1] // H_kv
+            full_k = mx.repeat(tail_k, num_queries_per_kv, axis=1)
+            full_v = mx.repeat(tail_v, num_queries_per_kv, axis=1)
+            scores = mx.sum(q_squeezed[:, :, None, :] * full_k, axis=-1) * scale
+            seq_mask = mx.arange(tail_k.shape[2]) < actual_seq_len
+            scores = mx.where(seq_mask[None, None, :], scores, mx.array(-1e9, dtype=scores.dtype))
+            weights = mx.softmax(scores, axis=-1)
+            return mx.sum(weights[:, :, :, None] * full_v, axis=-2)
+
+        if quant_v is None:
+            raise RuntimeError("Fused attention requires kv_quant storage mode")
+
+        if tail_k is not None and tail_k.shape[2] > 0:
+            output, _ = self.bridge.execute_online_attention_quant_v_dense_tail(
+                q_squeezed,
+                block,
+                quant_v,
+                tail_k,
+                tail_v,
+                qjl_payload,
+                q_proj_signs,
+                cfg,
+                actual_seq_len,
+                self.config.use_qjl,
+            )
+        else:
+            output, _ = self.bridge.execute_online_attention_quant_v(
+                q_squeezed,
+                block,
+                quant_v,
+                qjl_payload,
+                q_proj_signs,
+                cfg,
+                actual_seq_len,
+                self.config.use_qjl,
+            )
         return output
 
     def make_mask(self, N: int, return_array: bool = False, window_size: Optional[int] = None):
@@ -194,6 +232,18 @@ def make_turbo_caches(
 _orig_llama_attention_call: Optional[Any] = None
 
 
+def _is_standard_causal_mask(mask: mx.array, seq_len: int, cache_len: int) -> bool:
+    """Return True if mask is the standard full-history causal mask."""
+    if mask is None:
+        return True
+    expected_shape = (1, 1, seq_len, cache_len)
+    if mask.shape != expected_shape:
+        return False
+    # Standard causal mask: allow all positions up to and including the current one.
+    expected = mx.tril(mx.ones((seq_len, cache_len), dtype=mask.dtype))
+    return bool(mx.all(mask == expected).item())
+
+
 def _turbo_attention_call(
     self,
     x: mx.array,
@@ -201,6 +251,12 @@ def _turbo_attention_call(
     cache: Optional[Any] = None,
 ):
     if isinstance(cache, TurboPolarFastCache) and x.shape[1] == 1:
+        if self.n_heads % self.n_kv_heads != 0:
+            raise ValueError("TurboPolar fused decode requires GQA ratio to divide evenly.")
+        if not _is_standard_causal_mask(mask, x.shape[1], cache.offset + x.shape[1]):
+            raise NotImplementedError(
+                "TurboPolar fused decode only supports standard causal full-history masks."
+            )
         B, L, D = x.shape
 
         queries = self.q_proj(x)
