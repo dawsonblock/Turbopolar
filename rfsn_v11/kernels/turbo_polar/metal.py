@@ -622,6 +622,7 @@ class MetalKernelBridge:
         output = output.astype(mx.float16)
 
         self._stats.online_attention_calls += 1
+        self._stats.fallback_calls += 1
         if pages and tail_k is not None and tail_k.shape[2] > 0:
             self._stats.dense_tail_calls += 1
 

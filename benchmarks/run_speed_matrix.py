@@ -105,8 +105,8 @@ def _measure_decode_loop(
 ) -> float:
     """Prefill and decode, returning tok/s."""
     prompt_mx = mx.array(tokens)[None, :]
-    model(prompt_mx, cache=cache)
-    mx.eval(mx.array(0))
+    prefill_out = model(prompt_mx, cache=cache)
+    mx.eval(prefill_out)
 
     # Warm-up decode steps to stabilise caches/kernels.
     next_token = mx.array([[tokens[-1]]])

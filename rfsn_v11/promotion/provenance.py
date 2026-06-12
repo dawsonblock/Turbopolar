@@ -99,7 +99,7 @@ def capture_provenance(
     except Exception:
         pass
 
-    kernel_dir = Path(__file__).parents[2] / "kernels" / "turbo_polar"
+    kernel_dir = Path(__file__).parents[1] / "kernels" / "turbo_polar"
     metal_kernel_source_hash = _dir_sha256(kernel_dir, "*.metal")
 
     config_dict = {

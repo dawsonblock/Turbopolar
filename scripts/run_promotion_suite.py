@@ -41,7 +41,7 @@ from rfsn_v11.promotion import (
     SpeedReport,
     TeacherForcedReport,
 )
-from rfsn_v11.promotion.provenance import capture_provenance
+from rfsn_v11.promotion.provenance import capture_provenance, _hash_jsonable
 
 
 BENCHMARKS_DIR = project_root / "benchmarks"
@@ -174,7 +174,7 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         "--max-tokens",
         "128",
         "--num-decode",
-        "32",
+        "128",
         "--skip-decode-speed",
         timeout=1200,
     )
@@ -210,7 +210,7 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "128",
         timeout=1200,
     )
-    report = _load_json(output_dir / "fused_decode" / "fused_decode.json")
+    report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
     contexts = report.get("contexts_evaluated", [])
     return FusedDecodeReport(
@@ -244,9 +244,9 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         "4096",
         "8192",
         "--num-decode",
-        "64",
+        "128",
         "--trials",
-        "2",
+        "5",
         timeout=1800,
     )
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
@@ -366,9 +366,9 @@ def _build_provenance(
         prompt_suite_path=prompt_suite,
         benchmark_command=" ".join(sys.argv),
         warmup_count=2,
-        trial_count=2,
-        context_lengths=[64, 128, 256, 512, 1024, 2048, 4096, 8192],
-        decode_token_count=64,
+        trial_count=5,
+        context_lengths=[512, 2048, 4096, 8192, 16384],
+        decode_token_count=128,
         qjl_enabled=False,
     )
 
@@ -437,7 +437,17 @@ def main():
         _run(["git", "rev-parse", "--short", "HEAD"], cwd=project_root).stdout.strip()
         or "unknown"
     )
-    config_hash = "dry-run" if args.dry_run else "TODO_config_hash"
+    config = TurboPolarConfig(
+        num_q_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        block_size=64,
+        storage_mode="kv_quant",
+        use_int8_radii=True,
+        k_angle_bits_deep=8,
+        split_dim=0,
+    )
+    config_hash = "dry-run" if args.dry_run else _hash_jsonable(config.__dict__)
     artifact_dir = args.output_dir / f"{timestamp}_{commit}_{config_hash}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     print(f"Artifacts: {artifact_dir}")
@@ -466,16 +476,6 @@ def main():
         print("Step 6/5: Cartesian int8 baseline comparison...")
         baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
-        config = TurboPolarConfig(
-            num_q_heads=32,
-            num_kv_heads=8,
-            head_dim=128,
-            block_size=64,
-            storage_mode="kv_quant",
-            use_int8_radii=True,
-            k_angle_bits_deep=8,
-            split_dim=0,
-        )
         provenance = _build_provenance(args.model, artifact_dir, config)
 
         evidence = PromotionEvidence(

@@ -79,7 +79,15 @@ class PolarKBlockStorage:
     def append(self, block: PolarKeyBlock, initial_capacity: int = 1):
         del initial_capacity  # ignored; paged storage manages capacity
         self._paged.append(block)
-        self._refresh_cache()
+        # Update cheap metadata mirrors only; expensive monolithic
+        # materialization is deferred to explicit debug/export calls.
+        self.block_count = self._paged.total_valid_blocks
+        self.capacity = sum(p.capacity_blocks for p in self._paged.pages)
+        self.block_size = self._paged.block_size
+        self.head_dim = self._paged.head_dim
+        self.metadata = self._paged.metadata
+        self.reallocation_count = self._paged.page_allocations
+        self.bytes_copied_during_growth = self._paged.bytes_copied_during_growth
 
     def debug_materialize_all_blocks(self, shape: Tuple[int, ...]) -> PolarKeyBlock:
         return self._paged.debug_materialize_all_blocks(shape)
@@ -128,7 +136,13 @@ class QuantVBlockStorage:
     def append(self, block: QuantizedVBlock, initial_capacity: int = 1):
         del initial_capacity  # ignored; paged storage manages capacity
         self._paged.append(block)
-        self._refresh_cache()
+        # Update cheap metadata mirrors only; expensive monolithic
+        # materialization is deferred to explicit debug/export calls.
+        self.block_count = self._paged.total_valid_blocks
+        self.capacity = sum(p.capacity_blocks for p in self._paged.pages)
+        self.group_size = self._paged.group_size
+        self.reallocation_count = self._paged.page_allocations
+        self.bytes_copied_during_growth = self._paged.bytes_copied_during_growth
 
     def debug_materialize_all_blocks(self) -> QuantizedVBlock:
         return self._paged.debug_materialize_all_blocks()

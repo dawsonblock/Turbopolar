@@ -68,6 +68,11 @@ def _compare_fixture(
     v_decode = mx.random.normal((B, H_kv, 1, D), dtype=mx.float16)
     q = mx.random.normal((B, H_q, 1, D), dtype=mx.float16)
 
+    # Dense reference: full fp16 attention with the same history.
+    k_dense = mx.concatenate([k_prefill, k_decode], axis=2)
+    v_dense = mx.concatenate([v_prefill, v_decode], axis=2)
+    dense_out = _dense_attention(q, k_dense, v_dense, scale)
+
     # TurboPolar: prefill + decode via the public API.
     turbo = TurboPolarKVCacheRuntime(config)
     turbo.append_many(k_prefill, v_prefill)
@@ -84,14 +89,21 @@ def _compare_fixture(
     k_cart, v_cart = cartesian.get_history()
     cartesian_out = _dense_attention(q, k_cart, v_cart, scale)
 
-    mx.eval(turbo_out, cartesian_out)
+    mx.eval(dense_out, turbo_out, cartesian_out)
+    d = np.array(dense_out.astype(mx.float32))
     t = np.array(turbo_out.astype(mx.float32))
     c = np.array(cartesian_out.astype(mx.float32))
-    cosine = float(
-        np.dot(t.flatten(), c.flatten())
-        / (np.linalg.norm(t) * np.linalg.norm(c) + 1e-12)
+
+    cosine_turbo_vs_dense = float(
+        np.dot(t.flatten(), d.flatten())
+        / (np.linalg.norm(t) * np.linalg.norm(d) + 1e-12)
     )
-    mae = float(np.mean(np.abs(t - c)))
+    cosine_cart_vs_dense = float(
+        np.dot(c.flatten(), d.flatten())
+        / (np.linalg.norm(c) * np.linalg.norm(d) + 1e-12)
+    )
+    mae_turbo = float(np.mean(np.abs(t - d)))
+    mae_cart = float(np.mean(np.abs(c - d)))
 
     # Memory: prefill only (decode token is negligible in comparison).
     turbo_stats = turbo.get_memory_stats()
@@ -100,8 +112,10 @@ def _compare_fixture(
 
     return {
         "length": length,
-        "cosine": cosine,
-        "mae": mae,
+        "cosine_turbo_vs_dense": cosine_turbo_vs_dense,
+        "cosine_cart_vs_dense": cosine_cart_vs_dense,
+        "mae_turbo": mae_turbo,
+        "mae_cart": mae_cart,
         "turbo_logical_bytes": turbo_stats.logical_payload_bytes,
         "turbo_allocated_bytes": turbo_stats.allocated_capacity_bytes,
         "cartesian_bytes": cartesian_bytes,
@@ -140,7 +154,11 @@ def main():
         record = _compare_fixture(length, args.num_decode, config)
         records.append(record)
         print(
-            f"length={length:5d} cosine={record['cosine']:.4f} mae={record['mae']:.4f}"
+            f"length={length:5d} "
+            f"turbo_cos={record['cosine_turbo_vs_dense']:.4f} "
+            f"cart_cos={record['cosine_cart_vs_dense']:.4f} "
+            f"turbo_mae={record['mae_turbo']:.4f} "
+            f"cart_mae={record['mae_cart']:.4f}"
         )
 
     report = {
@@ -148,13 +166,20 @@ def main():
         "records": records,
         "baseline_comparison_report": {
             "cartesian_int8_baseline_implemented": True,
-            "turbo_polar_wins_on_quality": all(r["cosine"] > 0.98 for r in records),
+            "turbo_polar_wins_on_quality": all(
+                r["cosine_turbo_vs_dense"] > 0.98 for r in records
+            ),
             "turbo_polar_wins_on_memory": all(
                 r["turbo_logical_bytes"] < r["cartesian_bytes"] for r in records
             ),
             "turbo_polar_wins_on_speed": False,  # Not measured in this fixture
-            "recommendation": "TurboPolar is comparable or better on quality and memory.",
-            "notes": ["Quality measured by cosine similarity of attention outputs."],
+            "recommendation": (
+                "TurboPolar quality is measured against dense reference; "
+                "Cartesian baseline is also reported for comparison."
+            ),
+            "notes": [
+                "Quality measured by cosine similarity vs dense fp16 attention output."
+            ],
         },
     }
 

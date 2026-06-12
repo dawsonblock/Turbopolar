@@ -44,10 +44,10 @@ speed-matrix:
 	python benchmarks/run_speed_matrix.py --model $(MODEL)
 
 memory-bench:
-	python benchmarks/run_memory_bench.py
+	python benchmarks/run_memory_matrix.py --lengths 64 128 256 512 1024 2048 4096 8192
 
 cartesian-bench:
-	python benchmarks/run_cartesian_int8_baseline.py --model $(MODEL)
+	python benchmarks/run_cartesian_int8_baseline.py --lengths 64 128 256 512 1024
 
 promote:
 	python scripts/run_promotion_suite.py --model $(MODEL)

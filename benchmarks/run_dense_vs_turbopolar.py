@@ -368,8 +368,8 @@ def main():
         aggregate=aggregate,
     )
 
-    write_json_report(report, args.output_dir)
-    write_markdown_report(report, args.output_dir)
+    write_json_report(report, args.output_dir / "report.json")
+    write_markdown_report(report, args.output_dir / "report.md")
     print(f"Report written to {args.output_dir}")
     print("Promotion status: locked; use rfsn_v11.promotion.gate to evaluate evidence.")
 

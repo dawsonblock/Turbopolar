@@ -419,17 +419,9 @@ class TurboPolarKVCacheRuntime:
 
     def audit_cache_residency(self) -> CacheResidencyAudit:
         """Inspect actual fields and array shapes for dense-history leakage."""
-        # After Phase 2, cached materialized history should be zero.
-        has_materialized_k = (
-            self.k_storage.radii is not None
-            and self.k_storage.radii.ndim >= 4
-            and self.k_storage.block_count > 0
-        )
-        has_materialized_v = (
-            self.v_storage.codes is not None
-            and self.v_storage.codes.ndim >= 4
-            and self.v_storage.block_count > 0
-        )
+        # Check the underlying paged storage directly, not stale cached views.
+        has_materialized_k = self.k_storage._paged.total_valid_blocks > 0
+        has_materialized_v = self.v_storage._paged.total_valid_blocks > 0
         return CacheResidencyAudit(
             dense_full_k_history_present=False,
             dense_full_v_history_present=False,
@@ -687,25 +679,10 @@ class TurboPolarKVCacheRuntime:
             indices = list(range(self.k_storage.block_count))
         fetched = []
         for idx in indices:
-            block = PolarKeyBlock(
-                radii=self.k_storage.radii[:, :, idx : idx + 1, :, :],
-                angle_codes_l1=self.k_storage.angle_codes_l1[:, :, idx : idx + 1, :, :],
-                angle_codes_deep=self.k_storage.angle_codes_deep[
-                    :, :, idx : idx + 1, :, :
-                ],
-                radii_scales=self.k_storage.radii_scales[:, :, idx : idx + 1, :, :]
-                if self.k_storage.radii_scales is not None
-                else None,
-                shape=(
-                    self._batch_size,
-                    self._num_kv_heads,
-                    self.config.block_size,
-                    self._head_dim,
-                ),
-                block_size=self.config.block_size,
-                head_dim=self._head_dim,
-                metadata=self.k_storage.metadata,
-            )
+            # Map flat block index to (page_index, block_index).
+            page_idx = idx // self.k_storage._paged.pages[0].capacity_blocks
+            block_idx = idx % self.k_storage._paged.pages[0].capacity_blocks
+            block = self.k_storage._paged.get_page_block(page_idx, block_idx)
             self.bytes_read += (
                 _nbytes(block.radii)
                 + _nbytes(block.angle_codes_l1)
@@ -803,18 +780,13 @@ class TurboPolarKVCacheRuntime:
         if self.partial_k_buffer is not None:
             arrays.append(self.partial_k_buffer)
             arrays.append(self.partial_v_buffer)
-        if self.k_storage.radii is not None:
-            arrays.extend(
-                [
-                    self.k_storage.radii,
-                    self.k_storage.angle_codes_l1,
-                    self.k_storage.angle_codes_deep,
-                ]
-            )
-            if self.k_storage.radii_scales is not None:
-                arrays.append(self.k_storage.radii_scales)
-        if self.v_storage.codes is not None:
-            arrays.extend([self.v_storage.codes, self.v_storage.scales])
+        # Evaluate underlying paged storage directly, not stale cached views.
+        for page in self.k_storage._paged.pages:
+            arrays.extend([page.radii, page.angle_codes_l1, page.angle_codes_deep])
+            if page.radii_scales is not None:
+                arrays.append(page.radii_scales)
+        for page in self.v_storage._paged.pages:
+            arrays.extend([page.codes, page.scales])
         for qjl in self.qjl_blocks:
             arrays.extend([qjl.packed_signs, qjl.norms])
         if arrays:
