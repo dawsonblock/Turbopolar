@@ -13,6 +13,7 @@
 - **Repository is clean:** pyproject.toml, Makefile, README, STATUS.md, LICENSE, .gitignore, scripts/, benchmarks/ exist.
 - **Phase 1 hotfixes complete:** README quickstart corrected, `append()` validates inputs, `bench_attention.py` renamed to `bench_cache_compression.py`, `make smoke` added.
 - **Phase 2 Metal cleanup complete:** online-attention no-QJL API accepts `None` payloads, Metal accumulators use `float` internally for long-context stability, 4k/8k stability test passes.
+- **Phase 3 benchmark harness complete:** `benchmarks/run_dense_vs_turbopolar.py` runs dense-vs-TurboPolar teacher-forced comparison on any mlx_lm model, writes JSON + Markdown reports, and is wired to `make bench MODEL=...`.
 
 ## What is still experimental
 

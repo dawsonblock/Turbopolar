@@ -31,7 +31,15 @@ Requires Python ≥3.10 and MLX ≥0.31.2.
 make test
 ```
 
-All 24 tests should pass. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
+All 26 tests should pass. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
+
+## Run the real-model benchmark
+
+```bash
+make bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+```
+
+This compares dense KV-cache logits against TurboPolar logits on a real MLX model and writes a report to `benchmarks/outputs/`. See `benchmarks/README.md` for details.
 
 ## Quick example
 
