@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from importlib.resources import files
 import mlx.core as mx
 import numpy as np
 from pathlib import Path
@@ -95,18 +96,18 @@ class MetalKernelBridge:
         MetalKernelBridge._initialized = True
 
         if source_dir is None:
-            source_dir = Path(__file__).parent
-
-        qk_path = source_dir / "tqpolar_fused_qk.metal"
-        attn_path = source_dir / "tqpolar_online_attention.metal"
-
-        if not qk_path.exists():
-            raise FileNotFoundError(f"Missing QK shader: {qk_path}")
-        if not attn_path.exists():
-            raise FileNotFoundError(f"Missing attention shader: {attn_path}")
-
-        qk_source = qk_path.read_text()
-        attn_source = attn_path.read_text()
+            kernel_dir = files("rfsn_v11.kernels.turbo_polar")
+            qk_source = kernel_dir.joinpath("tqpolar_fused_qk.metal").read_text()
+            attn_source = kernel_dir.joinpath("tqpolar_online_attention.metal").read_text()
+        else:
+            qk_path = source_dir / "tqpolar_fused_qk.metal"
+            attn_path = source_dir / "tqpolar_online_attention.metal"
+            if not qk_path.exists():
+                raise FileNotFoundError(f"Missing QK shader: {qk_path}")
+            if not attn_path.exists():
+                raise FileNotFoundError(f"Missing attention shader: {attn_path}")
+            qk_source = qk_path.read_text()
+            attn_source = attn_path.read_text()
 
         qk_header, qk_body = self._extract_kernel_parts(qk_source, "tqpolar_fused_dequant_qk")
         self._kernel_qk = mx.fast.metal_kernel(

@@ -5,22 +5,26 @@ from pathlib import Path
 
 import mlx.core as mx
 import mlx_lm.models.llama as llama
+import numpy as np
 
 from benchmarks.prompt_fixtures import load_token_fixtures, normalize_prompts
+from benchmarks.report_schema import DecodeStepMetrics, ForcedDecodeFixtureResult
 from benchmarks.run_fused_forced_decode import (
     _aggregate_execution_stats,
-    _make_dense_cache,
-    _make_turbo_config,
-    _measure_decode_speed,
+    _compute_step_metrics,
     _model_cache_config,
-    benchmark_prompt,
+    benchmark_forced_decode_fixture,
 )
-from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
+from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
+from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 
 
 class _FakeTokenizer:
+    def __init__(self, vocab_size=100):
+        self.vocab_size = vocab_size
+
     def encode(self, text: str):
-        return [ord(c) % 100 for c in text]
+        return [ord(c) % self.vocab_size for c in text]
 
     def decode(self, ids):
         return ""
@@ -50,50 +54,52 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         n_q, n_kv, d = _model_cache_config(model)
         self.assertEqual((n_q, n_kv, d), (4, 2, 128))
 
-    def test_benchmark_prompt_runs_and_returns_similar_logits(self):
-        model = self._tiny_model()
-        tokenizer = _FakeTokenizer()
-        adapter = TurboPolarLlamaAdapter(_make_turbo_config(4, 2, 128))
-        result = benchmark_prompt(model, tokenizer, "hello world", 20, adapter)
+    def test_compute_step_metrics_basic(self):
+        dense = np.array([1.0, 2.0, 3.0, 4.0])
+        turbo = np.array([1.1, 1.9, 3.1, 3.9])
+        step = _compute_step_metrics(dense, turbo, forced_token=2, position=0)
+        self.assertEqual(step.position, 0)
+        self.assertGreater(step.logit_cosine, 0.99)
+        self.assertTrue(step.top1_agreement)
+        self.assertGreater(step.top5_overlap, 0.0)
+        self.assertFalse(step.any_nan_or_inf)
 
-        self.assertEqual(result.prompt_tokens, len(tokenizer.encode("hello world")))
-        self.assertEqual(result.dense_logits_shape, result.turbo_logits_shape)
-        self.assertGreater(result.logit_cosine, 0.95)
-        self.assertGreaterEqual(result.top5_overlap, 0.0)
-        self.assertLessEqual(result.top5_overlap, 1.0)
-        self.assertGreater(result.peak_kv_bytes_dense, 0)
-        self.assertGreater(result.peak_kv_bytes_turbo, 0)
-        # Ensure adapter is cleaned up even if the model is reused.
-        self.assertFalse(adapter._installed)
+    def test_compute_step_metrics_detects_nan(self):
+        dense = np.array([1.0, np.nan, 3.0, 4.0])
+        turbo = np.array([1.0, 2.0, 3.0, 4.0])
+        step = _compute_step_metrics(dense, turbo, forced_token=0, position=0)
+        self.assertTrue(step.any_nan_or_inf)
+        self.assertEqual(step.logit_cosine, 0.0)
 
-    def test_decode_speed_and_kernel_stats(self):
-        model = self._tiny_model()
-        tokenizer = _FakeTokenizer()
-        tokens = tokenizer.encode("the quick brown fox jumps")
+    def test_compute_step_metrics_top1_disagreement(self):
+        dense = np.array([1.0, 5.0, 3.0, 4.0])
+        turbo = np.array([1.0, 2.0, 6.0, 4.0])
+        step = _compute_step_metrics(dense, turbo, forced_token=1, position=0)
+        self.assertFalse(step.top1_agreement)
+        self.assertEqual(step.dense_argmax_rank_in_turbo, 2)
 
-        dense_cache = _make_dense_cache(2)
-        dense_tok_s = _measure_decode_speed(model, tokenizer, dense_cache, tokens, 4)
-        self.assertGreater(dense_tok_s, 0.0)
-
-        from benchmarks.turbopolar_fast_attention import make_turbo_caches
-
+    def test_aggregate_execution_stats_empty(self):
         turbo_cache = make_turbo_caches(2, 4, 2, 128, use_qjl=False)
-        for c in turbo_cache:
-            c.reset_execution_stats()
-
-        adapter = TurboPolarLlamaAdapter(_make_turbo_config(4, 2, 128))
-        adapter.install(model)
-        try:
-            turbo_tok_s = _measure_decode_speed(model, tokenizer, turbo_cache, tokens, 4)
-        finally:
-            adapter.uninstall()
-
-        self.assertGreater(turbo_tok_s, 0.0)
         stats = _aggregate_execution_stats(turbo_cache)
-        self.assertIn("fused_qk_calls", stats)
-        self.assertIn("online_attention_calls", stats)
-        self.assertIn("dense_tail_calls", stats)
-        self.assertIn("fallback_calls", stats)
+        self.assertEqual(stats["online_attention_calls"], 0)
+        self.assertEqual(stats["fallback_calls"], 0)
+
+    def test_benchmark_forced_decode_fixture_runs(self):
+        model = self._tiny_model()
+        tokenizer = _FakeTokenizer()
+        context_tokens = tokenizer.encode("hello world this is a test")
+        continuation_tokens = tokenizer.encode(" forced continuation tokens ")
+        adapter = TurboPolarLlamaAdapter()
+        result = benchmark_forced_decode_fixture(
+            model, tokenizer, context_tokens, continuation_tokens, adapter
+        )
+        self.assertEqual(result.context_length, len(context_tokens))
+        self.assertEqual(result.continuation_length, len(continuation_tokens))
+        self.assertEqual(len(result.steps), len(continuation_tokens))
+        self.assertGreater(result.kernel_stats["online_attention_calls"], 0)
+        self.assertEqual(result.kernel_stats["fallback_calls"], 0)
+        for step in result.steps:
+            self.assertFalse(step.any_nan_or_inf)
 
     def test_normalize_text_prompts(self):
         suite_path = Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"

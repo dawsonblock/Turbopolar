@@ -16,12 +16,8 @@ from mlx_lm.models.cache import KVCache
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from benchmarks.turbopolar_fast_attention import (
-    TurboPolarFastCache,
-    make_turbo_caches,
-    patch_llama_attention,
-    unpatch_llama_attention,
-)
+from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
+from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache, make_turbo_caches
 
 
 def _model_cache_config(model) -> Tuple[int, int, int]:
@@ -181,13 +177,14 @@ def main():
     turbo_cache = make_turbo_caches(
         num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=args.use_qjl
     )
-    patch_llama_attention(model)
+    adapter = TurboPolarLlamaAdapter()
+    adapter.install(model)
     try:
         turbo_logits, _ = _teacher_forced_logits(
             model, tokenizer, prompt_text, turbo_cache, args.max_tokens
         )
     finally:
-        unpatch_llama_attention(model)
+        adapter.uninstall()
 
     cosine = _logit_cosine(dense_logits, turbo_logits)
     top1 = _topk_overlap(dense_logits, turbo_logits, k=1)
@@ -208,13 +205,14 @@ def main():
     turbo_cache = make_turbo_caches(
         num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=args.use_qjl
     )
-    patch_llama_attention(model)
+    adapter = TurboPolarLlamaAdapter()
+    adapter.install(model)
     try:
         turbo_decode_tok_s = _measure_decode_speed(
             model, tokenizer, turbo_cache, tokens, args.num_decode
         )
     finally:
-        unpatch_llama_attention(model)
+        adapter.uninstall()
 
     peak_dense = _peak_kv_bytes_dense(dense_cache)
     peak_turbo = _peak_kv_bytes_turbo(turbo_cache)

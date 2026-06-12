@@ -29,24 +29,24 @@ def _current_version() -> str:
 
 
 def _bump_version(current: str, part: str) -> str:
-    # Strip pre-release suffixes like .dev0 for bumping.
-    base = current.split("+")[0].split(".")[0]
-    parts = base.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        raise RuntimeError(f"Cannot bump non-semver version: {current}")
-    major, minor, patch = map(int, parts)
+    try:
+        from packaging.version import Version
+    except ImportError:
+        raise RuntimeError("packaging is required for version parsing; install it with: pip install packaging")
+    v = Version(current)
+    major, minor, micro = v.major, v.minor, v.micro
     if part == "major":
         major += 1
         minor = 0
-        patch = 0
+        micro = 0
     elif part == "minor":
         minor += 1
-        patch = 0
+        micro = 0
     elif part == "patch":
-        patch += 1
+        micro += 1
     else:
         raise ValueError(f"Unknown bump part: {part}")
-    return f"{major}.{minor}.{patch}"
+    return f"{major}.{minor}.{micro}"
 
 
 def _set_version(version: str) -> None:
@@ -94,26 +94,33 @@ def main():
     current = _current_version()
     print(f"Current version: {current}")
 
-    if args.bump:
-        new_version = _bump_version(current, args.bump)
-        print(f"Bumping {args.bump}: {current} -> {new_version}")
-        _set_version(new_version)
-    else:
-        new_version = current
-
+    # 1. Start from a clean tree.
     if not _git_tree_clean():
         print("ERROR: git tree is dirty. Commit or stash changes before releasing.")
         sys.exit(1)
 
-    if not args.skip_tests:
-        print("Running test suite...")
-        _run([sys.executable, "-m", "pytest", "tests/", "-q"])
+    # 2. Update version.
+    if args.bump:
+        new_version = _bump_version(current, args.bump)
+        print(f"Bumping {args.bump}: {current} -> {new_version}")
+        _set_version(new_version)
+        print("Version updated. Commit the change before proceeding.")
+        sys.exit(0)
+    else:
+        new_version = current
 
+    # 3. Build.
     if not args.skip_build:
         print("Building sdist and wheel...")
         _run([sys.executable, "-m", "pip", "install", "build"])
         _run([sys.executable, "-m", "build", "--sdist", "--wheel"])
 
+    # 4. Run tests.
+    if not args.skip_tests:
+        print("Running test suite...")
+        _run([sys.executable, "-m", "pytest", "tests/", "-q"])
+
+    # 5. Create signed tag.
     if not args.skip_tag:
         tag = f"v{new_version}"
         print(f"Creating git tag {tag}...")

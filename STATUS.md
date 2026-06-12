@@ -6,7 +6,7 @@
 
 ## Status summary
 
-**Promotion state:** `PROMOTED_EXPERIMENTAL` is **locked**.
+**Promotion state:** Maximum state is capped at `REVIEW_REQUIRED`. `PROMOTED_EXPERIMENTAL` is **locked** until the full evidence suite has been independently validated on native Apple Silicon.
 
 TurboPolar remains an end-to-end research alpha. All required benchmark and
 promotion plumbing is now in place, but the default operating point does not yet
@@ -23,12 +23,13 @@ No promotion claim may be made by any component other than the single promotion 
 
 - **Metal kernels on M2:** custom QK and attention kernels compile and run natively on Apple Silicon under MLX 0.31.2.
 - **MLX dispatch is correct:** we probe and adapt to the `grid == total_threads` semantics in this MLX version.
-- **Unit tests pass:** 117/117 tests green.
+- **Unit tests present:** 50 core tests pass (unit + packaging). Integration tests requiring mlx-lm model loading are present but not executed in this environment.
 - **Decompress-on-read path:** satisfies historical promotion-style gates on Llama-3.2-1B at 512-token context, but this path is not sufficient for `PROMOTED_EXPERIMENTAL`.
-- **Fused attention path:** quality matches dense (>0.999 cosine) on tiny validation models. Per-step partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended separately in a single fused kernel.
-- **Instance-level Llama adapter:** `TurboPolarLlamaAdapter` installs per-model, rolls back on failure, and prevents double install.
+- **Fused attention path:** partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended separately in a single fused kernel. Native Apple Silicon results require attached benchmark artifacts.
+- **Instance-level Llama adapter:** `TurboPolarLlamaAdapter` installs per-model, rolls back on failure, and prevents double install. Parameter-tree and state-dict preservation remain under validation.
 - **Truthful memory accounting:** `CacheMemoryStats` separates logical payload, allocated capacity, dense tail, metadata, and dense equivalent; `measure_append_peak_memory()` probes the MLX allocator peak.
-- **Promotion governance:** consolidated into `rfsn_v11/promotion/` with nested JSON constructors, tri-state git (`CLEAN`/`DIRTY`/`UNKNOWN`), kernel-source hashing, and a full orchestration script at `scripts/run_promotion_suite.py`.
+- **Paged storage:** persistent compressed blocks now use fixed-size pages (16 blocks/page), eliminating the quadratic historical copying that occurred with single-block-at-a-time array growth.
+- **Promotion governance:** consolidated into `rfsn_v11/promotion/` with nested JSON constructors, tri-state git (`CLEAN`/`DIRTY`/`UNKNOWN`), kernel-source hashing, and a full orchestration script at `scripts/run_promotion_suite.py`. The gate is capped at `REVIEW_REQUIRED` until independent validation.
 - **Benchmark suite:**
   - `benchmarks/run_dense_vs_turbopolar.py` — teacher-forced quality comparison.
   - `benchmarks/run_fused_forced_decode.py` — fused decode teacher-forced comparison with kernel stats.

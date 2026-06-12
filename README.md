@@ -2,7 +2,7 @@
 
 A compressed KV cache for Llama-style models on MLX / Apple Silicon.
 
-This is **alpha software**. It passes unit tests and runs Metal kernels natively on M2, but promotion-quality validation of fused decode quality, actual memory reduction, and long-context speed is **incomplete**. Do not use it in production.
+This is **research alpha software**. 117 test functions are present. Native Apple Silicon results require attached benchmark artifacts. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. Do not use it in production.
 
 ## What it does
 
@@ -49,7 +49,7 @@ Requires Python ≥3.10 and MLX ≥0.31.2. Real-model benchmarks also require `m
 make test
 ```
 
-All tests should pass. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
+117 test functions are present. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
 
 ## Run the real-model benchmarks
 
@@ -62,7 +62,7 @@ make cartesian-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 make promote MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 ```
 
-These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. See `benchmarks/README.md` for details.
+These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. See `benchmarks/README.md` for details.
 
 ## Quick example
 
@@ -89,7 +89,7 @@ print(cache.get_io_telemetry())
 
 ## Architecture
 
-```
+```text
 rfsn_v11/
 ├── candidates/          # Config and policy definitions
 ├── generation/          # Runtime KV cache

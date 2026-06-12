@@ -30,7 +30,7 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
 from benchmarks.prompt_fixtures import normalize_prompts
 from benchmarks.report_writer import write_json_report
-from benchmarks.turbopolar_fast_attention import make_turbo_caches
+from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 
 
 def _first_param_dtype(params: Dict[str, Any]) -> str:

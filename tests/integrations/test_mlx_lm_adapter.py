@@ -112,6 +112,44 @@ class TestMLXLMAdapter(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.install(model)
 
+    def test_config_q_heads_mismatch_rejected(self):
+        model = _make_tiny_llama(num_attention_heads=8)
+        adapter = TurboPolarLlamaAdapter(self.config)
+        with self.assertRaises(ValueError):
+            adapter.install(model)
+
+    def test_config_kv_heads_mismatch_rejected(self):
+        model = _make_tiny_llama(num_key_value_heads=1)
+        adapter = TurboPolarLlamaAdapter(self.config)
+        with self.assertRaises(ValueError):
+            adapter.install(model)
+
+    def test_parameter_tree_unchanged_after_install(self):
+        model = _make_tiny_llama()
+        before = list(model.parameters().keys())
+        adapter = TurboPolarLlamaAdapter(self.config)
+        adapter.install(model)
+        after = list(model.parameters().keys())
+        self.assertEqual(before, after)
+        adapter.uninstall()
+
+    def test_state_dict_unchanged_after_install(self):
+        model = _make_tiny_llama()
+        before = set(model.state_dict().keys())
+        adapter = TurboPolarLlamaAdapter(self.config)
+        adapter.install(model)
+        after = set(model.state_dict().keys())
+        self.assertEqual(before, after)
+        adapter.uninstall()
+
+    def test_uninstall_restores_exact_classes(self):
+        model = _make_tiny_llama()
+        adapter = TurboPolarLlamaAdapter(self.config)
+        adapter.install(model)
+        adapter.uninstall()
+        for layer in model.layers:
+            self.assertIs(type(layer.self_attn), llama.Attention)
+
 
 if __name__ == "__main__":
     unittest.main()

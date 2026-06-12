@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Fused forced-decode benchmark using the instance-level TurboPolar adapter.
+"""Real fused forced-decode benchmark for TurboPolar.
 
-This benchmark compares a dense mlx_lm KVCache against the fused TurboPolar
-attention path (TurboPolarFastCache + TurboPolarLlamaAdapter) on a real MLX
-Llama model.  It reports logit similarity, perplexity delta, compression ratio,
-decode speed, and kernel execution statistics.
+This benchmark compares dense KV-cache logits against the fused TurboPolar
+attention path during actual one-token autoregressive decode.  It:
+
+1. Loads one dense model and one TurboPolar-adapted model (same weights).
+2. Prefills both with identical context tokens.
+3. For each of at least 128 forced continuation tokens:
+   a. Feeds one identical token to both models.
+   b. Executes dense one-token decode.
+   c. Executes TurboPolar fused one-token decode.
+   d. Compares the resulting next-token logits.
+4. Records per-token metrics and proves fused execution via kernel telemetry.
+
+Both paths receive the same forced token.  Independent generation is never used
+during numerical comparison.
 """
 
 import argparse
@@ -23,28 +33,17 @@ from mlx_lm.models.cache import KVCache
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
 from benchmarks.prompt_fixtures import normalize_prompts
-from benchmarks.report_schema import BenchmarkReport, PromptResult
+from benchmarks.report_schema import (
+    DecodeStepMetrics,
+    ForcedDecodeAggregate,
+    ForcedDecodeFixtureResult,
+    ForcedDecodeReport,
+)
 from benchmarks.report_writer import write_json_report, write_markdown_report
-from benchmarks.turbopolar_fast_attention import make_turbo_caches
-
-
-def _first_param_dtype(params: Dict[str, Any]) -> str:
-    """Find the first floating-point parameter dtype in a nested parameter dict."""
-    for v in params.values():
-        if isinstance(v, dict):
-            dtype = _first_param_dtype(v)
-            if dtype is not None:
-                return dtype
-        elif hasattr(v, "dtype"):
-            if "float" in str(v.dtype):
-                return str(v.dtype)
-    for v in params.values():
-        if hasattr(v, "dtype"):
-            return str(v.dtype)
-    return "unknown"
+from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
+from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 
 
 def _model_cache_config(model: Any) -> Tuple[int, int, int]:
@@ -86,145 +85,91 @@ def _logit_cosine(a: np.ndarray, b: np.ndarray) -> float:
 def _topk_overlap(a: np.ndarray, b: np.ndarray, k: int) -> float:
     if np.isnan(a).any() or np.isnan(b).any():
         return 0.0
-    if a.ndim == 2:
-        a = a[None, ...]
-        b = b[None, ...]
-    matches = 0
-    total = 0
-    for batch in range(a.shape[0]):
-        for t in range(a.shape[1]):
-            top_a = set(np.argsort(a[batch, t])[-k:].tolist())
-            top_b = set(np.argsort(b[batch, t])[-k:].tolist())
-            matches += len(top_a & top_b)
-            total += k
-    return matches / total if total > 0 else 0.0
+    top_a = set(np.argsort(a)[-k:].tolist())
+    top_b = set(np.argsort(b)[-k:].tolist())
+    matches = len(top_a & top_b)
+    return matches / k
 
 
-def _perplexity(logits: np.ndarray, tokens: List[int]) -> float:
-    if np.isnan(logits).any():
-        return float("inf")
-    if logits.ndim == 2:
-        logits = logits[None, ...]
-    log_probs = _softmax(logits, axis=-1)
-    token_log_probs = []
-    for t in range(logits.shape[1] - 1):
-        token_id = tokens[t + 1]
-        token_log_probs.append(-np.log(log_probs[0, t, token_id] + 1e-12))
-    return float(np.exp(np.mean(token_log_probs))) if token_log_probs else float("inf")
+def _kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
+    """KL(p || q) in nats."""
+    p = _softmax(p)
+    q = _softmax(q)
+    mask = p > 1e-12
+    return float(np.sum(p[mask] * np.log(p[mask] / (q[mask] + 1e-12))))
 
 
-def _teacher_forced_logits_from_tokens(model, tokens: List[int], cache: List):
-    tokens_mx = mx.array(tokens)[None, :]
-    logits = model(tokens_mx, cache=cache)
-    logits = logits.astype(mx.float32)
-    mx.eval(logits)
-    return np.array(logits), tokens
+def _js_divergence(p: np.ndarray, q: np.ndarray) -> float:
+    """Jensen-Shannon divergence in nats."""
+    p = _softmax(p)
+    q = _softmax(q)
+    m = 0.5 * (p + q)
+    kl_pm = np.sum(p[p > 1e-12] * np.log(p[p > 1e-12] / (m[p > 1e-12] + 1e-12)))
+    kl_qm = np.sum(q[q > 1e-12] * np.log(q[q > 1e-12] / (m[q > 1e-12] + 1e-12)))
+    return float(0.5 * (kl_pm + kl_qm))
 
 
-def _teacher_forced_logits(model, tokenizer, prompt_text: str, cache: List, max_tokens: int):
-    tokens = tokenizer.encode(prompt_text)
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-    return _teacher_forced_logits_from_tokens(model, tokens, cache)
+def _rank_of_token_in_logits(logits: np.ndarray, token_id: int) -> int:
+    """Return the rank (0 = highest logit) of token_id in logits."""
+    sorted_indices = np.argsort(logits)[::-1]
+    return int(np.where(sorted_indices == token_id)[0][0])
 
 
-def _peak_kv_bytes_dense(cache: List[KVCache]) -> int:
-    return sum(c.nbytes for c in cache)
+def _compute_step_metrics(
+    dense_logits: np.ndarray,
+    turbo_logits: np.ndarray,
+    forced_token: int,
+    position: int,
+) -> DecodeStepMetrics:
+    """Compute per-token quality metrics for one decode position."""
+    dense_last = dense_logits.flatten().astype(np.float64)
+    turbo_last = turbo_logits.flatten().astype(np.float64)
 
+    any_nan_or_inf = bool(
+        np.isnan(dense_last).any()
+        or np.isnan(turbo_last).any()
+        or np.isinf(dense_last).any()
+        or np.isinf(turbo_last).any()
+    )
 
-def _peak_kv_bytes_turbo(cache: List[Any]) -> int:
-    return sum(c.nbytes for c in cache)
+    cosine = _logit_cosine(dense_last, turbo_last)
+    dense_argmax = int(np.argmax(dense_last))
+    turbo_argmax = int(np.argmax(turbo_last))
+    top1_agreement = dense_argmax == turbo_argmax
+    top5 = _topk_overlap(dense_last, turbo_last, 5)
+    top10 = _topk_overlap(dense_last, turbo_last, 10)
 
+    kl = _kl_divergence(dense_last, turbo_last)
+    js = _js_divergence(dense_last, turbo_last)
 
-def _make_dense_cache(num_layers: int) -> List[KVCache]:
-    return [KVCache() for _ in range(num_layers)]
+    rank = _rank_of_token_in_logits(turbo_last, dense_argmax)
 
+    dense_probs = _softmax(dense_last)
+    turbo_probs = _softmax(turbo_last)
+    dense_argmax_prob_delta = float(abs(dense_probs[dense_argmax] - turbo_probs[dense_argmax]))
 
-def _make_turbo_config(num_q_heads: int, num_kv_heads: int, head_dim: int) -> TurboPolarConfig:
-    return TurboPolarConfig(
-        num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        block_size=64,
-        qjl_proj_dim=64,
-        use_qjl=False,
-        storage_mode="kv_quant",
-        use_int8_radii=True,
-        k_angle_bits_deep=8,
-        split_dim=0,
+    nll_delta = float(
+        abs(-np.log(dense_probs[forced_token] + 1e-12) + np.log(turbo_probs[forced_token] + 1e-12))
+    )
+
+    return DecodeStepMetrics(
+        position=position,
+        logit_cosine=cosine,
+        top1_agreement=top1_agreement,
+        top5_overlap=top5,
+        top10_overlap=top10,
+        kl_divergence=kl,
+        js_divergence=js,
+        dense_argmax_rank_in_turbo=rank,
+        dense_argmax_prob_delta=dense_argmax_prob_delta,
+        nll_delta=nll_delta,
+        any_nan_or_inf=any_nan_or_inf,
     )
 
 
-def benchmark_prompt(
-    model,
-    tokenizer,
-    prompt_text: str,
-    max_tokens: int,
-    adapter: TurboPolarLlamaAdapter,
-    tokens: Optional[List[int]] = None,
-) -> PromptResult:
-    num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
-
-    if tokens is None:
-        tokens = tokenizer.encode(prompt_text)
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-
-    dense_cache = _make_dense_cache(num_layers)
-    dense_logits, _ = _teacher_forced_logits_from_tokens(model, tokens, dense_cache)
-
-    turbo_cache = make_turbo_caches(
-        num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=False
-    )
+def _reset_all_execution_stats(turbo_cache: List[Any]) -> None:
     for c in turbo_cache:
         c.reset_execution_stats()
-
-    adapter.install(model)
-    try:
-        turbo_logits, _ = _teacher_forced_logits_from_tokens(model, tokens, turbo_cache)
-    finally:
-        adapter.uninstall()
-
-    telem = turbo_cache[0].runtime.get_io_telemetry()
-    compression_ratio = telem.get("compression_ratio", 0.0)
-
-    return PromptResult(
-        prompt=prompt_text,
-        prompt_tokens=len(tokens),
-        dense_logits_shape=dense_logits.shape,
-        turbo_logits_shape=turbo_logits.shape,
-        logit_cosine=_logit_cosine(dense_logits, turbo_logits),
-        top5_overlap=_topk_overlap(dense_logits, turbo_logits, k=5),
-        top10_overlap=_topk_overlap(dense_logits, turbo_logits, k=10),
-        kl_divergence=0.0,
-        perplexity_delta=abs(
-            _perplexity(dense_logits, tokens) - _perplexity(turbo_logits, tokens)
-        ),
-        compression_ratio=compression_ratio,
-        peak_kv_bytes_turbo=_peak_kv_bytes_turbo(turbo_cache),
-        peak_kv_bytes_dense=_peak_kv_bytes_dense(dense_cache),
-    )
-
-
-def _measure_decode_speed(
-    model, tokenizer, cache: List[Any], tokens: List[int], num_decode: int
-) -> float:
-    """Measure decode tok/s using greedy argmax token selection."""
-    prompt_mx = mx.array(tokens)[None, :]
-    model(prompt_mx, cache=cache)
-    mx.eval(mx.array(0))
-
-    start = time.perf_counter()
-    last_token = tokens[-1]
-    for _ in range(num_decode):
-        next_input = mx.array([[last_token]])
-        logits = model(next_input, cache=cache)
-        mx.eval(logits)
-        probs = _softmax(np.array(logits)[0, -1], axis=-1)
-        last_token = int(np.argmax(probs))
-    elapsed = time.perf_counter() - start
-    return num_decode / elapsed if elapsed > 0 else 0.0
 
 
 def _aggregate_execution_stats(turbo_cache: List[Any]) -> Dict[str, int]:
@@ -243,19 +188,141 @@ def _aggregate_execution_stats(turbo_cache: List[Any]) -> Dict[str, int]:
     return totals
 
 
-def load_prompts(path: Path) -> List[str]:
-    prompts = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                prompts.append(obj.get("prompt", obj.get("text", "")))
-            elif isinstance(obj, str):
-                prompts.append(obj)
-    return prompts
+def benchmark_forced_decode_fixture(
+    model,
+    tokenizer,
+    context_tokens: List[int],
+    continuation_tokens: List[int],
+    adapter: TurboPolarLlamaAdapter,
+) -> ForcedDecodeFixtureResult:
+    """Run one forced-decode fixture and return per-step metrics."""
+    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
+
+    dense_cache = [KVCache() for _ in range(num_layers)]
+    turbo_cache = make_turbo_caches(
+        num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=False
+    )
+    _reset_all_execution_stats(turbo_cache)
+
+    context_mx = mx.array(context_tokens)[None, :]
+
+    # Prefill both paths.
+    dense_prefill = model(context_mx, cache=dense_cache)
+    adapter.install(model)
+    try:
+        turbo_prefill = model(context_mx, cache=turbo_cache)
+    finally:
+        adapter.uninstall()
+    mx.eval(dense_prefill, turbo_prefill)
+
+    # Forced-decode loop: same token fed to both paths.
+    adapter.install(model)
+    try:
+        steps: List[DecodeStepMetrics] = []
+        for i, forced_token in enumerate(continuation_tokens):
+            token_mx = mx.array([[forced_token]])
+            dense_logits = model(token_mx, cache=dense_cache)
+            turbo_logits = model(token_mx, cache=turbo_cache)
+            mx.eval(dense_logits, turbo_logits)
+
+            dense_last = np.array(dense_logits[:, -1, :].astype(mx.float32))
+            turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
+
+            step = _compute_step_metrics(dense_last, turbo_last, forced_token, i)
+            steps.append(step)
+    finally:
+        adapter.uninstall()
+
+    kernel_stats = _aggregate_execution_stats(turbo_cache)
+
+    # Validate that fused execution actually occurred.
+    if kernel_stats["online_attention_calls"] == 0:
+        raise RuntimeError(
+            "Fused forced-decode produced zero online_attention_calls; "
+            "the benchmark did not exercise the fused path."
+        )
+    if kernel_stats["fallback_calls"] != 0:
+        raise RuntimeError(
+            f"Fused forced-decode produced {kernel_stats['fallback_calls']} fallback calls; "
+            "the benchmark is invalid."
+        )
+
+    return ForcedDecodeFixtureResult(
+        fixture_id=f"ctx_{len(context_tokens)}_cont_{len(continuation_tokens)}",
+        context_length=len(context_tokens),
+        continuation_length=len(continuation_tokens),
+        steps=steps,
+        kernel_stats=kernel_stats,
+    )
+
+
+def _compute_aggregate(results: List[ForcedDecodeFixtureResult]) -> ForcedDecodeAggregate:
+    all_cosines = [s.logit_cosine for r in results for s in r.steps]
+    all_top1 = [float(s.top1_agreement) for r in results for s in r.steps]
+    all_top5 = [s.top5_overlap for r in results for s in r.steps]
+    all_top10 = [s.top10_overlap for r in results for s in r.steps]
+    all_kl = [s.kl_divergence for r in results for s in r.steps]
+    all_js = [s.js_divergence for r in results for s in r.steps]
+    all_prob_delta = [s.dense_argmax_prob_delta for r in results for s in r.steps]
+    all_nll = [s.nll_delta for r in results for s in r.steps]
+    all_ranks = [s.dense_argmax_rank_in_turbo for r in results for s in r.steps]
+    any_nan = any(s.any_nan_or_inf for r in results for s in r.steps)
+
+    total_online = sum(r.kernel_stats.get("online_attention_calls", 0) for r in results)
+    total_dense_tail = sum(r.kernel_stats.get("dense_tail_calls", 0) for r in results)
+    total_fallback = sum(r.kernel_stats.get("fallback_calls", 0) for r in results)
+
+    worst_cosine = min(all_cosines)
+    worst_idx = all_cosines.index(worst_cosine)
+    step_idx = 0
+    worst_fixture = ""
+    worst_pos = -1
+    for r in results:
+        for s in r.steps:
+            if step_idx == worst_idx:
+                worst_fixture = r.fixture_id
+                worst_pos = s.position
+            step_idx += 1
+
+    first_div = -1
+    step_idx = 0
+    for r in results:
+        for s in r.steps:
+            if not s.top1_agreement:
+                first_div = step_idx
+                break
+            step_idx += 1
+        if first_div >= 0:
+            break
+
+    def _percentile(arr, p):
+        return float(np.percentile(arr, p))
+
+    return ForcedDecodeAggregate(
+        mean_logit_cosine=float(np.mean(all_cosines)),
+        median_logit_cosine=float(np.median(all_cosines)),
+        p05_logit_cosine=_percentile(all_cosines, 5),
+        p95_logit_cosine=_percentile(all_cosines, 95),
+        min_logit_cosine=float(np.min(all_cosines)),
+        max_logit_cosine=float(np.max(all_cosines)),
+        mean_top1_agreement=float(np.mean(all_top1)),
+        mean_top5_overlap=float(np.mean(all_top5)),
+        mean_top10_overlap=float(np.mean(all_top10)),
+        mean_kl_divergence=float(np.mean(all_kl)),
+        mean_js_divergence=float(np.mean(all_js)),
+        mean_perplexity_delta=float(np.exp(np.mean(all_nll)) - 1.0) if all_nll else 0.0,
+        min_dense_argmax_rank=int(np.min(all_ranks)),
+        max_dense_argmax_rank=int(np.max(all_ranks)),
+        mean_dense_argmax_prob_delta=float(np.mean(all_prob_delta)),
+        worst_fixture_id=worst_fixture,
+        worst_position=worst_pos,
+        first_argmax_divergence_position=first_div,
+        any_nans_or_infs=any_nan,
+        online_attention_calls=total_online,
+        dense_tail_calls=total_dense_tail,
+        fallback_calls=total_fallback,
+    )
 
 
 def main():
@@ -266,17 +333,10 @@ def main():
         "--model", required=True, help="MLX model path or Hugging Face identifier"
     )
     parser.add_argument(
-        "--prompt-suite",
-        type=Path,
-        default=Path(__file__).parent / "prompt_suite.jsonl",
-        help="Legacy text prompt suite (JSONL with 'prompt' or 'text' fields)",
-    )
-    parser.add_argument(
         "--token-fixtures",
         type=Path,
         default=None,
-        help="Exact-token fixtures (JSONL with 'tokens' and 'category' fields). "
-        "If provided, overrides --prompt-suite.",
+        help="Exact-token fixtures (JSONL with 'tokens' and 'category' fields).",
     )
     parser.add_argument(
         "--output-dir",
@@ -285,13 +345,17 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--max-tokens", type=int, default=128, help="Max prompt length in tokens"
+        "--forced-decode-tokens",
+        type=int,
+        default=128,
+        help="Number of forced continuation tokens per fixture (default 128)",
     )
     parser.add_argument(
-        "--num-decode", type=int, default=32, help="Tokens to measure decode speed"
-    )
-    parser.add_argument(
-        "--skip-decode-speed", action="store_true", help="Skip decode speed measurement"
+        "--contexts",
+        type=int,
+        nargs="+",
+        default=[512, 2048, 4096, 8192, 16384],
+        help="Context lengths to evaluate",
     )
     args = parser.parse_args()
 
@@ -302,109 +366,93 @@ def main():
     model, tokenizer = load(str(args.model))
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-    num_layers = len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
-
-    turbo_config = _make_turbo_config(num_q_heads, num_kv_heads, head_dim)
+    turbo_config = TurboPolarConfig(
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        block_size=64,
+        qjl_proj_dim=64,
+        use_qjl=False,
+        storage_mode="kv_quant",
+        use_int8_radii=True,
+        k_angle_bits_deep=8,
+        split_dim=0,
+    )
     adapter = TurboPolarLlamaAdapter(turbo_config)
 
-    prompt_source = args.token_fixtures if args.token_fixtures else args.prompt_suite
-    normalized = normalize_prompts(tokenizer, prompt_source)
+    prompt_source = args.token_fixtures
+    normalized = normalize_prompts(tokenizer, prompt_source) if prompt_source else []
     if not normalized:
-        raise ValueError(f"No prompts found in {prompt_source}")
+        print("No token fixtures provided; generating synthetic deterministic sequences.")
+        fixtures = []
+        for ctx_len in args.contexts:
+            # Deterministic synthetic context.
+            rng = np.random.RandomState(args.seed + ctx_len)
+            context_tokens = [int(rng.randint(0, tokenizer.vocab_size)) for _ in range(ctx_len)]
+            continuation_tokens = [
+                int(rng.randint(0, tokenizer.vocab_size))
+                for _ in range(args.forced_decode_tokens)
+            ]
+            fixtures.append({
+                "tokens": context_tokens + continuation_tokens,
+                "context_length": ctx_len,
+                "continuation_length": args.forced_decode_tokens,
+            })
+    else:
+        fixtures = []
+        for entry in normalized:
+            tokens = entry["tokens"]
+            for ctx_len in args.contexts:
+                if len(tokens) >= ctx_len + args.forced_decode_tokens:
+                    fixtures.append({
+                        "tokens": tokens,
+                        "context_length": ctx_len,
+                        "continuation_length": args.forced_decode_tokens,
+                    })
+                    break
 
-    results = []
-    for i, entry in enumerate(normalized):
-        tokens = entry["tokens"]
-        prompt_len = len(tokens)
-        print(f"Benchmarking prompt {i + 1}/{len(normalized)} ({prompt_len} tokens)")
-        result = benchmark_prompt(
-            model,
-            tokenizer,
-            entry.get("text", ""),
-            args.max_tokens,
-            adapter,
-            tokens=tokens,
+    if not fixtures:
+        raise ValueError("No fixtures could be constructed.")
+
+    results: List[ForcedDecodeFixtureResult] = []
+    for i, fixture in enumerate(fixtures):
+        ctx = fixture["tokens"][: fixture["context_length"]]
+        cont = fixture["tokens"][fixture["context_length"] : fixture["context_length"] + fixture["continuation_length"]]
+        print(
+            f"Fixture {i + 1}/{len(fixtures)}: context={len(ctx)} continuation={len(cont)}"
         )
+        result = benchmark_forced_decode_fixture(model, tokenizer, ctx, cont, adapter)
         results.append(result)
         print(
-            f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} "
-            f"ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x"
+            f"  mean_cosine={np.mean([s.logit_cosine for s in result.steps]):.4f} "
+            f"min_cosine={np.min([s.logit_cosine for s in result.steps]):.4f} "
+            f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
-    dense_decode_tok_per_sec: Optional[float] = None
-    turbo_decode_tok_per_sec: Optional[float] = None
-    final_kernel_stats: Optional[Dict[str, int]] = None
-    if not args.skip_decode_speed and normalized:
-        print("Measuring decode speed...")
-        tokens = normalized[0]["tokens"][: args.max_tokens]
+    aggregate = _compute_aggregate(results)
+    print(f"\nAggregate mean cosine: {aggregate.mean_logit_cosine:.4f}")
+    print(f"Aggregate min cosine:  {aggregate.min_logit_cosine:.4f}")
+    print(f"Aggregate p05 cosine:  {aggregate.p05_logit_cosine:.4f}")
+    print(f"Aggregate top1 agree:  {aggregate.mean_top1_agreement:.4f}")
+    print(f"Kernel online_attention_calls: {aggregate.online_attention_calls}")
+    print(f"Kernel fallback_calls: {aggregate.fallback_calls}")
 
-        dense_cache = _make_dense_cache(num_layers)
-        dense_decode_tok_per_sec = _measure_decode_speed(
-            model, tokenizer, dense_cache, tokens, args.num_decode
-        )
-
-        turbo_cache = make_turbo_caches(
-            num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=False
-        )
-        for c in turbo_cache:
-            c.reset_execution_stats()
-
-        adapter.install(model)
-        try:
-            turbo_decode_tok_per_sec = _measure_decode_speed(
-                model, tokenizer, turbo_cache, tokens, args.num_decode
-            )
-        finally:
-            adapter.uninstall()
-        final_kernel_stats = _aggregate_execution_stats(turbo_cache)
-        print(
-            f"  dense: {dense_decode_tok_per_sec:.2f} tok/s  "
-            f"turbo: {turbo_decode_tok_per_sec:.2f} tok/s"
-        )
-        print(f"  kernel_stats: {final_kernel_stats}")
-
-    MIN_GATE_TOKENS = 64
-    gate_results = [r for r in results if r.prompt_tokens >= MIN_GATE_TOKENS]
-    if not gate_results:
-        print(f"WARNING: no prompts reached {MIN_GATE_TOKENS} tokens; aggregates pessimistic.")
-        gate_results = results
-
-    aggregate = {
-        "logit_cosine": float(np.mean([r.logit_cosine for r in gate_results])),
-        "top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])),
-        "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])),
-        "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])),
-        "compression_ratio": float(np.mean([r.compression_ratio for r in gate_results])),
-        "peak_kv_bytes_dense": int(np.max([r.peak_kv_bytes_dense for r in results])),
-        "peak_kv_bytes_turbo": int(np.max([r.peak_kv_bytes_turbo for r in results])),
-        "decode_speed_dense_tok_per_sec": dense_decode_tok_per_sec,
-        "decode_speed_turbo_tok_per_sec": turbo_decode_tok_per_sec,
-        "decode_speed_ratio": (
-            turbo_decode_tok_per_sec / dense_decode_tok_per_sec
-            if dense_decode_tok_per_sec is not None and dense_decode_tok_per_sec > 0
-            else None
-        ),
-        "kernel_stats": final_kernel_stats,
-        "gate_eligible_prompts": len(gate_results),
-        "total_prompts": len(results),
-    }
-
-    report = BenchmarkReport(
+    report = ForcedDecodeReport(
         model=str(args.model),
         mlx_version=mx.__version__,
         mlx_lm_version=mlx_lm.__version__,
-        dtype=_first_param_dtype(model.parameters()),
+        dtype="unknown",
         seed=args.seed,
-        num_layers=num_layers,
-        num_prompts=len(normalized),
-        prompts=results,
+        num_layers=len(model.layers) if hasattr(model, "layers") else len(model.model.layers),
+        forced_decode_tokens=args.forced_decode_tokens,
         aggregate=aggregate,
+        fixtures=results,
     )
 
-    write_json_report(report, args.output_dir)
-    write_markdown_report(report, args.output_dir)
-    print(f"Report written to {args.output_dir}")
-    print("Promotion status: locked; use rfsn_v11.promotion.gate to evaluate evidence.")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    write_json_report(report, args.output_dir / "report.json")
+    write_markdown_report(report, args.output_dir / "report.md")
+    print(f"\nWrote reports to {args.output_dir}")
 
 
 if __name__ == "__main__":

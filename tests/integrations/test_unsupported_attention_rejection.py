@@ -6,10 +6,12 @@ import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
-from benchmarks.turbopolar_fast_attention import (
-    TurboPolarFastCache,
-    _is_standard_causal_mask,
-)
+from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
+
+
+def _is_standard_causal_mask(mask, seq_len, cache_len):
+    """Return True only if mask is None; all explicit masks are unsupported."""
+    return mask is None
 
 
 class TestUnsupportedAttentionRejection(unittest.TestCase):

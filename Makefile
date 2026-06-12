@@ -22,7 +22,17 @@ compile:
 	python -m compileall rfsn_v11 tests scripts benchmarks
 
 lint:
+	ruff check rfsn_v11 tests scripts benchmarks || true
+	ruff format --check rfsn_v11 tests scripts benchmarks || true
 	python -m compileall rfsn_v11 tests scripts benchmarks
+
+format:
+	ruff format rfsn_v11 tests scripts benchmarks
+
+wheel-test:
+	python -m build
+	python -m venv /tmp/turbopolar-wheel-test
+	source /tmp/turbopolar-wheel-test/bin/activate && pip install dist/*.whl && python scripts/test_built_wheel.py
 
 bench:
 	python benchmarks/run_dense_vs_turbopolar.py --model $(MODEL)

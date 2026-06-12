@@ -17,6 +17,11 @@ from rfsn_v11.promotion.schema import (
 class PromotionGate:
     """Evaluate PromotionEvidence and render a single PromotionDecision."""
 
+    # Temporarily locked: maximum state is REVIEW_REQUIRED until the full
+    # evidence suite (fused decode, isolated memory, fair baseline, wheel test)
+    # has been independently validated.
+    PROMOTION_LOCKED = True
+
     # Correctness thresholds
     MEAN_COSINE = 0.995
     P05_COSINE = 0.990
@@ -209,6 +214,17 @@ class PromotionGate:
             return PromotionDecision(
                 state=PromotionState.FAILED,
                 reasons=reasons,
+                evidence=evidence,
+            )
+
+        if self.PROMOTION_LOCKED:
+            return PromotionDecision(
+                state=PromotionState.REVIEW_REQUIRED,
+                reasons=[
+                    "All quantitative thresholds pass, but promotion is capped at REVIEW_REQUIRED "
+                    "until the full evidence suite (fused decode, isolated memory, fair baseline, "
+                    "installed-wheel test) has been independently validated on native Apple Silicon."
+                ],
                 evidence=evidence,
             )
 

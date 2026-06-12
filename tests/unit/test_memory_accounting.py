@@ -93,7 +93,7 @@ class TestMemoryAccounting(unittest.TestCase):
             B * H * L * D * 2 * 2,
         )
 
-    def test_exact_size_storage_growth(self):
+    def test_paged_storage_growth(self):
         runtime = TurboPolarKVCacheRuntime(self._config())
         L = 64
         B, H, D = 1, 2, 128
@@ -102,10 +102,13 @@ class TestMemoryAccounting(unittest.TestCase):
             v = mx.random.normal((B, H, L, D), dtype=mx.float16)
             runtime.append(k, v)
             self.assertEqual(runtime.k_storage.block_count, block + 1)
-            self.assertEqual(runtime.k_storage.capacity, block + 1)
             self.assertEqual(runtime.v_storage.block_count, block + 1)
-            self.assertEqual(runtime.v_storage.capacity, block + 1)
-            self.assertEqual(runtime.k_storage.reallocation_count, block)
+            # Paged storage allocates in chunks of 16 blocks per page.
+            self.assertEqual(runtime.k_storage.capacity, 16)
+            self.assertEqual(runtime.v_storage.capacity, 16)
+            # Only one page allocation for the first 16 blocks.
+            self.assertEqual(runtime.k_storage.reallocation_count, 1)
+            self.assertEqual(runtime.v_storage.reallocation_count, 1)
 
     def test_peak_memory_probe_reports_at_least_allocated(self):
         runtime = TurboPolarKVCacheRuntime(self._config())
