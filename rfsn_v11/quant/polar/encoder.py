@@ -43,8 +43,13 @@ class PolarQuantEncoder:
         codes_deep = mx.clip(mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1).astype(mx.uint8)
         # BIT-PACK: 4-bit codes -> 2 per byte
         codes_l1_packed = self._pack_4bit(codes_l1)
-        # BIT-PACK: 2-bit codes -> 4 per byte
-        codes_deep_packed = self._pack_2bit(codes_deep)
+        # BIT-PACK: deep codes using configured bit width
+        if self.k_angle_bits_deep == 4:
+            codes_deep_packed = self._pack_4bit(codes_deep)
+        elif self.k_angle_bits_deep == 2:
+            codes_deep_packed = self._pack_2bit(codes_deep)
+        else:
+            raise ValueError(f"unsupported k_angle_bits_deep: {self.k_angle_bits_deep}")
         return PolarKeyBlock(
             radii=radii,
             angle_codes_l1=codes_l1_packed,
@@ -58,6 +63,7 @@ class PolarQuantEncoder:
                 "split_dim": self.split_dim,
                 "l1_packed": True,
                 "deep_packed": True,
+                "deep_bits": self.k_angle_bits_deep,
                 "l1_original_len": split_half,
                 "deep_original_len": half_d - split_half,
             },

@@ -9,7 +9,7 @@ class TurboPolarConfig:
     Immutable configuration structure governing the TurboPolar Alpha 9 runtime.
     """
     k_angle_bits_level1: int = 4
-    k_angle_bits_deep: int = 2
+    k_angle_bits_deep: int = 4
     v_bits: int = 8
     block_size: int = 64
     head_dim: int = 128

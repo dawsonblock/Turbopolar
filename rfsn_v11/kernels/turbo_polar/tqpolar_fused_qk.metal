@@ -47,11 +47,11 @@ kernel void tqpolar_fused_dequant_qk(
                 norm_angle = static_cast<half>(l1_code) / l1_scale;
             } else {
                 uint rel_j = j - split_half_d;
-                uint deep_byte_idx = rel_j / 4;
-                uint deep_pair = rel_j % 4;
+                uint deep_byte_idx = rel_j / 2;
+                uint deep_nibble = rel_j % 2;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
                 uchar deep_byte = angle_codes_deep[offset_cd];
-                uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
+                uchar deep_code = (deep_nibble == 0) ? (deep_byte & 0x0F) : ((deep_byte >> 4) & 0x0F);
                 norm_angle = static_cast<half>(deep_code) / deep_scale;
             }
 
@@ -139,11 +139,11 @@ kernel void tqpolar_fused_dequant_qk_qjl(
                 norm_angle = static_cast<half>(l1_code) / l1_scale;
             } else {
                 uint rel_j = j - split_half_d;
-                uint deep_byte_idx = rel_j / 4;
-                uint deep_pair = rel_j % 4;
+                uint deep_byte_idx = rel_j / 2;
+                uint deep_nibble = rel_j % 2;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l + deep_byte_idx;
                 uchar deep_byte = angle_codes_deep[offset_cd];
-                uchar deep_code = (deep_byte >> (deep_pair * 2)) & 0x03;
+                uchar deep_code = (deep_nibble == 0) ? (deep_byte & 0x0F) : ((deep_byte >> 4) & 0x0F);
                 norm_angle = static_cast<half>(deep_code) / deep_scale;
             }
 

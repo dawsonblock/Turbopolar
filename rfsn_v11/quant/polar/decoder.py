@@ -33,9 +33,15 @@ class PolarQuantDecoder:
         else:
             norm_l1 = block.angle_codes_l1.astype(mx.float32) / l1_scale
 
-        # Unpack deep (2-bit)
+        # Unpack deep (2-bit or 4-bit depending on metadata)
+        deep_bits = block.metadata.get("deep_bits", 2)
         if block.metadata.get("deep_packed", False):
-            norm_deep = self._unpack_2bit(block.angle_codes_deep, deep_orig).astype(mx.float32) / deep_scale
+            if deep_bits == 4:
+                norm_deep = self._unpack_4bit(block.angle_codes_deep, deep_orig).astype(mx.float32) / deep_scale
+            elif deep_bits == 2:
+                norm_deep = self._unpack_2bit(block.angle_codes_deep, deep_orig).astype(mx.float32) / deep_scale
+            else:
+                raise ValueError(f"unsupported deep_bits: {deep_bits}")
         else:
             norm_deep = block.angle_codes_deep.astype(mx.float32) / deep_scale
 
