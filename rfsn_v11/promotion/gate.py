@@ -41,6 +41,20 @@ class PromotionGate:
     MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT = 1.05
     MIN_MEDIAN_RATIO_AT_8192_PLUS = 1.03
 
+    # Experiment completeness requirements
+    REQUIRED_CONTEXTS = {512, 2048, 4096, 8192, 16384}
+    REQUIRED_FORCED_DECODE_TOKENS = 128
+    MIN_TRIALS_PER_CONTEXT = 5
+
+    # Required native Metal test modules (prefix match).
+    REQUIRED_NATIVE_METAL_TESTS = {
+        "tests.kernels.test_paged_online_attention",
+        "tests.kernels.test_qjl_scaled_fused_qk",
+        "tests.kernels.test_qjl_scaled_online_attention",
+        "tests.benchmarks.test_turbopolar_fast_attention",
+        "tests.benchmarks.test_turbo_polar_online_attention",
+    }
+
     def evaluate(self, evidence: PromotionEvidence) -> PromotionDecision:
         reasons: List[str] = []
 
@@ -79,6 +93,16 @@ class PromotionGate:
             reasons.append("Kernel tests did not all pass.")
         if not kr.all_integration_tests_passed:
             reasons.append("Integration tests did not all pass.")
+
+        # Required native Metal tests
+        present = set(kr.metal_tests_present)
+        passed = set(kr.metal_tests_passed)
+        missing = self.REQUIRED_NATIVE_METAL_TESTS - present
+        if missing:
+            reasons.append(f"Required Metal tests missing from collection: {sorted(missing)}")
+        failed = self.REQUIRED_NATIVE_METAL_TESTS - passed
+        if failed:
+            reasons.append(f"Required Metal tests did not pass: {sorted(failed)}")
 
         # Teacher-forced quality
         tf = evidence.teacher_forced_report
@@ -190,6 +214,19 @@ class PromotionGate:
         ):
             reasons.append(
                 "TurboPolar does not differentiate from Cartesian int8 on quality, memory, or speed."
+            )
+
+        # Experiment completeness
+        fd = evidence.fused_decode_report
+        contexts_set = set(fd.contexts_evaluated) if fd and fd.contexts_evaluated else set()
+        if contexts_set != self.REQUIRED_CONTEXTS:
+            reasons.append(
+                f"Fused decode contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {contexts_set}"
+            )
+        sr = evidence.speed_report
+        if sr and sr.trials_per_context < self.MIN_TRIALS_PER_CONTEXT:
+            reasons.append(
+                f"Speed trials per context {sr.trials_per_context} < {self.MIN_TRIALS_PER_CONTEXT}"
             )
 
         # Provenance

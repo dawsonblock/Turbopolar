@@ -135,10 +135,11 @@ class TestMLXLMAdapter(unittest.TestCase):
 
     def test_state_dict_unchanged_after_install(self):
         model = _make_tiny_llama()
-        before = set(model.state_dict().keys())
+        # mlx.nn.Module may not expose state_dict(); use parameters() instead.
+        before = set(model.parameters().keys())
         adapter = TurboPolarLlamaAdapter(self.config)
         adapter.install(model)
-        after = set(model.state_dict().keys())
+        after = set(model.parameters().keys())
         self.assertEqual(before, after)
         adapter.uninstall()
 

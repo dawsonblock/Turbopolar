@@ -122,11 +122,12 @@ class TestModelDecodeReplay(unittest.TestCase):
 
         adapter.install(model)
         try:
-            # Attempt decode with a non-None mask.
+            # The top-level Model.__call__ no longer accepts mask; test the
+            # attention wrapper directly.
             with self.assertRaises(NotImplementedError):
                 x = mx.random.normal((1, 1, 512)).astype(mx.float16)
                 fake_mask = mx.zeros((1, 1, 1, 10), dtype=mx.float16)
-                model(x, mask=fake_mask, cache=turbo_cache)
+                model.layers[0].self_attn(x, mask=fake_mask, cache=turbo_cache[0])
         finally:
             adapter.uninstall()
 

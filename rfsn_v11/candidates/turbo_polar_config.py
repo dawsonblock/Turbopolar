@@ -3,6 +3,41 @@ from dataclasses import dataclass, field
 from typing import Dict, Any
 
 
+def validate_supported_configuration(config: "TurboPolarConfig") -> None:
+    """Reject unsupported configurations immediately.
+
+    Supported contract:
+      - Platform: Apple Silicon
+      - Runtime: MLX + mlx-lm
+      - Model: one verified mlx_lm Llama implementation
+      - Batch size: 1
+      - Attention: full-history causal GQA
+      - Decode query length: 1
+      - Mask: None
+      - Head dimension: 128
+      - Block size: 64
+      - K format: log-int8 radius + 8-bit angle
+      - V format: grouped int8
+      - QJL: disabled
+      - Sliding window: unsupported
+      - Speculative decoding: unsupported
+    """
+    if config.head_dim != 128:
+        raise ValueError("TurboPolar requires head_dim=128")
+    if config.block_size != 64:
+        raise ValueError("TurboPolar requires block_size=64")
+    if config.num_q_heads <= 0 or config.num_kv_heads <= 0:
+        raise ValueError("Head counts must be positive")
+    if config.num_q_heads % config.num_kv_heads != 0:
+        raise ValueError("num_q_heads must be divisible by num_kv_heads")
+    if config.use_qjl:
+        raise NotImplementedError("QJL remains disabled")
+    if config.storage_mode != "kv_quant":
+        raise NotImplementedError("Only kv_quant storage is supported")
+    if config.attention_scale <= 0:
+        raise ValueError("attention_scale must be positive")
+
+
 @dataclass(frozen=True)
 class TurboPolarConfig:
     """

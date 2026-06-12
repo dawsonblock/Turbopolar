@@ -63,8 +63,6 @@ class TurboPolarLlamaAttention(nn.Module):
 
         return self._original_call(x, mask=mask, cache=cache)
 
-    def __getattr__(self, name: str):
-        """Transparently expose original attention attributes (e.g., for inspection)."""
-        if name in ("original_attention", "turbo_config", "layer_index", "_original_call"):
-            raise AttributeError(name)
-        return getattr(self.original_attention, name)
+    # Note: we do not override __getattr__ because MLX nn.Module relies on it
+    # for submodule lookup.  Any attributes needed from the original attention
+    # module can be accessed via the public original_attention property.

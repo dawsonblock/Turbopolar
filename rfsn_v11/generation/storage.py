@@ -3,6 +3,9 @@
 Internally uses fixed-size pages (16 blocks per page) to eliminate the
 quadratic historical copying that occurs with single-block-at-a-time growth.
 The external API remains unchanged for backwards compatibility.
+
+The cached concatenated views are debug/export utilities only.  Production kernels
+must process pages directly without materializing the full history.
 """
 
 from dataclasses import dataclass, field
@@ -27,12 +30,12 @@ class PolarKBlockStorage:
     """Persistent storage for compressed key blocks using fixed-size pages.
 
     Internally delegates to PagedPolarKStorage.  The exposed arrays are cached
-    after each append so repeated reads do not re-concatenate pages.
+    after each append for debug/export only.
     """
 
     _paged: PagedPolarKStorage = field(default_factory=PagedPolarKStorage)
 
-    # Cached views of the concatenated valid blocks.
+    # Cached views of the concatenated valid blocks (debug/export only).
     radii: Optional[mx.array] = None
     angle_codes_l1: Optional[mx.array] = None
     angle_codes_deep: Optional[mx.array] = None
@@ -60,7 +63,7 @@ class PolarKBlockStorage:
         L = self._paged.block_size
         D = self._paged.head_dim
         S = self._paged.total_valid_blocks
-        unified = self._paged.to_unified_block((B, H, S * L, D))
+        unified = self._paged.debug_materialize_all_blocks((B, H, S * L, D))
         self.radii = unified.radii
         self.angle_codes_l1 = unified.angle_codes_l1
         self.angle_codes_deep = unified.angle_codes_deep
@@ -78,8 +81,12 @@ class PolarKBlockStorage:
         self._paged.append(block)
         self._refresh_cache()
 
+    def debug_materialize_all_blocks(self, shape: Tuple[int, ...]) -> PolarKeyBlock:
+        return self._paged.debug_materialize_all_blocks(shape)
+
+    # Backwards-compatible alias (deprecated, will be removed).
     def to_unified_block(self, shape: Tuple[int, ...]) -> PolarKeyBlock:
-        return self._paged.to_unified_block(shape)
+        return self._paged.debug_materialize_all_blocks(shape)
 
 
 @dataclass
@@ -87,12 +94,12 @@ class QuantVBlockStorage:
     """Persistent storage for quantized value blocks using fixed-size pages.
 
     Internally delegates to PagedQuantVStorage.  The exposed arrays are cached
-    after each append so repeated reads do not re-concatenate pages.
+    after each append for debug/export only.
     """
 
     _paged: PagedQuantVStorage = field(default_factory=PagedQuantVStorage)
 
-    # Cached views of the concatenated valid blocks.
+    # Cached views of the concatenated valid blocks (debug/export only).
     codes: Optional[mx.array] = None
     scales: Optional[mx.array] = None
     group_size: int = 32
@@ -109,7 +116,7 @@ class QuantVBlockStorage:
             self.capacity = 0
             return
 
-        unified = self._paged.to_quantized_block()
+        unified = self._paged.debug_materialize_all_blocks()
         self.codes = unified.codes
         self.scales = unified.scales
         self.group_size = self._paged.group_size
@@ -123,5 +130,9 @@ class QuantVBlockStorage:
         self._paged.append(block)
         self._refresh_cache()
 
+    def debug_materialize_all_blocks(self) -> QuantizedVBlock:
+        return self._paged.debug_materialize_all_blocks()
+
+    # Backwards-compatible alias (deprecated, will be removed).
     def to_quantized_block(self) -> QuantizedVBlock:
-        return self._paged.to_quantized_block()
+        return self._paged.debug_materialize_all_blocks()

@@ -348,6 +348,152 @@ class MetalKernelBridge:
         }
         return output, trace
 
+    # ------------------------------------------------------------------
+    # Page-based online-softmax attention (Stage A correctness-first).
+    # Processes one page at a time without materializing the full cache.
+    # ------------------------------------------------------------------
+    @dataclass
+    class OnlineSoftmaxState:
+        max_score: mx.array  # [B, H_q]
+        exp_sum: mx.array    # [B, H_q]
+        weighted_value_sum: mx.array  # [B, H_q, D]
+
+    def _online_softmax_combine(
+        self,
+        state: "MetalKernelBridge.OnlineSoftmaxState",
+        scores: mx.array,  # [B, H_q, T]
+        values: mx.array,  # [B, H_q, T, D]
+    ) -> "MetalKernelBridge.OnlineSoftmaxState":
+        """Update an existing online-softmax state with a new page of scores/values."""
+        page_max = mx.max(scores, axis=-1)  # [B, H_q]
+        new_max = mx.maximum(state.max_score, page_max)
+        # exp(m_old - m_new) * l_old
+        exp_old = mx.exp(state.max_score - new_max) * state.exp_sum
+        # exp(m_page - m_new) * sum(exp(s - m_page))
+        exp_page = mx.exp(page_max - new_max) * mx.sum(mx.exp(scores - page_max[:, :, None]), axis=-1)
+        new_exp_sum = exp_old + exp_page
+        # a = exp(m_old - m_new) * a_old + exp(m_page - m_new) * sum(exp(s - m_page) * v)
+        page_weights = mx.exp(scores - page_max[:, :, None])
+        page_weighted = mx.sum(page_weights[:, :, :, None] * values, axis=-2)
+        new_weighted = (
+            mx.exp(state.max_score - new_max)[:, :, None] * state.weighted_value_sum
+            + mx.exp(page_max - new_max)[:, :, None] * page_weighted
+        )
+        return MetalKernelBridge.OnlineSoftmaxState(
+            max_score=new_max,
+            exp_sum=new_exp_sum,
+            weighted_value_sum=new_weighted,
+        )
+
+    def execute_paged_online_attention(
+        self,
+        q: mx.array,
+        pages,
+        tail_k: Optional[mx.array],
+        tail_v: Optional[mx.array],
+        config,
+        actual_seq_len: int,
+    ) -> Tuple[mx.array, Dict[str, Any]]:
+        """Page-based online-softmax attention without full-cache materialization.
+
+        Args:
+            q: [B, H_q, D] single-token query.
+            pages: iterable of CompressedPageView-like objects with k_page, v_page, valid_blocks, metadata.
+            tail_k: [B, H_kv, T_tail, D] dense partial tail, or None.
+            tail_v: [B, H_kv, T_tail, D] dense partial tail values, or None.
+            config: TurboPolarConfig with attention_scale.
+            actual_seq_len: total valid tokens for masking.
+
+        Returns:
+            [B, H_q, D] attention output.
+        """
+        B = q.shape[0]
+        H_q = q.shape[1]
+        D = config.head_dim
+
+        state = MetalKernelBridge.OnlineSoftmaxState(
+            max_score=mx.full((B, H_q), -float("inf"), dtype=mx.float32),
+            exp_sum=mx.zeros((B, H_q), dtype=mx.float32),
+            weighted_value_sum=mx.zeros((B, H_q, D), dtype=mx.float32),
+        )
+
+        total_tokens = 0
+        v_dequantizer = GroupedVQuantizer(group_size=32)
+
+        for page_view in pages:
+            valid_blocks = page_view.valid_blocks
+            if valid_blocks == 0:
+                continue
+
+            # Build temporary PolarKeyBlock for this page's valid blocks.
+            k_page = page_view.k_page
+            block = PolarKeyBlock(
+                radii=k_page.radii[:, :, :valid_blocks, :, :],
+                angle_codes_l1=k_page.angle_codes_l1[:, :, :valid_blocks, :, :],
+                angle_codes_deep=k_page.angle_codes_deep[:, :, :valid_blocks, :, :],
+                radii_scales=(
+                    k_page.radii_scales[:, :, :valid_blocks, :, :]
+                    if k_page.radii_scales is not None else None
+                ),
+                shape=(B, k_page.radii.shape[1], valid_blocks * config.block_size, D),
+                block_size=config.block_size,
+                head_dim=D,
+                metadata=page_view.metadata,
+            )
+
+            scores = self._cpu_fused_qk(q, block, config)
+            T_page = scores.shape[-1]
+
+            # Dequantize V for this page.
+            v_page = page_view.v_page
+            quant_v = QuantizedVBlock(
+                codes=v_page.codes[:, :, :valid_blocks, :, :],
+                scales=v_page.scales[:, :, :valid_blocks, :, :],
+                group_size=v_page.group_size,
+            )
+            v_dense = v_dequantizer.dequantize_block(quant_v).reshape(
+                B, v_page.codes.shape[1], T_page, D
+            )
+
+            # GQA broadcast (note: _cpu_fused_qk already broadcasts K to H_q).
+            H_kv = v_page.codes.shape[1]
+            num_queries_per_kv = H_q // H_kv
+            v_dense = mx.repeat(v_dense, num_queries_per_kv, axis=1)
+
+            state = self._online_softmax_combine(state, scores, v_dense)
+            total_tokens += T_page
+
+        # Process dense tail.
+        if tail_k is not None and tail_k.shape[2] > 0:
+            tail_length = tail_k.shape[2]
+            H_kv = tail_k.shape[1]
+            num_queries_per_kv = H_q // H_kv
+            tail_k_b = mx.repeat(tail_k, num_queries_per_kv, axis=1)
+            tail_v_b = mx.repeat(tail_v, num_queries_per_kv, axis=1)
+            scores = mx.sum(q[:, :, None, :] * tail_k_b, axis=-1) * config.attention_scale
+            state = self._online_softmax_combine(state, scores, tail_v_b)
+            total_tokens += tail_length
+
+        # Finalize.
+        output = state.weighted_value_sum / state.exp_sum[:, :, None]
+        output = output.astype(mx.float16)
+
+        self._stats.online_attention_calls += 1
+        if pages and tail_k is not None and tail_k.shape[2] > 0:
+            self._stats.dense_tail_calls += 1
+
+        trace = {
+            "kernel_name": "paged_online_attention_cpu",
+            "metal_used": False,
+            "fallback_used": True,
+            "qjl_used": False,
+            "quant_v_used": True,
+            "actual_seq_len": actual_seq_len,
+            "total_tokens_processed": total_tokens,
+            "num_queries_per_kv": H_q // H_kv if H_q > 0 else 1,
+        }
+        return output, trace
+
     def _build_strides_qk(self, q, radii, radii_scales, angle_l1, angle_deep, out_array):
         qs = self._contiguous_strides(q.shape)
         rs = self._contiguous_strides(radii.shape)

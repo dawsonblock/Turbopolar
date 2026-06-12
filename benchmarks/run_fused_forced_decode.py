@@ -68,6 +68,14 @@ def _model_cache_config(model: Any) -> Tuple[int, int, int]:
     return int(n_heads), int(n_kv_heads), int(head_dim)
 
 
+def _nll(logits: np.ndarray, token_id: int) -> float:
+    """Negative log-likelihood of token_id under logits."""
+    probs = _softmax(logits)
+    if probs.ndim > 1:
+        probs = probs[0]
+    return float(-np.log(probs[token_id] + 1e-12))
+
+
 def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     e = np.exp(x - np.max(x, axis=axis, keepdims=True))
     return e / np.sum(e, axis=axis, keepdims=True)
@@ -168,24 +176,27 @@ def _compute_step_metrics(
 
 
 def _reset_all_execution_stats(turbo_cache: List[Any]) -> None:
-    for c in turbo_cache:
-        c.reset_execution_stats()
+    """Reset the process-wide bridge once via any cache instance."""
+    if turbo_cache:
+        turbo_cache[0].reset_execution_stats()
 
 
 def _aggregate_execution_stats(turbo_cache: List[Any]) -> Dict[str, int]:
-    totals = {
-        "fused_qk_calls": 0,
-        "online_attention_calls": 0,
-        "dense_tail_calls": 0,
-        "fallback_calls": 0,
+    """Read the process-wide bridge once via any cache instance."""
+    if not turbo_cache:
+        return {
+            "fused_qk_calls": 0,
+            "online_attention_calls": 0,
+            "dense_tail_calls": 0,
+            "fallback_calls": 0,
+        }
+    stats = turbo_cache[0].execution_stats()
+    return {
+        "fused_qk_calls": stats.fused_qk_calls,
+        "online_attention_calls": stats.online_attention_calls,
+        "dense_tail_calls": stats.dense_tail_calls,
+        "fallback_calls": stats.fallback_calls,
     }
-    for c in turbo_cache:
-        stats = c.execution_stats()
-        totals["fused_qk_calls"] += stats.fused_qk_calls
-        totals["online_attention_calls"] += stats.online_attention_calls
-        totals["dense_tail_calls"] += stats.dense_tail_calls
-        totals["fallback_calls"] += stats.fallback_calls
-    return totals
 
 
 def benchmark_forced_decode_fixture(
@@ -217,11 +228,26 @@ def benchmark_forced_decode_fixture(
     mx.eval(dense_prefill, turbo_prefill)
 
     # Forced-decode loop: same token fed to both paths.
+    # NLL alignment: prefill scores continuation[0]; feeding continuation[i] scores continuation[i+1].
     adapter.install(model)
     try:
         steps: List[DecodeStepMetrics] = []
-        for i, forced_token in enumerate(continuation_tokens):
-            token_mx = mx.array([[forced_token]])
+        dense_nlls: List[float] = []
+        turbo_nlls: List[float] = []
+
+        # Prefill step scores the first continuation token.
+        dense_prefill_last = np.array(dense_prefill[:, -1, :].astype(mx.float32))
+        turbo_prefill_last = np.array(turbo_prefill[:, -1, :].astype(mx.float32))
+        if len(continuation_tokens) > 0:
+            step = _compute_step_metrics(dense_prefill_last, turbo_prefill_last, continuation_tokens[0], 0)
+            steps.append(step)
+            dense_nlls.append(_nll(dense_prefill_last, continuation_tokens[0]))
+            turbo_nlls.append(_nll(turbo_prefill_last, continuation_tokens[0]))
+
+        for i in range(len(continuation_tokens) - 1):
+            current_token = continuation_tokens[i]
+            next_target = continuation_tokens[i + 1]
+            token_mx = mx.array([[current_token]])
             dense_logits = model(token_mx, cache=dense_cache)
             turbo_logits = model(token_mx, cache=turbo_cache)
             mx.eval(dense_logits, turbo_logits)
@@ -229,8 +255,10 @@ def benchmark_forced_decode_fixture(
             dense_last = np.array(dense_logits[:, -1, :].astype(mx.float32))
             turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
 
-            step = _compute_step_metrics(dense_last, turbo_last, forced_token, i)
+            step = _compute_step_metrics(dense_last, turbo_last, next_target, i + 1)
             steps.append(step)
+            dense_nlls.append(_nll(dense_last, next_target))
+            turbo_nlls.append(_nll(turbo_last, next_target))
     finally:
         adapter.uninstall()
 
@@ -254,6 +282,8 @@ def benchmark_forced_decode_fixture(
         continuation_length=len(continuation_tokens),
         steps=steps,
         kernel_stats=kernel_stats,
+        dense_nll_per_token=dense_nlls,
+        candidate_nll_per_token=turbo_nlls,
     )
 
 
@@ -265,9 +295,18 @@ def _compute_aggregate(results: List[ForcedDecodeFixtureResult]) -> ForcedDecode
     all_kl = [s.kl_divergence for r in results for s in r.steps]
     all_js = [s.js_divergence for r in results for s in r.steps]
     all_prob_delta = [s.dense_argmax_prob_delta for r in results for s in r.steps]
-    all_nll = [s.nll_delta for r in results for s in r.steps]
     all_ranks = [s.dense_argmax_rank_in_turbo for r in results for s in r.steps]
     any_nan = any(s.any_nan_or_inf for r in results for s in r.steps)
+
+    # Real perplexity from stored per-token NLLs.
+    dense_nll_all = [n for r in results for n in r.dense_nll_per_token]
+    candidate_nll_all = [n for r in results for n in r.candidate_nll_per_token]
+    dense_mean_nll = float(np.mean(dense_nll_all)) if dense_nll_all else 0.0
+    candidate_mean_nll = float(np.mean(candidate_nll_all)) if candidate_nll_all else 0.0
+    dense_ppl = float(np.exp(dense_mean_nll))
+    candidate_ppl = float(np.exp(candidate_mean_nll))
+    abs_ppl_delta = candidate_ppl - dense_ppl
+    rel_ppl_delta = (candidate_ppl / dense_ppl - 1.0) if dense_ppl > 0 else 0.0
 
     total_online = sum(r.kernel_stats.get("online_attention_calls", 0) for r in results)
     total_dense_tail = sum(r.kernel_stats.get("dense_tail_calls", 0) for r in results)
@@ -311,7 +350,7 @@ def _compute_aggregate(results: List[ForcedDecodeFixtureResult]) -> ForcedDecode
         mean_top10_overlap=float(np.mean(all_top10)),
         mean_kl_divergence=float(np.mean(all_kl)),
         mean_js_divergence=float(np.mean(all_js)),
-        mean_perplexity_delta=float(np.exp(np.mean(all_nll)) - 1.0) if all_nll else 0.0,
+        mean_perplexity_delta=abs_ppl_delta,
         min_dense_argmax_rank=int(np.min(all_ranks)),
         max_dense_argmax_rank=int(np.max(all_ranks)),
         mean_dense_argmax_prob_delta=float(np.mean(all_prob_delta)),
@@ -322,6 +361,9 @@ def _compute_aggregate(results: List[ForcedDecodeFixtureResult]) -> ForcedDecode
         online_attention_calls=total_online,
         dense_tail_calls=total_dense_tail,
         fallback_calls=total_fallback,
+        dense_perplexity=dense_ppl,
+        candidate_perplexity=candidate_ppl,
+        relative_perplexity_delta=rel_ppl_delta,
     )
 
 

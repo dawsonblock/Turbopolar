@@ -22,8 +22,8 @@ compile:
 	python -m compileall rfsn_v11 tests scripts benchmarks
 
 lint:
-	ruff check rfsn_v11 tests scripts benchmarks || true
-	ruff format --check rfsn_v11 tests scripts benchmarks || true
+	ruff check rfsn_v11 tests scripts benchmarks
+	ruff format --check rfsn_v11 tests scripts benchmarks
 	python -m compileall rfsn_v11 tests scripts benchmarks
 
 format:

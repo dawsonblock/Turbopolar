@@ -1,54 +1,56 @@
-# TurboPolar Supported Configuration
+# Supported Configuration
 
-This document defines the narrow configuration contract that TurboPolar currently supports. Anything outside this scope is unsupported and must raise a clear error.
+TurboPolar operates under a narrow, explicitly validated contract.
+Any deviation from this contract is unsupported and will raise an error.
 
-## Supported runtime
+## Platform
 
-- **Framework:** MLX + mlx-lm
-- **Platform:** Apple Silicon with Metal
-- **Python:** ≥3.10
-- **MLX:** ≥0.31.2
+- **Hardware:** Apple Silicon (M-series GPUs)
+- **OS:** macOS
 
-## Supported model
+## Runtime
+
+- **Framework:** MLX >= 0.31.2
+- **LLM library:** mlx-lm (exact verified revision only)
+
+## Model
 
 - **Architecture:** Llama-style GQA
-- **Head dimension:** 128 only
-- **Query heads:** any value divisible by the KV-head count
-- **KV heads:** any value ≤ query heads that divides evenly
-- **Block size:** 64 only
-
-## Supported mode
-
+- **Verified implementation:** one exact `mlx_lm` Llama class only
+- **Head dimension:** 128
+- **KV block size:** 64
 - **Batch size:** 1
-- **Operation:** single-batch autoregressive decode
-- **Attention:** standard full causal GQA over full history
-- **Value storage:** grouped int8 (`storage_mode="kv_quant"`)
+- **Attention:** full-history causal GQA
+- **Decode query length:** 1 token
+- **Mask:** None only
+
+## Quantization formats
+
+- **Key (K):** log-int8 radius + 8-bit angle codes
+- **Value (V):** grouped int8 (`storage_mode="kv_quant"`)
+- **QJL:** disabled
 
 ## Unsupported features
 
-The following are explicitly unsupported. Attempting to use them must raise a `NotImplementedError` or `ValueError`:
+The following are explicitly unsupported in this release:
 
-- Sliding-window attention
-- Local attention
-- Padding masks with unequal sequence lengths
-- Custom attention bias
-- Query length != 1 in fused decode
-- Batch size != 1
 - `head_dim` other than 128
 - `block_size` other than 64
-- `v_bits` other than 8
-- `storage_mode` other than `"kv_quant"`
-- QJL (`use_qjl=True`)
-- Speculative decoding
+- Batch size != 1
+- Sliding-window attention
 - Continuous batching
-- Multi-model serving
+- Speculative decoding
+- QJL
+- Multi-user serving
+- Non-Apple-Silicon platforms
 
-## Status
+## Validation
 
-TurboPolar is an end-to-end research alpha. Promotion to `PROMOTED_EXPERIMENTAL` is locked until the following are proven by reproducible artifacts:
+All entry points must call:
 
-1. Fused compressed attention produces logits acceptably close to dense attention during autoregressive decode.
-2. Measured device memory is reduced, not merely logical payload bytes.
-3. Steady-state decode is non-regressive or faster at long context under a sound benchmark.
+```python
+from rfsn_v11.candidates.turbo_polar_config import validate_supported_configuration
+validate_supported_configuration(config)
+```
 
-See `STATUS.md` for current progress.
+This function raises `ValueError` or `NotImplementedError` for any unsupported configuration.

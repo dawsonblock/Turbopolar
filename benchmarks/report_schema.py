@@ -63,6 +63,8 @@ class ForcedDecodeFixtureResult:
     continuation_length: int
     steps: List[DecodeStepMetrics] = field(default_factory=list)
     kernel_stats: Dict[str, int] = field(default_factory=dict)
+    dense_nll_per_token: List[float] = field(default_factory=list)
+    candidate_nll_per_token: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -91,6 +93,9 @@ class ForcedDecodeAggregate:
     online_attention_calls: int = 0
     dense_tail_calls: int = 0
     fallback_calls: int = 0
+    dense_perplexity: float = 0.0
+    candidate_perplexity: float = 0.0
+    relative_perplexity_delta: float = 0.0
 
 
 @dataclass

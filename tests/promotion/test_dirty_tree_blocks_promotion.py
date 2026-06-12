@@ -27,6 +27,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 all_kernel_tests_passed=True,
                 all_integration_tests_passed=True,
                 cpu_metal_agreement_verified=True,
+                metal_tests_present=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
+                metal_tests_passed=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
             ),
             teacher_forced_report=TeacherForcedReport(
                 mean_logit_cosine=0.999,
@@ -47,11 +49,13 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 argmax_agreement=0.98,
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
+                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,
                 max_ratio_at_4096_plus=1.06,
                 median_ratio_at_8192_plus=1.04,
+                trials_per_context=5,
             ),
             memory_report=MemoryReport(
                 logical_kv_ratio=1.90,
@@ -75,7 +79,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     def test_clean_tree_can_promote(self):
         evidence = self._full_passing_evidence(dirty=False)
         decision = PromotionGate().evaluate(evidence)
-        self.assertEqual(decision.state, PromotionState.PROMOTED_EXPERIMENTAL)
+        # Promotion is locked at REVIEW_REQUIRED until independent validation.
+        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
 
     def test_dirty_tree_blocks(self):
         evidence = self._full_passing_evidence(dirty=True)

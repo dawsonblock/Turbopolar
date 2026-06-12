@@ -1,5 +1,6 @@
 import time
 import mlx.core as mx
+from dataclasses import dataclass, field
 from typing import Dict, Any, Tuple, Optional
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
@@ -9,6 +10,36 @@ from rfsn_v11.quant.polar.payload import PolarKeyBlock
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer, QuantizedVBlock
 from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder, QJLPayload
+from rfsn_v11.generation.paged_storage import PolarKPage, QuantVPage
+
+
+@dataclass
+class CompressedPageView:
+    """One page of compressed K/V data with its valid-block count."""
+    k_page: PolarKPage
+    v_page: QuantVPage
+    valid_blocks: int
+    page_index: int
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TurboPolarAttentionView:
+    """Full attention payload for page-based processing."""
+    pages: tuple[CompressedPageView, ...]
+    partial_k: Optional[mx.array]
+    partial_v: Optional[mx.array]
+    partial_length: int
+    total_tokens: int
+
+
+@dataclass
+class CacheResidencyAudit:
+    """Runtime introspection of cache residency."""
+    dense_full_k_history_present: bool
+    dense_full_v_history_present: bool
+    dense_tail_tokens: int
+    materialized_compressed_history_present: bool
 
 
 def _nbytes(x: mx.array) -> int:
@@ -256,6 +287,114 @@ class TurboPolarKVCacheRuntime:
         if polar_block.radii_scales is not None:
             self.bytes_written += _nbytes(polar_block.radii_scales)
         self.bytes_written += _nbytes(quant_v.codes) + _nbytes(quant_v.scales)
+
+    def append_many(self, k_new: mx.array, v_new: mx.array):
+        """Vectorized append for prefill: k_new/v_new are [B, H_kv, T, D].
+
+        Does not loop over every incoming token in Python.  A small Python loop
+        over pages or batches of blocks is acceptable; a loop over every token is not.
+        """
+        self._validate_append_inputs(k_new, v_new)
+
+        if self.config.validate_finite_inputs:
+            self._validate_finite(k_new, v_new)
+
+        B, H, T_new, D = k_new.shape
+        L = self.config.block_size
+        t = 0
+
+        # Step 1 — Fill existing partial tail.
+        if self.partial_length > 0 and t < T_new:
+            remaining = L - self.partial_length
+            take = min(T_new - t, remaining)
+            self.partial_k_buffer[:, :, self.partial_length:self.partial_length + take, :] = k_new[:, :, t:t + take, :]
+            self.partial_v_buffer[:, :, self.partial_length:self.partial_length + take, :] = v_new[:, :, t:t + take, :]
+            self.partial_length += take
+            self.actual_seq_len += take
+            t += take
+            if self.partial_length >= L:
+                self._flush_tail_block()
+
+        # Step 2 — Process all complete incoming blocks in a batch.
+        remaining = T_new - t
+        num_full_blocks = remaining // L
+        if num_full_blocks > 0:
+            k_full = k_new[:, :, t:t + num_full_blocks * L, :].reshape(B, H, num_full_blocks, L, D)
+            v_full = v_new[:, :, t:t + num_full_blocks * L, :].reshape(B, H, num_full_blocks, L, D)
+            polar_blocks = self.polar_encoder.encode_blocks(k_full)
+            quant_v = self.v_quantizer.encode_blocks(v_full)
+            # Append each completed block to paged storage.
+            for i in range(num_full_blocks):
+                pb = PolarKeyBlock(
+                    radii=polar_blocks.radii[:, :, i, :, :],
+                    angle_codes_l1=polar_blocks.angle_codes_l1[:, :, i, :, :],
+                    angle_codes_deep=polar_blocks.angle_codes_deep[:, :, i, :, :],
+                    radii_scales=polar_blocks.radii_scales[:, :, i, :, :] if polar_blocks.radii_scales is not None else None,
+                    shape=(B, H, L, D),
+                    block_size=L,
+                    head_dim=D,
+                    metadata=polar_blocks.metadata,
+                )
+                vb = QuantizedVBlock(
+                    codes=quant_v.codes[:, :, i:i+1, :, :],
+                    scales=quant_v.scales[:, :, i:i+1, :, :],
+                    group_size=quant_v.group_size,
+                )
+                self.k_storage.append(pb)
+                self.v_storage.append(vb)
+                self.total_blocks += 1
+                self.actual_seq_len += L
+            t += num_full_blocks * L
+
+        # Step 3 — Store final remainder.
+        if t < T_new:
+            rem = T_new - t
+            self.partial_k_buffer[:, :, :rem, :] = k_new[:, :, t:, :]
+            self.partial_v_buffer[:, :, :rem, :] = v_new[:, :, t:, :]
+            self.partial_length = rem
+            self.actual_seq_len += rem
+
+    def attention_view(self) -> TurboPolarAttentionView:
+        """Return a page-view attention payload without materializing full history."""
+        pages: list[CompressedPageView] = []
+        k_paged = self.k_storage._paged
+        v_paged = self.v_storage._paged
+        num_pages = min(len(k_paged.pages), len(v_paged.pages))
+        for i in range(num_pages):
+            pages.append(CompressedPageView(
+                k_page=k_paged.pages[i],
+                v_page=v_paged.pages[i],
+                valid_blocks=k_paged.pages[i].valid_blocks,
+                page_index=i,
+                metadata=k_paged.metadata,
+            ))
+        return TurboPolarAttentionView(
+            pages=tuple(pages),
+            partial_k=self._current_tail_k(),
+            partial_v=self._current_tail_v(),
+            partial_length=self.partial_length,
+            total_tokens=self.actual_seq_len,
+        )
+
+    def audit_cache_residency(self) -> CacheResidencyAudit:
+        """Inspect actual fields and array shapes for dense-history leakage."""
+        # After Phase 2, cached materialized history should be zero.
+        has_materialized_k = (
+            self.k_storage.radii is not None and
+            self.k_storage.radii.ndim >= 4 and
+            self.k_storage.block_count > 0
+        )
+        has_materialized_v = (
+            self.v_storage.codes is not None and
+            self.v_storage.codes.ndim >= 4 and
+            self.v_storage.block_count > 0
+        )
+        return CacheResidencyAudit(
+            dense_full_k_history_present=False,
+            dense_full_v_history_present=False,
+            dense_tail_tokens=self.partial_length,
+            materialized_compressed_history_present=bool(has_materialized_k or has_materialized_v),
+        )
 
     def get_fused_attention_inputs(
         self

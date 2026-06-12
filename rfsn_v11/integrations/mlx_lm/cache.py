@@ -66,7 +66,7 @@ class TurboPolarFastCache:
         if values.dtype != mx.float16:
             values = values.astype(mx.float16)
 
-        self.runtime.append(keys, values)
+        self.runtime.append_many(keys, values)
         block, quant_v, dense_v, _qjl, actual_len = self.runtime.get_blocks_for_attention()
         if block is None:
             raise RuntimeError("TurboPolar cache returned no blocks after append")
@@ -148,63 +148,22 @@ class TurboPolarFastCache:
 
         self.runtime.append(k_new, v_new)
 
-        block, quant_v, tail_k, tail_v, qjl_payload, actual_seq_len = (
-            self.runtime.get_fused_attention_inputs()
-        )
-        if block is None and tail_k is None:
+        view = self.runtime.attention_view()
+        if not view.pages and view.partial_k is None:
             raise RuntimeError("TurboPolar cache returned no blocks after append")
 
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
-
-        q_proj_signs = None
-        if self.config.use_qjl:
-            if qjl_payload is None:
-                raise RuntimeError("use_qjl=True but runtime produced no QJL payload")
-            q_proj_signs = self._compute_qjl_signs(q_squeezed)
-
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
-        # No completed compressed blocks yet: pure dense tail attention.
-        if block is None:
-            H_kv = tail_k.shape[1]
-            num_queries_per_kv = q_squeezed.shape[1] // H_kv
-            full_k = mx.repeat(tail_k, num_queries_per_kv, axis=1)
-            full_v = mx.repeat(tail_v, num_queries_per_kv, axis=1)
-            scores = mx.sum(q_squeezed[:, :, None, :] * full_k, axis=-1) * scale
-            seq_mask = mx.arange(tail_k.shape[2]) < actual_seq_len
-            scores = mx.where(
-                seq_mask[None, None, :], scores, mx.array(-1e9, dtype=scores.dtype)
-            )
-            weights = mx.softmax(scores, axis=-1)
-            return mx.sum(weights[:, :, :, None] * full_v, axis=-2)
-
-        if quant_v is None:
-            raise RuntimeError("Fused attention requires kv_quant storage mode")
-
-        if tail_k is not None and tail_k.shape[2] > 0:
-            output, _ = self.bridge.execute_online_attention_quant_v_dense_tail(
-                q_squeezed,
-                block,
-                quant_v,
-                tail_k,
-                tail_v,
-                qjl_payload,
-                q_proj_signs,
-                cfg,
-                actual_seq_len,
-                self.config.use_qjl,
-            )
-        else:
-            output, _ = self.bridge.execute_online_attention_quant_v(
-                q_squeezed,
-                block,
-                quant_v,
-                qjl_payload,
-                q_proj_signs,
-                cfg,
-                actual_seq_len,
-                self.config.use_qjl,
-            )
+        # Page-based online-softmax attention without full-cache materialization.
+        output, _ = self.bridge.execute_paged_online_attention(
+            q_squeezed,
+            view.pages,
+            view.partial_k,
+            view.partial_v,
+            cfg,
+            view.total_tokens,
+        )
         return output
 
     def make_mask(self, N: int, return_array: bool = False, window_size: Optional[int] = None):

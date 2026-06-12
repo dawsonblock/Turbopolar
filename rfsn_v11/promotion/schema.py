@@ -32,6 +32,9 @@ class KernelReport:
     all_integration_tests_passed: bool = False
     cpu_metal_agreement_verified: bool = False
     qjl_scaled_correctly: Optional[bool] = None
+    required_metal_tests: List[str] = field(default_factory=list)
+    metal_tests_present: List[str] = field(default_factory=list)
+    metal_tests_passed: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
     @classmethod
@@ -46,6 +49,9 @@ class KernelReport:
                 data.get("cpu_metal_agreement_verified", False)
             ),
             qjl_scaled_correctly=data.get("qjl_scaled_correctly"),
+            required_metal_tests=list(data.get("required_metal_tests", [])),
+            metal_tests_present=list(data.get("metal_tests_present", [])),
+            metal_tests_passed=list(data.get("metal_tests_passed", [])),
             notes=list(data.get("notes", [])),
         )
 

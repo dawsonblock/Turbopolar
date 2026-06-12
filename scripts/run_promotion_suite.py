@@ -19,9 +19,11 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+from xml.etree import ElementTree as ET
 
 import mlx.core as mx
 
@@ -66,13 +68,77 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def _run_pytest() -> KernelReport:
+REQUIRED_METAL_TESTS = {
+    "tests.kernels.test_paged_online_attention",
+    "tests.kernels.test_qjl_scaled_fused_qk",
+    "tests.kernels.test_qjl_scaled_online_attention",
+    "tests.benchmarks.test_turbopolar_fast_attention",
+    "tests.benchmarks.test_turbo_polar_online_attention",
+}
+
+
+def _parse_junit_xml(path: Path) -> Dict[str, Any]:
+    """Parse pytest JUnit XML into a structured dict."""
+    if not path.exists():
+        return {
+            "collected": 0,
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "metal_tests_required": list(REQUIRED_METAL_TESTS),
+            "metal_tests_present": [],
+            "metal_tests_passed": [],
+        }
+    tree = ET.parse(path)
+    root = tree.getroot()
+    testsuite = root if root.tag == "testsuite" else root.find("testsuite")
+    if testsuite is None:
+        return {}
+    collected = int(testsuite.get("tests", 0))
+    failures = int(testsuite.get("failures", 0))
+    errors = int(testsuite.get("errors", 0))
+    skipped = int(testsuite.get("skipped", 0))
+    passed = collected - failures - errors - skipped
+
+    metal_present: Set[str] = set()
+    metal_passed: Set[str] = set()
+    for testcase in testsuite.findall("testcase"):
+        cls = testcase.get("classname", "")
+        failed = any(
+            child.tag in ("failure", "error") for child in testcase
+        )
+        skipped_tc = any(child.tag == "skipped" for child in testcase)
+        # Map class name to module prefix.
+        parts = cls.split(".")
+        if len(parts) >= 2:
+            module_prefix = ".".join(parts[:-1])
+        else:
+            module_prefix = cls
+        if any(module_prefix.startswith(req) for req in REQUIRED_METAL_TESTS):
+            metal_present.add(module_prefix)
+            if not failed and not skipped_tc:
+                metal_passed.add(module_prefix)
+
+    return {
+        "collected": collected,
+        "passed": passed,
+        "failed": failures + errors,
+        "skipped": skipped,
+        "metal_tests_required": sorted(REQUIRED_METAL_TESTS),
+        "metal_tests_present": sorted(metal_present),
+        "metal_tests_passed": sorted(metal_passed),
+    }
+
+
+def _run_pytest(artifact_dir: Path) -> KernelReport:
     """Run pytest and record pass/fail at the report level."""
+    junit_path = artifact_dir / "pytest.xml"
     result = _run(
-        [sys.executable, "-m", "pytest", "tests/", "-q"],
+        [sys.executable, "-m", "pytest", "tests/", "-q", f"--junitxml={junit_path}"],
         timeout=600,
     )
     passed = result.returncode == 0
+    junit = _parse_junit_xml(junit_path)
     return KernelReport(
         all_unit_tests_passed=passed,
         all_kernel_tests_passed=passed,
@@ -82,6 +148,9 @@ def _run_pytest() -> KernelReport:
             "pytest exit code: " + str(result.returncode),
             "stdout lines: " + str(len(result.stdout.splitlines())),
         ],
+        required_metal_tests=junit.get("metal_tests_required", []),
+        metal_tests_present=junit.get("metal_tests_present", []),
+        metal_tests_passed=junit.get("metal_tests_passed", []),
     )
 
 
@@ -107,17 +176,16 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
-    cosine = agg.get("logit_cosine")
     return TeacherForcedReport(
         model=model,
-        mean_logit_cosine=cosine,
-        p05_logit_cosine=cosine,
-        min_logit_cosine=cosine,
-        mean_top5_overlap=agg.get("top5_overlap"),
-        mean_top10_overlap=agg.get("top10_overlap"),
-        argmax_agreement=agg.get("top5_overlap"),
-        mean_perplexity_delta=agg.get("perplexity_delta"),
-        any_nans_or_infs=math.isnan(cosine) if cosine is not None else True,
+        mean_logit_cosine=agg.get("mean_logit_cosine"),
+        p05_logit_cosine=agg.get("p05_logit_cosine"),
+        min_logit_cosine=agg.get("min_logit_cosine"),
+        mean_top5_overlap=agg.get("mean_top5_overlap"),
+        mean_top10_overlap=agg.get("mean_top10_overlap"),
+        argmax_agreement=agg.get("argmax_agreement"),
+        mean_perplexity_delta=agg.get("mean_perplexity_delta"),
+        any_nans_or_infs=agg.get("any_nans_or_infs", True),
     )
 
 
@@ -126,25 +194,24 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "run_fused_forced_decode.py",
         "--model", model,
         "--output-dir", str(output_dir / "fused_decode"),
-        "--max-tokens", "128",
-        "--num-decode", "32",
-        "--skip-decode-speed",
+        "--contexts", "512", "2048", "4096", "8192", "16384",
+        "--forced-decode-tokens", "128",
         timeout=1200,
     )
-    report = _load_json(output_dir / "fused_decode" / "report.json")
+    report = _load_json(output_dir / "fused_decode" / "fused_decode.json")
     agg = report.get("aggregate", {})
-    cosine = agg.get("logit_cosine")
+    contexts = report.get("contexts_evaluated", [])
     return FusedDecodeReport(
         model=model,
-        contexts_evaluated=[r.get("prompt_tokens", 0) for r in report.get("prompts", [])],
-        mean_logit_cosine=cosine,
-        p05_logit_cosine=cosine,
-        min_logit_cosine=cosine,
-        mean_top5_overlap=agg.get("top5_overlap"),
-        mean_top10_overlap=agg.get("top10_overlap"),
-        argmax_agreement=agg.get("top5_overlap"),
-        mean_perplexity_delta=agg.get("perplexity_delta"),
-        any_nans_or_infs=math.isnan(cosine) if cosine is not None else True,
+        contexts_evaluated=contexts,
+        mean_logit_cosine=agg.get("mean_logit_cosine"),
+        p05_logit_cosine=agg.get("p05_logit_cosine"),
+        min_logit_cosine=agg.get("min_logit_cosine"),
+        mean_top5_overlap=agg.get("mean_top5_overlap"),
+        mean_top10_overlap=agg.get("mean_top10_overlap"),
+        argmax_agreement=agg.get("mean_top1_agreement"),
+        mean_perplexity_delta=agg.get("mean_perplexity_delta"),
+        any_nans_or_infs=agg.get("any_nans_or_infs", True),
     )
 
 
@@ -185,33 +252,36 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
 
 def _memory_report(output_dir: Path) -> MemoryReport:
     _run_benchmark(
-        "run_memory_bench.py",
+        "run_memory_matrix.py",
         "--lengths", "64", "128", "256", "512", "1024", "2048", "4096", "8192",
-        "--output-dir", str(output_dir / "memory_bench"),
+        "--output-dir", str(output_dir / "memory_matrix"),
         timeout=600,
     )
-    report = _load_json(output_dir / "memory_bench" / "report.json")
+    report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
 
     long_records = [r for r in records if r["length"] >= 8192]
     long_record = long_records[-1] if long_records else (records[-1] if records else {})
 
+    hidden_dense = any(
+        r.get("hidden_dense_cache_detected", True) for r in records
+    )
+
     return MemoryReport(
         contexts_evaluated=contexts,
         logical_kv_ratio=long_record.get("logical_kv_ratio"),
         persistent_storage_ratio=long_record.get("persistent_storage_ratio"),
         peak_device_memory_ratio_at_8192_plus=long_record.get("peak_device_memory_ratio"),
-        hidden_dense_cache_detected=False,
+        hidden_dense_cache_detected=hidden_dense,
     )
 
 
 def _baseline_comparison_report(model: str, output_dir: Path) -> BaselineComparisonReport:
     _run_benchmark(
         "run_cartesian_int8_baseline.py",
-        "--model", model,
+        "--lengths", "64", "128", "256", "512", "1024",
         "--output-dir", str(output_dir / "cartesian_baseline"),
-        "--max-tokens", "128",
         timeout=1200,
     )
     report = _load_json(output_dir / "cartesian_baseline" / "report.json")
@@ -259,41 +329,18 @@ def _build_provenance(
 
 
 def _synthetic_evidence() -> PromotionEvidence:
-    """Create minimal synthetic evidence for --dry-run smoke tests."""
+    """Create minimal evidence for --dry-run smoke tests.
+
+    Dry-run verifies command wiring, schema compatibility, artifact writing,
+    and gate execution.  It must not populate passing scientific metrics.
+    """
     return PromotionEvidence(
         kernel_report=KernelReport(all_unit_tests_passed=True),
-        teacher_forced_report=TeacherForcedReport(
-            mean_logit_cosine=0.999,
-            p05_logit_cosine=0.995,
-            min_logit_cosine=0.980,
-            mean_top5_overlap=0.98,
-            mean_top10_overlap=0.99,
-            argmax_agreement=0.98,
-            mean_perplexity_delta=0.01,
-            any_nans_or_infs=False,
-        ),
-        fused_decode_report=FusedDecodeReport(
-            mean_logit_cosine=0.999,
-            p05_logit_cosine=0.995,
-            min_logit_cosine=0.980,
-            mean_top5_overlap=0.98,
-            mean_top10_overlap=0.99,
-            argmax_agreement=0.98,
-            mean_perplexity_delta=0.01,
-            any_nans_or_infs=False,
-        ),
-        speed_report=SpeedReport(
-            min_ratio_at_4096_plus=0.95,
-            max_ratio_at_4096_plus=1.02,
-            median_ratio_at_8192_plus=1.01,
-        ),
-        memory_report=MemoryReport(
-            logical_kv_ratio=1.90,
-            persistent_storage_ratio=1.80,
-            peak_device_memory_ratio_at_8192_plus=1.25,
-            hidden_dense_cache_detected=False,
-        ),
-        baseline_comparison_report=_baseline_comparison_report(),
+        teacher_forced_report=TeacherForcedReport(),
+        fused_decode_report=FusedDecodeReport(),
+        speed_report=SpeedReport(),
+        memory_report=MemoryReport(),
+        baseline_comparison_report=_placeholder_baseline_report(),
         provenance=BenchmarkProvenance(
             git_tree_state=GitTreeState.CLEAN,
             model_repo_id="dry-run/model",
@@ -337,31 +384,37 @@ def main():
     if not args.dry_run and not args.model:
         parser.error("--model is required unless --dry-run is set")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    # Immutable artifact directory: timestamp + short commit + config hash
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    commit = _run(["git", "rev-parse", "--short", "HEAD"], cwd=project_root).stdout.strip() or "unknown"
+    config_hash = "dry-run" if args.dry_run else "TODO_config_hash"
+    artifact_dir = args.output_dir / f"{timestamp}_{commit}_{config_hash}"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Artifacts: {artifact_dir}")
 
     print("Step 1/5: running test suite...")
-    kernel_report = _run_pytest()
+    kernel_report = _run_pytest(artifact_dir)
 
     if args.dry_run:
-        print("Step 2-4/5: --dry-run, using synthetic benchmark evidence...")
+        print("Step 2-5: --dry-run, using placeholder benchmark evidence...")
         evidence = _synthetic_evidence()
         evidence.kernel_report = kernel_report
         evidence.provenance.git_tree_state = GitTreeState.CLEAN
     else:
         print("Step 2/5: teacher-forced benchmark...")
-        teacher_report = _teacher_forced_report(args.model, args.output_dir)
+        teacher_report = _teacher_forced_report(args.model, artifact_dir)
 
         print("Step 3/5: fused decode benchmark...")
-        fused_report = _fused_decode_report(args.model, args.output_dir)
+        fused_report = _fused_decode_report(args.model, artifact_dir)
 
         print("Step 4/5: speed matrix benchmark...")
-        speed_report = _speed_report(args.model, args.output_dir)
+        speed_report = _speed_report(args.model, artifact_dir)
 
         print("Step 5/5: memory benchmark...")
-        memory_report = _memory_report(args.output_dir)
+        memory_report = _memory_report(artifact_dir)
 
         print("Step 6/5: Cartesian int8 baseline comparison...")
-        baseline_report = _baseline_comparison_report(args.model, args.output_dir)
+        baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
         config = TurboPolarConfig(
             num_q_heads=32,
@@ -373,7 +426,7 @@ def main():
             k_angle_bits_deep=8,
             split_dim=0,
         )
-        provenance = _build_provenance(args.model, args.output_dir, config)
+        provenance = _build_provenance(args.model, artifact_dir, config)
 
         evidence = PromotionEvidence(
             kernel_report=kernel_report,
@@ -388,8 +441,9 @@ def main():
     print("Evaluating promotion gate...")
     decision = PromotionGate().evaluate(evidence)
 
-    evidence_path = args.output_dir / "evidence.json"
-    decision_path = args.output_dir / "decision.json"
+    evidence_path = artifact_dir / "evidence.json"
+    decision_path = artifact_dir / "promotion_decision.json"
+    provenance_path = artifact_dir / "provenance.json"
 
     with open(evidence_path, "w") as f:
         json.dump(_clean_dict(evidence), f, indent=2)
@@ -402,9 +456,12 @@ def main():
             f,
             indent=2,
         )
+    with open(provenance_path, "w") as f:
+        json.dump(_clean_dict(evidence.provenance), f, indent=2)
 
     print(f"Evidence written to {evidence_path}")
     print(f"Decision written to {decision_path}")
+    print(f"Provenance written to {provenance_path}")
     print(f"Promotion state: {decision.state.value}")
     if decision.reasons:
         print("Reasons:")

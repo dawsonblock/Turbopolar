@@ -89,7 +89,20 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         tokenizer = _FakeTokenizer()
         context_tokens = tokenizer.encode("hello world this is a test")
         continuation_tokens = tokenizer.encode(" forced continuation tokens ")
-        adapter = TurboPolarLlamaAdapter()
+        from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+        adapter = TurboPolarLlamaAdapter(
+            TurboPolarConfig(
+                num_q_heads=4,
+                num_kv_heads=2,
+                head_dim=128,
+                block_size=64,
+                storage_mode="kv_quant",
+                use_int8_radii=True,
+                k_angle_bits_level1=8,
+                k_angle_bits_deep=8,
+                split_dim=0,
+            )
+        )
         result = benchmark_forced_decode_fixture(
             model, tokenizer, context_tokens, continuation_tokens, adapter
         )
