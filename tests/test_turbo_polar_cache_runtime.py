@@ -82,7 +82,7 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
             TurboPolarConfig(head_dim=64, block_size=64, num_q_heads=4, num_kv_heads=4)
         with self.assertRaises(ValueError):
             TurboPolarConfig(head_dim=128, block_size=32, num_q_heads=4, num_kv_heads=4)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(NotImplementedError):
             TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, use_qjl=True)
         with self.assertRaises(ValueError):
             TurboPolarConfig(head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, storage_mode="dense_v_debug")

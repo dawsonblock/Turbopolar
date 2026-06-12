@@ -35,6 +35,7 @@ class TestMissingEvidenceFails(unittest.TestCase):
             BaselineComparisonReport,
             BenchmarkProvenance,
             FusedDecodeReport,
+            GitTreeState,
             KernelReport,
             MemoryReport,
             SpeedReport,
@@ -78,7 +79,7 @@ class TestMissingEvidenceFails(unittest.TestCase):
                 turbo_polar_wins_on_speed=True,
             ),
             provenance=BenchmarkProvenance(
-                git_dirty=False,
+                git_tree_state=GitTreeState.CLEAN,
                 model_repo_id="test/model",
                 model_revision="abc123",
                 turbopolar_config_hash="def456",

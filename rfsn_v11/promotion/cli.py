@@ -9,10 +9,6 @@ from rfsn_v11.promotion.gate import PromotionGate
 from rfsn_v11.promotion.schema import PromotionEvidence
 
 
-def _dict_to_evidence(data: dict) -> PromotionEvidence:
-    return PromotionEvidence(**data)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Evaluate TurboPolar promotion evidence.")
     parser.add_argument(
@@ -30,7 +26,7 @@ def main():
     args = parser.parse_args()
 
     data = json.loads(args.evidence.read_text())
-    evidence = _dict_to_evidence(data)
+    evidence = PromotionEvidence.from_dict(data)
     decision = PromotionGate().evaluate(evidence)
 
     decision_dict = {

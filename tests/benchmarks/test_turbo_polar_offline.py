@@ -12,6 +12,7 @@ class TestTurboPolarOffline(unittest.TestCase):
         self.config = TurboPolarConfig(
             head_dim=128, qjl_proj_dim=64, block_size=64, split_dim=64,
             num_q_heads=4, num_kv_heads=4, seed=42,
+            k_angle_bits_level1=4, k_angle_bits_deep=4,
         )
         self.encoder = PolarQuantEncoder(self.config)
         self.decoder = PolarQuantDecoder()
@@ -36,9 +37,13 @@ class TestTurboPolarOffline(unittest.TestCase):
         radii = mx.stack([b.radii for b in blocks], axis=2)
         angle_l1 = mx.stack([b.angle_codes_l1 for b in blocks], axis=2)
         angle_deep = mx.stack([b.angle_codes_deep for b in blocks], axis=2)
+        radii_scales = None
+        if blocks[0].radii_scales is not None:
+            radii_scales = mx.stack([b.radii_scales for b in blocks], axis=2)
 
         unified = blocks[0].__class__(
             radii=radii, angle_codes_l1=angle_l1, angle_codes_deep=angle_deep,
+            radii_scales=radii_scales,
             shape=(B, H, S * L, D), block_size=L, head_dim=D, metadata=blocks[0].metadata
         )
 
@@ -88,6 +93,7 @@ class TestTurboPolarOffline(unittest.TestCase):
             radii=mx.expand_dims(block.radii, axis=2),
             angle_codes_l1=mx.expand_dims(block.angle_codes_l1, axis=2),
             angle_codes_deep=mx.expand_dims(block.angle_codes_deep, axis=2),
+            radii_scales=mx.expand_dims(block.radii_scales, axis=2) if block.radii_scales is not None else None,
             shape=(B, H, L, D), block_size=L, head_dim=D, metadata=block.metadata
         )
         k_recon = self.decoder.decode_block(unified)

@@ -1,3 +1,4 @@
+import time
 import mlx.core as mx
 from typing import Dict, Any, Tuple, Optional
 
@@ -15,17 +16,61 @@ def _nbytes(x: mx.array) -> int:
     return int(x.size * x.itemsize)
 
 
+class CacheMemoryStats:
+    """Truthful memory accounting for the TurboPolar cache.
+
+    - logical_payload_bytes: only valid compressed blocks and dense tail tokens.
+    - allocated_capacity_bytes: full array shapes including unused capacity.
+    - dense_tail_bytes: currently allocated dense partial tail buffers.
+    - metadata_bytes: small bookkeeping arrays (QJL, scales, etc.).
+    - dense_equivalent_bytes: fp16 K+V for the full actual sequence length.
+    - logical_compression_ratio: dense_equivalent / logical_payload.
+    - allocated_compression_ratio: dense_equivalent / allocated_capacity.
+    """
+    def __init__(
+        self,
+        logical_payload_bytes: int,
+        allocated_capacity_bytes: int,
+        dense_tail_bytes: int,
+        metadata_bytes: int,
+        dense_equivalent_bytes: int,
+    ):
+        self.logical_payload_bytes = logical_payload_bytes
+        self.allocated_capacity_bytes = allocated_capacity_bytes
+        self.dense_tail_bytes = dense_tail_bytes
+        self.metadata_bytes = metadata_bytes
+        self.dense_equivalent_bytes = dense_equivalent_bytes
+        self.logical_compression_ratio = (
+            dense_equivalent_bytes / logical_payload_bytes
+            if logical_payload_bytes > 0 else 0.0
+        )
+        self.allocated_compression_ratio = (
+            dense_equivalent_bytes / allocated_capacity_bytes
+            if allocated_capacity_bytes > 0 else 0.0
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "logical_payload_bytes": self.logical_payload_bytes,
+            "allocated_capacity_bytes": self.allocated_capacity_bytes,
+            "dense_tail_bytes": self.dense_tail_bytes,
+            "metadata_bytes": self.metadata_bytes,
+            "dense_equivalent_bytes": self.dense_equivalent_bytes,
+            "logical_compression_ratio": self.logical_compression_ratio,
+            "allocated_compression_ratio": self.allocated_compression_ratio,
+        }
+
+
 class TurboPolarKVCacheRuntime:
     """
     Stateful incremental Key-Value Cache with bit-packed PolarQuant.
     Handles GQA: KV heads stored at native resolution, broadcasted at attention time.
 
     Storage:
-      - Completed full blocks are compressed once into persistent, capacity-growing
-        storage objects (PolarKBlockStorage, QuantVBlockStorage).
-      - The active partial block (length < block_size) remains dense and mutable.
-      - This eliminates per-token re-encoding of the partial tail and avoids
-        rebuilding the full history via mx.stack() on every decode step.
+      - Completed full blocks are compressed once into persistent storage objects
+        (PolarKBlockStorage, QuantVBlockStorage).
+      - The active partial block (length < block_size) is kept in fixed-size dense
+        buffers to avoid per-token concatenation and re-allocation.
     """
     def __init__(self, config: TurboPolarConfig):
         self.config = config
@@ -34,8 +79,11 @@ class TurboPolarKVCacheRuntime:
         self.qjl_encoder = QJLResidualEncoder(config)
         self.decoder = PolarQuantDecoder()
 
-        self.partial_k: Optional[mx.array] = None
-        self.partial_v: Optional[mx.array] = None
+        # Fixed-size dense tail buffers, allocated lazily on first append.
+        self.partial_k_buffer: Optional[mx.array] = None
+        self.partial_v_buffer: Optional[mx.array] = None
+        self.partial_length = 0
+
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks: list[QJLPayload] = []
@@ -44,6 +92,9 @@ class TurboPolarKVCacheRuntime:
         self.bytes_written = 0
         self.bytes_read = 0
         self.compression_time_ns = 0
+        self.finite_check_calls = 0
+        self.forced_scalar_evaluations = 0
+        self.audit_time_ns = 0
 
         # Persistent invariants validated across all appends, even after full flushes.
         self._initialized = False
@@ -51,6 +102,19 @@ class TurboPolarKVCacheRuntime:
         self._num_kv_heads: Optional[int] = None
         self._head_dim: Optional[int] = None
         self._input_dtype = None
+
+    def _validate_finite(self, k_new: mx.array, v_new: mx.array):
+        """Host-side finite check. Only called when explicitly enabled or auditing."""
+        self.finite_check_calls += 1
+        t0 = time.perf_counter_ns() if hasattr(time, "perf_counter_ns") else 0
+        k_ok = mx.isfinite(k_new).all()
+        v_ok = mx.isfinite(v_new).all()
+        mx.eval(k_ok, v_ok)
+        self.forced_scalar_evaluations += 2
+        if not bool(k_ok.item()) or not bool(v_ok.item()):
+            raise ValueError("append() inputs must contain finite values")
+        if hasattr(time, "perf_counter_ns"):
+            self.audit_time_ns += time.perf_counter_ns() - t0
 
     def _validate_append_inputs(self, k_new: mx.array, v_new: mx.array):
         if not isinstance(k_new, mx.array) or not isinstance(v_new, mx.array):
@@ -66,8 +130,6 @@ class TurboPolarKVCacheRuntime:
             raise ValueError(f"k_new dtype {k_new.dtype} must match v_new dtype {v_new.dtype}")
         if k_new.dtype not in (mx.float16, mx.float32):
             raise ValueError(f"only float16 and float32 inputs are supported, got {k_new.dtype}")
-        if not mx.isfinite(k_new).all().item() or not mx.isfinite(v_new).all().item():
-            raise ValueError("append() inputs must contain finite values")
 
         # Persistent invariants: validated regardless of partial-block state.
         if self._initialized:
@@ -102,28 +164,63 @@ class TurboPolarKVCacheRuntime:
             self._head_dim = D
             self._input_dtype = k_new.dtype
             self._initialized = True
+            self._allocate_tail_buffers(B, H_kv, D, k_new.dtype)
+
+    def _allocate_tail_buffers(self, B: int, H_kv: int, D: int, dtype):
+        self.partial_k_buffer = mx.zeros((B, H_kv, self.config.block_size, D), dtype=dtype)
+        self.partial_v_buffer = mx.zeros((B, H_kv, self.config.block_size, D), dtype=dtype)
+        self.partial_length = 0
+
+    def _current_tail_k(self) -> Optional[mx.array]:
+        if self.partial_length == 0 or self.partial_k_buffer is None:
+            return None
+        return self.partial_k_buffer[:, :, :self.partial_length, :]
+
+    def _current_tail_v(self) -> Optional[mx.array]:
+        if self.partial_length == 0 or self.partial_v_buffer is None:
+            return None
+        return self.partial_v_buffer[:, :, :self.partial_length, :]
 
     def append(self, k_new: mx.array, v_new: mx.array):
         self._validate_append_inputs(k_new, v_new)
-        B, H, T_new, D = k_new.shape
-        self.actual_seq_len += T_new
-        if self.partial_k is None:
-            self.partial_k = k_new
-            self.partial_v = v_new
-        else:
-            self.partial_k = mx.concatenate([self.partial_k, k_new], axis=2)
-            self.partial_v = mx.concatenate([self.partial_v, v_new], axis=2)
 
+        if self.config.validate_finite_inputs:
+            self._validate_finite(k_new, v_new)
+        elif (
+            self.config.finite_audit_interval > 0
+            and self.actual_seq_len % self.config.finite_audit_interval == 0
+        ):
+            self._validate_finite(k_new, v_new)
+
+        B, H, T_new, D = k_new.shape
         L = self.config.block_size
-        while self.partial_k is not None and self.partial_k.shape[2] >= L:
-            k_block = self.partial_k[:, :, :L, :]
-            v_block = self.partial_v[:, :, :L, :]
-            self._flush_block(k_block, v_block)
-            self.partial_k = self.partial_k[:, :, L:, :]
-            self.partial_v = self.partial_v[:, :, L:, :]
-            if self.partial_k.shape[2] == 0:
-                self.partial_k = None
-                self.partial_v = None
+
+        # Append tokens one at a time into the fixed tail buffer.
+        for t in range(T_new):
+            token_k = k_new[:, :, t:t + 1, :]
+            token_v = v_new[:, :, t:t + 1, :]
+            index = self.partial_length
+            self.partial_k_buffer[:, :, index:index + 1, :] = token_k
+            self.partial_v_buffer[:, :, index:index + 1, :] = token_v
+            self.partial_length += 1
+            self.actual_seq_len += 1
+
+            if self.partial_length >= L:
+                self._flush_tail_block()
+
+    def _flush_tail_block(self):
+        """Flush a full tail buffer into compressed persistent storage."""
+        L = self.config.block_size
+        k_block = self.partial_k_buffer[:, :, :L, :]
+        v_block = self.partial_v_buffer[:, :, :L, :]
+        self._flush_block(k_block, v_block)
+        # Reuse the fixed buffer by resetting the logical length.  The stale data
+        # past partial_length is never attended to because attention kernels receive
+        # only the slice [:partial_length].
+        self.partial_length = 0
+        # Zero the buffer to ensure no old tail data is visible after reset.
+        self.partial_k_buffer = mx.zeros_like(self.partial_k_buffer)
+        self.partial_v_buffer = mx.zeros_like(self.partial_v_buffer)
 
     def _flush_block(self, k_block: mx.array, v_block: mx.array):
         B, H, L, D = k_block.shape
@@ -195,7 +292,7 @@ class TurboPolarKVCacheRuntime:
                 shape=(qjl_signs.shape[0], qjl_signs.shape[1], qjl_signs.shape[2], qjl_signs.shape[3], self.config.head_dim),
             )
 
-        return compressed_k, quant_v, self.partial_k, self.partial_v, unified_qjl, self.actual_seq_len
+        return compressed_k, quant_v, self._current_tail_k(), self._current_tail_v(), unified_qjl, self.actual_seq_len
 
     def get_blocks_for_attention(self) -> Tuple[Optional[PolarKeyBlock], Optional[QuantizedVBlock], Optional[mx.array], Optional[QJLPayload], int]:
         """
@@ -275,14 +372,15 @@ class TurboPolarKVCacheRuntime:
 
     def _maybe_encode_partial(self) -> Optional[Dict[str, Any]]:
         """Encode the partial tail padded to a full block, returning unified-shape tensors."""
-        if self.partial_k is None:
+        tail_k = self._current_tail_k()
+        if tail_k is None:
             return None
-        B, H, T_part, D = self.partial_k.shape
+        B, H, T_part, D = tail_k.shape
         L = self.config.block_size
         pad = L - T_part
         pad_width = [(0, 0), (0, 0), (0, pad), (0, 0)]
-        k_padded = mx.pad(self.partial_k, pad_width)
-        v_padded = mx.pad(self.partial_v, pad_width)
+        k_padded = mx.pad(tail_k, pad_width)
+        v_padded = mx.pad(self._current_tail_v(), pad_width)
 
         polar_block = self.polar_encoder.encode_block(k_padded)
         radii = mx.expand_dims(polar_block.radii, axis=2)
@@ -345,41 +443,128 @@ class TurboPolarKVCacheRuntime:
             fetched.append(self.decoder.decode_block(block))
         return mx.concatenate(fetched, axis=2)
 
-    def get_io_telemetry(self) -> Dict[str, Any]:
-        if self.k_storage.block_count == 0 and self.partial_k is None:
-            return {}
-        D = self.config.head_dim
+    def get_memory_stats(self) -> CacheMemoryStats:
+        """Return truthful memory accounting."""
+        logical = 0
+        allocated = 0
+        dense_tail = 0
+        metadata = 0
+
+        # Valid compressed K blocks.
         if self.k_storage.block_count > 0:
-            B = int(self.k_storage.radii.shape[0])
-            H = int(self.k_storage.radii.shape[1])
-        else:
-            B = int(self.partial_k.shape[0])
-            H = int(self.partial_k.shape[1])
+            k_arrays = [
+                self.k_storage.radii,
+                self.k_storage.angle_codes_l1,
+                self.k_storage.angle_codes_deep,
+            ]
+            if self.k_storage.radii_scales is not None:
+                k_arrays.append(self.k_storage.radii_scales)
+            for arr in k_arrays:
+                allocated += _nbytes(arr)
+                # Logical slice is only the valid blocks.
+                logical_slice = arr[:, :, :self.k_storage.block_count, :, :]
+                logical += _nbytes(logical_slice)
 
-        # Dense baseline: full fp16 K + full fp16 V for every token in the sequence.
-        dense_kv_bytes = B * H * self.actual_seq_len * D * 2 * 2
+        # Valid compressed V blocks.
+        if self.v_storage.block_count > 0:
+            v_arrays = [self.v_storage.codes, self.v_storage.scales]
+            for arr in v_arrays:
+                allocated += _nbytes(arr)
+                logical_slice = arr[:, :, :self.v_storage.block_count, :, :]
+                logical += _nbytes(logical_slice)
 
-        # Compressed cache: flushed payloads plus raw partial K/V tails.
-        compressed_bytes = self.bytes_written
-        if self.partial_k is not None:
-            compressed_bytes += _nbytes(self.partial_k) + _nbytes(self.partial_v)
+        # Dense tail buffers: always allocated; only partial_length is logical.
+        if self.partial_k_buffer is not None:
+            allocated += _nbytes(self.partial_k_buffer)
+            allocated += _nbytes(self.partial_v_buffer)
+            if self.partial_length > 0:
+                tail_k_logical = self.partial_k_buffer[:, :, :self.partial_length, :]
+                tail_v_logical = self.partial_v_buffer[:, :, :self.partial_length, :]
+                logical += _nbytes(tail_k_logical) + _nbytes(tail_v_logical)
+                dense_tail += _nbytes(tail_k_logical) + _nbytes(tail_v_logical)
+            else:
+                dense_tail = 0
+
+        # QJL payloads.
+        for qjl in self.qjl_blocks:
+            logical += _nbytes(qjl.packed_signs) + _nbytes(qjl.norms)
+            allocated += _nbytes(qjl.packed_signs) + _nbytes(qjl.norms)
+            metadata += _nbytes(qjl.packed_signs) + _nbytes(qjl.norms)
+
+        dense_equivalent = 0
+        if self._batch_size is not None:
+            dense_equivalent = (
+                self._batch_size * self._num_kv_heads * self.actual_seq_len * self._head_dim * 2 * 2
+            )
+
+        return CacheMemoryStats(
+            logical_payload_bytes=logical,
+            allocated_capacity_bytes=allocated,
+            dense_tail_bytes=dense_tail,
+            metadata_bytes=metadata,
+            dense_equivalent_bytes=dense_equivalent,
+        )
+
+    def get_io_telemetry(self) -> Dict[str, Any]:
+        stats = self.get_memory_stats()
+        if self.k_storage.block_count == 0 and self.partial_length == 0:
+            return {}
 
         return {
-            "dense_kv_bytes": dense_kv_bytes,
-            "actual_cache_bytes": compressed_bytes,
-            "compression_ratio": float(dense_kv_bytes / compressed_bytes) if compressed_bytes > 0 else 0.0,
+            "dense_kv_bytes": stats.dense_equivalent_bytes,
+            "actual_cache_bytes": stats.logical_payload_bytes,
+            "allocated_cache_bytes": stats.allocated_capacity_bytes,
+            "compression_ratio": stats.logical_compression_ratio,
+            "allocated_compression_ratio": stats.allocated_compression_ratio,
             "total_blocks": self.total_blocks,
-            "partial_tokens": self.partial_k.shape[2] if self.partial_k is not None else 0,
+            "partial_tokens": self.partial_length,
             "k_storage_capacity": self.k_storage.capacity,
             "v_storage_capacity": self.v_storage.capacity,
             "k_storage_reallocs": self.k_storage.reallocation_count,
             "v_storage_reallocs": self.v_storage.reallocation_count,
+            "finite_check_calls": self.finite_check_calls,
+            "forced_scalar_evaluations": self.forced_scalar_evaluations,
+            "audit_time_ns": self.audit_time_ns,
         }
+
+    def _eval_state(self):
+        """Materialize all lazy MLX arrays so allocator counters reflect real usage."""
+        arrays = []
+        if self.partial_k_buffer is not None:
+            arrays.append(self.partial_k_buffer)
+            arrays.append(self.partial_v_buffer)
+        if self.k_storage.radii is not None:
+            arrays.extend([
+                self.k_storage.radii,
+                self.k_storage.angle_codes_l1,
+                self.k_storage.angle_codes_deep,
+            ])
+            if self.k_storage.radii_scales is not None:
+                arrays.append(self.k_storage.radii_scales)
+        if self.v_storage.codes is not None:
+            arrays.extend([self.v_storage.codes, self.v_storage.scales])
+        for qjl in self.qjl_blocks:
+            arrays.extend([qjl.packed_signs, qjl.norms])
+        if arrays:
+            mx.eval(*arrays)
+
+    def measure_append_peak_memory(self, k_new: mx.array, v_new: mx.array) -> int:
+        """Append k_new/v_new and return the peak MLX allocator bytes observed.
+
+        This resets the global MLX peak-memory counter, runs the append (including
+        any block compression), materializes the resulting cache state, and reports
+        the highest bytes allocated during the operation.
+        """
+        mx.reset_peak_memory()
+        self.append(k_new, v_new)
+        self._eval_state()
+        return int(mx.get_peak_memory())
 
     def reset(self):
         """Clear all cache state and persistent invariants."""
-        self.partial_k = None
-        self.partial_v = None
+        self.partial_k_buffer = None
+        self.partial_v_buffer = None
+        self.partial_length = 0
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks = []
@@ -388,6 +573,9 @@ class TurboPolarKVCacheRuntime:
         self.bytes_written = 0
         self.bytes_read = 0
         self.compression_time_ns = 0
+        self.finite_check_calls = 0
+        self.forced_scalar_evaluations = 0
+        self.audit_time_ns = 0
         self._initialized = False
         self._batch_size = None
         self._num_kv_heads = None

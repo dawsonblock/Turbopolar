@@ -2,6 +2,9 @@
 
 Decode steps bypass K/V decompression and use custom Metal kernels.
 Prefill steps fall back to decompression + standard MLX attention.
+
+This module intentionally rejects all non-None masks because the supported
+configuration is single-batch full-history causal decode with mask=None.
 """
 
 import dataclasses
@@ -35,6 +38,14 @@ class TurboPolarFastCache:
     def offset(self) -> int:
         """Sequence length; used by mlx_lm RoPE to apply the correct position."""
         return self.runtime.actual_seq_len
+
+    def reset_execution_stats(self):
+        """Reset Metal kernel execution counters."""
+        self.bridge.reset_execution_stats()
+
+    def execution_stats(self):
+        """Return Metal kernel execution counters."""
+        return self.bridge.execution_stats()
 
     def _compute_qjl_signs(self, q: mx.array) -> mx.array:
         """Pack query projection signs to match the kernel's bit-packed layout.
@@ -109,6 +120,7 @@ class TurboPolarFastCache:
         k_new: mx.array,
         v_new: mx.array,
         scale: float,
+        mask: Optional[mx.array] = None,
     ) -> mx.array:
         """Decode path: append one token and run fused Metal attention.
 
@@ -117,11 +129,17 @@ class TurboPolarFastCache:
             k_new: [B, H_kv, 1, D] already RoPE'd key token.
             v_new: [B, H_kv, 1, D] already RoPE'd value token.
             scale: attention scale (typically 1/sqrt(head_dim)).
+            mask: must be None in the supported configuration.
 
         Returns:
             [B, H_q, D] attention output.
         """
         self._validate_decode_shape(q, k_new, v_new, self.config)
+
+        if mask is not None:
+            raise NotImplementedError(
+                "TurboPolar fused decode currently requires mask=None"
+            )
 
         if k_new.dtype != mx.float16:
             k_new = k_new.astype(mx.float16)
@@ -197,11 +215,30 @@ class TurboPolarFastCache:
 
     @property
     def nbytes(self) -> int:
-        telem = self.runtime.get_io_telemetry()
-        return int(telem.get("actual_cache_bytes", 0))
+        stats = self.runtime.get_memory_stats()
+        return int(stats.allocated_capacity_bytes)
 
     def empty(self) -> bool:
         return self.offset == 0
+
+    def get_memory_stats(self):
+        """Return truthful memory accounting for the underlying cache."""
+        return self.runtime.get_memory_stats()
+
+    def measure_decode_peak_memory(
+        self,
+        q: mx.array,
+        k_new: mx.array,
+        v_new: mx.array,
+        scale: float,
+        mask: Optional[mx.array] = None,
+    ) -> Tuple[int, mx.array]:
+        """Run decode_attention and return (peak MLX allocator bytes, output)."""
+        mx.reset_peak_memory()
+        output = self.decode_attention(q, k_new, v_new, scale, mask=mask)
+        mx.eval(output)
+        self.runtime._eval_state()
+        return int(mx.get_peak_memory()), output
 
 
 def make_turbo_caches(
@@ -212,14 +249,14 @@ def make_turbo_caches(
     use_qjl: bool = False,
 ) -> List[TurboPolarFastCache]:
     """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
-    if head_dim not in (64, 128):
-        raise ValueError(f"TurboPolar only supports head_dim 64 or 128, got {head_dim}")
+    if head_dim != 128:
+        raise ValueError(f"TurboPolar fused MLX path only supports head_dim=128, got {head_dim}")
     config = TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
         head_dim=head_dim,
         block_size=64,
-        qjl_proj_dim=32 if head_dim == 64 else 64,
+        qjl_proj_dim=64,
         use_qjl=use_qjl,
         storage_mode="kv_quant",
         use_int8_radii=True,
@@ -233,15 +270,8 @@ _orig_llama_attention_call: Optional[Any] = None
 
 
 def _is_standard_causal_mask(mask: mx.array, seq_len: int, cache_len: int) -> bool:
-    """Return True if mask is the standard full-history causal mask."""
-    if mask is None:
-        return True
-    expected_shape = (1, 1, seq_len, cache_len)
-    if mask.shape != expected_shape:
-        return False
-    # Standard causal mask: allow all positions up to and including the current one.
-    expected = mx.tril(mx.ones((seq_len, cache_len), dtype=mask.dtype))
-    return bool(mx.all(mask == expected).item())
+    """Return True only if mask is None; all explicit masks are unsupported."""
+    return mask is None
 
 
 def _turbo_attention_call(
@@ -255,7 +285,7 @@ def _turbo_attention_call(
             raise ValueError("TurboPolar fused decode requires GQA ratio to divide evenly.")
         if not _is_standard_causal_mask(mask, x.shape[1], cache.offset + x.shape[1]):
             raise NotImplementedError(
-                "TurboPolar fused decode only supports standard causal full-history masks."
+                "TurboPolar fused decode currently requires mask=None"
             )
         B, L, D = x.shape
 
@@ -270,7 +300,7 @@ def _turbo_attention_call(
         queries = self.rope(queries, offset=cache.offset)
         keys = self.rope(keys, offset=cache.offset)
 
-        output = cache.decode_attention(queries, keys, values, self.scale)
+        output = cache.decode_attention(queries, keys, values, self.scale, mask=mask)
         # output: [B, H_q, D] -> [B, L, H_q * D]
         output = output[:, None, :, :].transpose(0, 2, 1, 3).reshape(B, L, -1)
         return self.o_proj(output)
@@ -279,7 +309,11 @@ def _turbo_attention_call(
 
 
 def patch_llama_attention(model) -> None:
-    """Monkey-patch mlx_lm Llama Attention to use TurboPolarFastCache for decode."""
+    """Monkey-patch mlx_lm Llama Attention to use TurboPolarFastCache for decode.
+
+    Deprecated: use rfsn_v11.integrations.mlx_lm.TurboPolarLlamaAdapter instead.
+    This global patch remains only as a temporary benchmark convenience.
+    """
     import mlx_lm.models.llama as llama_module
 
     global _orig_llama_attention_call

@@ -1,14 +1,17 @@
 # TurboPolar Development Status
 
 **Branch:** `main`  
-**Version:** `0.2.0.dev0`  
-**Last updated:** 2026-06-11
+**Version:** `0.3.0.dev0`  
+**Last updated:** 2026-06-12
 
 ## Status summary
 
 **Promotion state:** `PROMOTED_EXPERIMENTAL` is **locked**.
 
-TurboPolar remains an end-to-end research alpha. Promotion is blocked until reproducible artifacts independently prove:
+TurboPolar remains an end-to-end research alpha. All required benchmark and
+promotion plumbing is now in place, but the default operating point does not yet
+meet the quantitative thresholds defined in `rfsn_v11/promotion/gate.py`.
+Promotion is blocked until reproducible artifacts independently prove:
 
 1. **Correctness:** fused compressed attention produces acceptably close logits to dense attention during actual autoregressive decode.
 2. **Memory:** measured device memory is reduced, not merely logical payload bytes.
@@ -20,9 +23,19 @@ No promotion claim may be made by any component other than the single promotion 
 
 - **Metal kernels on M2:** custom QK and attention kernels compile and run natively on Apple Silicon under MLX 0.31.2.
 - **MLX dispatch is correct:** we probe and adapt to the `grid == total_threads` semantics in this MLX version.
-- **Unit tests pass:** 71/71 tests green.
+- **Unit tests pass:** 117/117 tests green.
 - **Decompress-on-read path:** satisfies historical promotion-style gates on Llama-3.2-1B at 512-token context, but this path is not sufficient for `PROMOTED_EXPERIMENTAL`.
-- **Fused attention path:** quality matches dense (>0.999 cosine). Per-step partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended separately in a single fused kernel.
+- **Fused attention path:** quality matches dense (>0.999 cosine) on tiny validation models. Per-step partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended separately in a single fused kernel.
+- **Instance-level Llama adapter:** `TurboPolarLlamaAdapter` installs per-model, rolls back on failure, and prevents double install.
+- **Truthful memory accounting:** `CacheMemoryStats` separates logical payload, allocated capacity, dense tail, metadata, and dense equivalent; `measure_append_peak_memory()` probes the MLX allocator peak.
+- **Promotion governance:** consolidated into `rfsn_v11/promotion/` with nested JSON constructors, tri-state git (`CLEAN`/`DIRTY`/`UNKNOWN`), kernel-source hashing, and a full orchestration script at `scripts/run_promotion_suite.py`.
+- **Benchmark suite:**
+  - `benchmarks/run_dense_vs_turbopolar.py` — teacher-forced quality comparison.
+  - `benchmarks/run_fused_forced_decode.py` — fused decode teacher-forced comparison with kernel stats.
+  - `benchmarks/run_speed_matrix.py` — alternating-trial decode speed matrix with device-side token selection.
+  - `benchmarks/run_memory_bench.py` — truthful memory accounting across sequence lengths.
+  - `benchmarks/run_cartesian_int8_baseline.py` — grouped Cartesian int8 baseline.
+- **Deterministic prompts:** `benchmarks/exact_token_fixtures.jsonl` provides exact-length fixtures across short/boundary/medium/long/stress categories.
 
 ## Supported configuration
 
@@ -39,13 +52,8 @@ See `docs/SUPPORTED_CONFIGURATION.md`. The narrow supported scope is:
 
 ## What is incomplete
 
-- **Fused decode quality validation:** forced-autoregressive-decode quality matrix across 512–16384 tokens is not yet complete.
-- **Long-context speed validation:** sound alternating-trial speed benchmark at 4096+ tokens is not yet complete.
-- **Actual peak-memory validation:** device peak-memory measurement via MLX Metal APIs is not yet complete.
-- **Promotion governance:** consolidated into `rfsn_v11/promotion/` (`schema.py`, `gate.py`, `provenance.py`, `cli.py`). Only the central gate may produce promotion decisions; missing evidence now fails.
-- **Benchmark provenance:** `BenchmarkProvenance` captures software versions, prompt/config hashes, dirty-tree state, and writes immutable non-overwriting artifacts.
-- **Cartesian int8 baseline:** fair competitor baseline is not yet implemented.
-- **Persistent compressed block storage:** implemented in `rfsn_v11/generation/storage.py` with capacity-doubling growth for `PolarKBlockStorage` and `QuantVBlockStorage`.
+- **Quantization tuning:** the default config does not yet hit the 1.85× logical KV compression target required by the promotion gate.
+- **Real-model validation:** the new fused-decode and speed-matrix scripts are wired but have not been validated on a production-scale model.
 
 ## Promotion gates (must all be true)
 
@@ -72,11 +80,15 @@ Promotion to `PROMOTED_EXPERIMENTAL` requires:
 ## Build commands
 
 ```bash
-make install-dev   # install in editable mode
+make install-dev   # install in editable mode with dev+bench dependencies
 make test          # run all tests
 make compile       # compileall sanity check
-make lint          # ruff + mypy + compileall
+make lint          # compileall
 make smoke         # run smoke + README examples
 make bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-make fast-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make fused-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make speed-matrix MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make memory-bench
+make cartesian-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make promote MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 ```

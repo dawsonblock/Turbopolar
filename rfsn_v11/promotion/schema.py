@@ -1,6 +1,8 @@
 """Schema for promotion evidence and reports.
 
 This module defines dataclasses only. Promotion decisions belong to gate.py.
+Nested dictionaries can be converted back to dataclasses via the ``from_dict``
+classmethods on each report and on ``PromotionEvidence``.
 """
 
 from dataclasses import dataclass, field
@@ -15,6 +17,14 @@ class PromotionState(str, Enum):
     PROMOTED_EXPERIMENTAL = "PROMOTED_EXPERIMENTAL"
 
 
+class GitTreeState(str, Enum):
+    """Tri-state git working-tree condition."""
+
+    CLEAN = "CLEAN"
+    DIRTY = "DIRTY"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass
 class KernelReport:
     all_unit_tests_passed: bool = False
@@ -23,6 +33,21 @@ class KernelReport:
     cpu_metal_agreement_verified: bool = False
     qjl_scaled_correctly: Optional[bool] = None
     notes: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "KernelReport":
+        return cls(
+            all_unit_tests_passed=bool(data.get("all_unit_tests_passed", False)),
+            all_kernel_tests_passed=bool(data.get("all_kernel_tests_passed", False)),
+            all_integration_tests_passed=bool(
+                data.get("all_integration_tests_passed", False)
+            ),
+            cpu_metal_agreement_verified=bool(
+                data.get("cpu_metal_agreement_verified", False)
+            ),
+            qjl_scaled_correctly=data.get("qjl_scaled_correctly"),
+            notes=list(data.get("notes", [])),
+        )
 
 
 @dataclass
@@ -38,6 +63,22 @@ class TeacherForcedReport:
     max_perplexity_delta: Optional[float] = None
     any_nans_or_infs: bool = True
     notes: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TeacherForcedReport":
+        return cls(
+            model=data.get("model", ""),
+            mean_logit_cosine=data.get("mean_logit_cosine"),
+            p05_logit_cosine=data.get("p05_logit_cosine"),
+            min_logit_cosine=data.get("min_logit_cosine"),
+            mean_top5_overlap=data.get("mean_top5_overlap"),
+            mean_top10_overlap=data.get("mean_top10_overlap"),
+            argmax_agreement=data.get("argmax_agreement"),
+            mean_perplexity_delta=data.get("mean_perplexity_delta"),
+            max_perplexity_delta=data.get("max_perplexity_delta"),
+            any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
+            notes=list(data.get("notes", [])),
+        )
 
 
 @dataclass
@@ -56,6 +97,24 @@ class FusedDecodeReport:
     first_argmax_divergence_step: Optional[int] = None
     notes: List[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FusedDecodeReport":
+        return cls(
+            model=data.get("model", ""),
+            contexts_evaluated=list(data.get("contexts_evaluated", [])),
+            mean_logit_cosine=data.get("mean_logit_cosine"),
+            p05_logit_cosine=data.get("p05_logit_cosine"),
+            min_logit_cosine=data.get("min_logit_cosine"),
+            mean_top5_overlap=data.get("mean_top5_overlap"),
+            mean_top10_overlap=data.get("mean_top10_overlap"),
+            argmax_agreement=data.get("argmax_agreement"),
+            mean_perplexity_delta=data.get("mean_perplexity_delta"),
+            max_perplexity_delta=data.get("max_perplexity_delta"),
+            any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
+            first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
+            notes=list(data.get("notes", [])),
+        )
+
 
 @dataclass
 class SpeedReport:
@@ -70,6 +129,23 @@ class SpeedReport:
     median_ratio_at_8192_plus: Optional[float] = None
     notes: List[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpeedReport":
+        dense = data.get("dense_decode_tok_s", {})
+        turbo = data.get("turbo_decode_tok_s", {})
+        return cls(
+            model=data.get("model", ""),
+            contexts_evaluated=list(data.get("contexts_evaluated", [])),
+            trials_per_context=int(data.get("trials_per_context", 0)),
+            dense_decode_tok_s={int(k): list(v) for k, v in dense.items()},
+            turbo_decode_tok_s={int(k): list(v) for k, v in turbo.items()},
+            median_ratio=data.get("median_ratio"),
+            min_ratio_at_4096_plus=data.get("min_ratio_at_4096_plus"),
+            max_ratio_at_4096_plus=data.get("max_ratio_at_4096_plus"),
+            median_ratio_at_8192_plus=data.get("median_ratio_at_8192_plus"),
+            notes=list(data.get("notes", [])),
+        )
+
 
 @dataclass
 class MemoryReport:
@@ -80,6 +156,22 @@ class MemoryReport:
     peak_device_memory_ratio_at_8192_plus: Optional[float] = None
     hidden_dense_cache_detected: bool = True
     notes: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MemoryReport":
+        return cls(
+            model=data.get("model", ""),
+            contexts_evaluated=list(data.get("contexts_evaluated", [])),
+            logical_kv_ratio=data.get("logical_kv_ratio"),
+            persistent_storage_ratio=data.get("persistent_storage_ratio"),
+            peak_device_memory_ratio_at_8192_plus=data.get(
+                "peak_device_memory_ratio_at_8192_plus"
+            ),
+            hidden_dense_cache_detected=bool(
+                data.get("hidden_dense_cache_detected", True)
+            ),
+            notes=list(data.get("notes", [])),
+        )
 
 
 @dataclass
@@ -93,13 +185,28 @@ class BaselineComparisonReport:
     recommendation: str = ""
     notes: List[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BaselineComparisonReport":
+        return cls(
+            model=data.get("model", ""),
+            contexts_evaluated=list(data.get("contexts_evaluated", [])),
+            cartesian_int8_baseline_implemented=bool(
+                data.get("cartesian_int8_baseline_implemented", False)
+            ),
+            turbo_polar_wins_on_quality=data.get("turbo_polar_wins_on_quality"),
+            turbo_polar_wins_on_memory=data.get("turbo_polar_wins_on_memory"),
+            turbo_polar_wins_on_speed=data.get("turbo_polar_wins_on_speed"),
+            recommendation=data.get("recommendation", ""),
+            notes=list(data.get("notes", [])),
+        )
+
 
 @dataclass
 class BenchmarkProvenance:
     run_id: str = ""
     timestamp_utc: str = ""
     git_commit: str = ""
-    git_dirty: bool = True
+    git_tree_state: GitTreeState = GitTreeState.UNKNOWN
     git_diff_hash: str = ""
     python_version: str = ""
     mlx_version: str = ""
@@ -121,6 +228,40 @@ class BenchmarkProvenance:
     qjl_enabled: bool = False
     metal_kernel_source_hash: str = ""
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BenchmarkProvenance":
+        state_str = data.get("git_tree_state", "UNKNOWN")
+        try:
+            git_tree_state = GitTreeState(state_str)
+        except ValueError:
+            git_tree_state = GitTreeState.UNKNOWN
+        return cls(
+            run_id=data.get("run_id", ""),
+            timestamp_utc=data.get("timestamp_utc", ""),
+            git_commit=data.get("git_commit", ""),
+            git_tree_state=git_tree_state,
+            git_diff_hash=data.get("git_diff_hash", ""),
+            python_version=data.get("python_version", ""),
+            mlx_version=data.get("mlx_version", ""),
+            mlx_lm_version=data.get("mlx_lm_version", ""),
+            macos_version=data.get("macos_version", ""),
+            chip_model=data.get("chip_model", ""),
+            system_memory_gb=data.get("system_memory_gb"),
+            model_repo_id=data.get("model_repo_id", ""),
+            model_revision=data.get("model_revision", ""),
+            tokenizer_revision=data.get("tokenizer_revision", ""),
+            prompt_suite_hash=data.get("prompt_suite_hash", ""),
+            turbopolar_config_hash=data.get("turbopolar_config_hash", ""),
+            turbopolar_config=dict(data.get("turbopolar_config", {})),
+            benchmark_command=data.get("benchmark_command", ""),
+            warmup_count=int(data.get("warmup_count", 0)),
+            trial_count=int(data.get("trial_count", 0)),
+            context_lengths=list(data.get("context_lengths", [])),
+            decode_token_count=int(data.get("decode_token_count", 0)),
+            qjl_enabled=bool(data.get("qjl_enabled", False)),
+            metal_kernel_source_hash=data.get("metal_kernel_source_hash", ""),
+        )
+
 
 @dataclass
 class PromotionEvidence:
@@ -131,6 +272,33 @@ class PromotionEvidence:
     memory_report: Optional[MemoryReport] = None
     baseline_comparison_report: Optional[BaselineComparisonReport] = None
     provenance: Optional[BenchmarkProvenance] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PromotionEvidence":
+        """Reconstruct a PromotionEvidence tree from nested dictionaries."""
+        return cls(
+            kernel_report=_optional(KernelReport.from_dict, data.get("kernel_report")),
+            teacher_forced_report=_optional(
+                TeacherForcedReport.from_dict, data.get("teacher_forced_report")
+            ),
+            fused_decode_report=_optional(
+                FusedDecodeReport.from_dict, data.get("fused_decode_report")
+            ),
+            speed_report=_optional(SpeedReport.from_dict, data.get("speed_report")),
+            memory_report=_optional(MemoryReport.from_dict, data.get("memory_report")),
+            baseline_comparison_report=_optional(
+                BaselineComparisonReport.from_dict, data.get("baseline_comparison_report")
+            ),
+            provenance=_optional(
+                BenchmarkProvenance.from_dict, data.get("provenance")
+            ),
+        )
+
+
+def _optional(factory, value):
+    if value is None:
+        return None
+    return factory(value)
 
 
 @dataclass

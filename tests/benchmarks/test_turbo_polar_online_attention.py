@@ -29,10 +29,14 @@ class TestTurboPolarOnlineAttention(unittest.TestCase):
         S = T // self.config.block_size
         k_blocked = k_original.reshape(B, H, S, self.config.block_size, D)
         blocks = [self.polar_encoder.encode_block(k_blocked[:, :, s, :, :]) for s in range(S)]
+        radii_scales = None
+        if blocks[0].radii_scales is not None:
+            radii_scales = mx.stack([b.radii_scales for b in blocks], axis=2)
         return blocks[0].__class__(
             radii=mx.stack([b.radii for b in blocks], axis=2),
             angle_codes_l1=mx.stack([b.angle_codes_l1 for b in blocks], axis=2),
             angle_codes_deep=mx.stack([b.angle_codes_deep for b in blocks], axis=2),
+            radii_scales=radii_scales,
             shape=(B, H, T, D), block_size=self.config.block_size, head_dim=D,
             metadata=blocks[0].metadata,
         )

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import mlx.core as mx
 import numpy as np
 from pathlib import Path
@@ -8,6 +9,14 @@ from rfsn_v11.quant.polar.payload import PolarKeyBlock
 from rfsn_v11.quant.qjl.encoder import QJLPayload
 from rfsn_v11.quant.qjl.score_estimate import qjl_dot_estimate
 from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer, QuantizedVBlock
+
+
+@dataclass
+class KernelExecutionStats:
+    fused_qk_calls: int = 0
+    online_attention_calls: int = 0
+    dense_tail_calls: int = 0
+    fallback_calls: int = 0
 
 
 def _probe_metal_dispatch() -> Tuple[bool, str]:
@@ -182,6 +191,13 @@ class MetalKernelBridge:
 
         self.threadgroup_supported, self.grid_semantics = _probe_metal_dispatch()
         self._tg_x = 32
+        self._stats = KernelExecutionStats()
+
+    def reset_execution_stats(self):
+        self._stats = KernelExecutionStats()
+
+    def execution_stats(self) -> KernelExecutionStats:
+        return self._stats
 
     @staticmethod
     def _extract_kernel_parts(source: str, kernel_name: str) -> Tuple[str, str]:
@@ -493,6 +509,7 @@ class MetalKernelBridge:
 
     def execute_fused_qk(self, q: mx.array, block: PolarKeyBlock, config) -> mx.array:
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
             return self._cpu_fused_qk(q, block, config)
         B, H_q, S, L, _ = block.radii.shape
         H_kv = block.radii.shape[1]
@@ -507,7 +524,7 @@ class MetalKernelBridge:
             q, block.angle_codes_l1, block.angle_codes_deep
         )
         strides = self._build_strides_qk(q, radii_for_strides, radii_scales, angle_l1, angle_deep, out_array)
-        return self._kernel_qk(
+        result = self._kernel_qk(
             inputs=[
                 q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 mx.array(config.head_dim, dtype=mx.uint32),
@@ -528,9 +545,12 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, q.shape[1], S),
             threadgroup=(self._tg_x, 1, 1),
         )[0]
+        self._stats.fused_qk_calls += 1
+        return result
 
     def execute_fused_qk_qjl(self, q: mx.array, block: PolarKeyBlock, qjl_payload: QJLPayload, q_proj_signs: mx.array, config) -> mx.array:
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
             return self._cpu_fused_qk_qjl(q, block, qjl_payload, q_proj_signs, config)
         B, H_q, S, L, _ = block.radii.shape
         H_kv = block.radii.shape[1]
@@ -546,7 +566,7 @@ class MetalKernelBridge:
             qjl_payload.packed_signs, qjl_payload.norms, q_proj_signs
         )
         strides = self._build_strides_qjl(q, radii_for_strides, radii_scales, angle_l1, angle_deep, qjl_s, qjl_n, q_signs, out_array)
-        return self._kernel_qk_qjl(
+        result = self._kernel_qk_qjl(
             inputs=[
                 q, polar_radii, polar_radii_i8, radii_scales, angle_l1, angle_deep,
                 qjl_s, qjl_n, q_signs,
@@ -569,6 +589,8 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, q.shape[1], S),
             threadgroup=(self._tg_x, 1, 1),
         )[0]
+        self._stats.fused_qk_calls += 1
+        return result
 
     def _resolve_qjl_tensors(
         self, qjl_payload: Optional[QJLPayload], q_proj_signs: Optional[mx.array],
@@ -595,6 +617,7 @@ class MetalKernelBridge:
             qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
             v_broadcast = mx.repeat(v_dense.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
             return self._cpu_online_attention(
                 q, block, v_broadcast, qjl_payload, q_proj_signs, config,
@@ -637,6 +660,7 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, q.shape[1], 1),
             threadgroup=(self._tg_x, 1, 1),
         )[0]
+        self._stats.online_attention_calls += 1
         trace = {
             "kernel_name": "tqpolar_online_attention_dense_v",
             "metal_used": True,
@@ -659,6 +683,7 @@ class MetalKernelBridge:
             qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
             v_dequant = GroupedVQuantizer(group_size=quant_v.group_size).dequantize_block(quant_v)
             v_broadcast = mx.repeat(v_dequant.reshape(B, H_kv, S * L, config.head_dim), num_queries_per_kv, axis=1)
             return self._cpu_online_attention(
@@ -703,6 +728,7 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, q.shape[1], 1),
             threadgroup=(self._tg_x, 1, 1),
         )[0]
+        self._stats.online_attention_calls += 1
         trace = {
             "kernel_name": "tqpolar_online_attention_quant_v",
             "metal_used": True,
@@ -727,6 +753,7 @@ class MetalKernelBridge:
             qjl_payload, q_proj_signs, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.fallback_calls += 1
             return self._cpu_online_attention_dense_tail(
                 q, block, quant_v, tail_k, tail_v,
                 qjl_payload, q_proj_signs, config,
@@ -779,6 +806,8 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, q.shape[1], 1),
             threadgroup=(self._tg_x, 1, 1),
         )[0]
+        self._stats.online_attention_calls += 1
+        self._stats.dense_tail_calls += 1
         trace = {
             "kernel_name": "tqpolar_online_attention_quant_v_dense_tail",
             "metal_used": True,

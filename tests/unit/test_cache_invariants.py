@@ -9,7 +9,7 @@ from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
 
 class TestCacheInvariants(unittest.TestCase):
-    """Invariants must survive exact 64-token flushes where partial_k becomes None."""
+    """Invariants must survive exact 64-token flushes where the tail is reset."""
 
     def setUp(self):
         self.config = TurboPolarConfig(
@@ -28,7 +28,7 @@ class TestCacheInvariants(unittest.TestCase):
         cache = TurboPolarKVCacheRuntime(self.config)
         k, v = self._valid_kv(B=1, T=64)
         cache.append(k, v)
-        self.assertIsNone(cache.partial_k)
+        self.assertEqual(cache.partial_length, 0)
         k2, v2 = self._valid_kv(B=2, T=1)
         with self.assertRaisesRegex(ValueError, "batch size changed"):
             cache.append(k2, v2)
@@ -37,7 +37,7 @@ class TestCacheInvariants(unittest.TestCase):
         cache = TurboPolarKVCacheRuntime(self.config)
         k, v = self._valid_kv(T=64, dtype=mx.float16)
         cache.append(k, v)
-        self.assertIsNone(cache.partial_k)
+        self.assertEqual(cache.partial_length, 0)
         k2, v2 = self._valid_kv(T=1, dtype=mx.float32)
         with self.assertRaisesRegex(ValueError, "dtype changed"):
             cache.append(k2, v2)
@@ -79,8 +79,15 @@ class TestCacheInvariants(unittest.TestCase):
                 mx.random.normal((1, 4, 2, 128)).astype(mx.float16),
             )
 
-    def test_nonfinite_values_rejected(self):
-        cache = TurboPolarKVCacheRuntime(self.config)
+    def test_nonfinite_values_rejected_when_validation_enabled(self):
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            validate_finite_inputs=True,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
         k, v = self._valid_kv(T=2)
         # Inject one inf by concatenating a small tensor containing it.
         k_bad = mx.concatenate(
@@ -88,6 +95,11 @@ class TestCacheInvariants(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "finite"):
             cache.append(k_bad, v)
+
+    def test_finite_validation_disabled_by_default(self):
+        cache = TurboPolarKVCacheRuntime(self.config)
+        self.assertFalse(cache.config.validate_finite_inputs)
+        self.assertEqual(cache.config.finite_audit_interval, 0)
 
 
 if __name__ == "__main__":

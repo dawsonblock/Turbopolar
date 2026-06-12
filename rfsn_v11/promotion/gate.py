@@ -7,6 +7,7 @@ and passing; missing evidence results in INCOMPLETE/FAILED.
 from typing import List
 
 from rfsn_v11.promotion.schema import (
+    GitTreeState,
     PromotionDecision,
     PromotionEvidence,
     PromotionState,
@@ -188,7 +189,14 @@ class PromotionGate:
 
         # Provenance
         pv = evidence.provenance
-        if pv.git_dirty:
+        if pv.git_tree_state == GitTreeState.UNKNOWN:
+            reasons.append("Git tree state unknown; cannot verify reproducibility.")
+            return PromotionDecision(
+                state=PromotionState.REVIEW_REQUIRED,
+                reasons=reasons,
+                evidence=evidence,
+            )
+        if pv.git_tree_state == GitTreeState.DIRTY:
             reasons.append(
                 f"Source tree was dirty (diff hash {pv.git_diff_hash}); promotion requires a clean tree."
             )

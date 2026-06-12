@@ -6,6 +6,7 @@ from rfsn_v11.promotion import (
     BaselineComparisonReport,
     BenchmarkProvenance,
     FusedDecodeReport,
+    GitTreeState,
     KernelReport,
     MemoryReport,
     PromotionEvidence,
@@ -19,7 +20,7 @@ from rfsn_v11.promotion import (
 class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     """A dirty source tree must result in FAILED, not PROMOTED_EXPERIMENTAL."""
 
-    def _full_passing_evidence(self, git_dirty: bool) -> PromotionEvidence:
+    def _full_passing_evidence(self, dirty: bool) -> PromotionEvidence:
         return PromotionEvidence(
             kernel_report=KernelReport(
                 all_unit_tests_passed=True,
@@ -63,8 +64,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 turbo_polar_wins_on_speed=True,
             ),
             provenance=BenchmarkProvenance(
-                git_dirty=git_dirty,
-                git_diff_hash="abcd1234" if git_dirty else "",
+                git_tree_state=GitTreeState.DIRTY if dirty else GitTreeState.CLEAN,
+                git_diff_hash="abcd1234" if dirty else "",
                 model_repo_id="test/model",
                 model_revision="abc123",
                 turbopolar_config_hash="def456",
@@ -72,12 +73,12 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
         )
 
     def test_clean_tree_can_promote(self):
-        evidence = self._full_passing_evidence(git_dirty=False)
+        evidence = self._full_passing_evidence(dirty=False)
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.PROMOTED_EXPERIMENTAL)
 
     def test_dirty_tree_blocks(self):
-        evidence = self._full_passing_evidence(git_dirty=True)
+        evidence = self._full_passing_evidence(dirty=True)
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(any("dirty" in r.lower() for r in decision.reasons))

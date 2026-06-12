@@ -7,10 +7,27 @@ from typing import Dict, Any
 class TurboPolarConfig:
     """
     Immutable configuration structure governing the TurboPolar Alpha 9 runtime.
+
+    Supported initial target (Revision 4):
+      - Runtime: MLX + mlx-lm
+      - Model: one exact mlx_lm Llama class
+      - Batch size: 1
+      - Attention: full-history causal GQA
+      - Decode query length: 1
+      - Head dimension: 128
+      - KV block size: 64
+      - K format: log-int8 radius + 8-bit angle
+      - V format: grouped int8
+      - QJL: disabled
+      - Mask: None only
+      - Sliding window: unsupported
+      - Speculative decoding: unsupported
+
+    Anything outside this narrow scope is unsupported and raises an error.
     """
-    k_angle_bits_level1: int = 4
-    k_angle_bits_deep: int = 4
-    use_int8_radii: bool = False
+    k_angle_bits_level1: int = 8
+    k_angle_bits_deep: int = 8
+    use_int8_radii: bool = True
     v_bits: int = 8
     block_size: int = 64
     head_dim: int = 128
@@ -18,38 +35,52 @@ class TurboPolarConfig:
     use_qjl: bool = False
     storage_mode: str = "kv_quant"
     seed: int = 42
-    split_dim: int = 64
+    split_dim: int = 0
     attention_scale: float = 0.0  # 0 = auto-compute as 1/sqrt(head_dim)
     num_q_heads: int = 32
     num_kv_heads: int = 8
+    validate_finite_inputs: bool = False
+    finite_audit_interval: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.block_size <= 0:
-            raise ValueError("block_size must be positive")
-        if self.head_dim <= 0:
-            raise ValueError("head_dim must be positive")
-        if self.head_dim % 2 != 0:
-            raise ValueError("head_dim must be divisible by 2 for polar pair coordinate mapping")
+        if self.num_q_heads <= 0:
+            raise ValueError("num_q_heads must be positive")
+        if self.num_kv_heads <= 0:
+            raise ValueError("num_kv_heads must be positive")
+        if self.num_q_heads % self.num_kv_heads != 0:
+            raise ValueError("num_q_heads must be divisible by num_kv_heads")
+
+        if self.head_dim != 128:
+            raise ValueError("TurboPolar fused MLX path currently requires head_dim=128")
+        if self.block_size != 64:
+            raise ValueError("TurboPolar fused MLX path currently requires block_size=64")
+        if self.use_qjl:
+            raise NotImplementedError("QJL is disabled until fused real-model validation passes")
+        if self.storage_mode != "kv_quant":
+            raise ValueError("TurboPolar only supports storage_mode='kv_quant' in this release")
+        if self.v_bits != 8:
+            raise ValueError("v_bits must be 8 (4-bit V quantization is not yet implemented)")
+
+        if self.k_angle_bits_level1 not in (4, 8):
+            raise ValueError("k_angle_bits_level1 must be 4 or 8")
+        if self.k_angle_bits_deep not in (2, 4, 8):
+            raise ValueError("k_angle_bits_deep must be 2, 4, or 8")
+
         if self.qjl_proj_dim <= 0:
             raise ValueError("qjl_proj_dim must be positive")
         if self.qjl_proj_dim % 8 != 0:
             raise ValueError("qjl_proj_dim must be divisible by 8 for bit packing")
-        if self.v_bits != 8:
-            raise ValueError("v_bits must be 8 (4-bit V quantization is not yet implemented)")
-        if self.storage_mode not in {"k_only_first", "kv_quant", "dense_v_debug"}:
-            raise ValueError("unknown storage_mode")
-        if self.block_size != 64:
-            raise ValueError("TurboPolar only supports block_size == 64 in this release")
-        if self.head_dim != 128:
-            raise ValueError("TurboPolar only supports head_dim == 128 in this release")
-        if self.use_qjl:
-            raise ValueError("QJL is not supported in this release; set use_qjl=False")
-        if self.storage_mode != "kv_quant":
-            raise ValueError("TurboPolar only supports storage_mode='kv_quant' in this release")
+
         if self.split_dim < 0 or self.split_dim > self.head_dim or self.split_dim % 2 != 0:
             raise ValueError("split_dim must be even and within [0, head_dim]")
-        if self.num_q_heads % self.num_kv_heads != 0:
-            raise ValueError("num_q_heads must be divisible by num_kv_heads for GQA")
-        if self.attention_scale == 0.0:
-            object.__setattr__(self, "attention_scale", 1.0 / math.sqrt(self.head_dim))
+
+        if self.finite_audit_interval < 0:
+            raise ValueError("finite_audit_interval must be non-negative")
+
+        attention_scale = self.attention_scale
+        if attention_scale == 0.0:
+            attention_scale = 1.0 / math.sqrt(self.head_dim)
+        if attention_scale <= 0:
+            raise ValueError("attention_scale must be positive")
+        object.__setattr__(self, "attention_scale", float(attention_scale))

@@ -18,8 +18,9 @@ def _expand_block_dim(x: mx.array) -> mx.array:
 class PolarKBlockStorage:
     """Persistent storage for compressed key blocks.
 
-    Buffers are allocated lazily on first append with capacity and grow by doubling.
-    Valid blocks occupy indices [0, block_count).
+    Buffers are allocated lazily on first append with capacity 1 and grow by
+    exactly one block on each append that exceeds capacity. Valid blocks occupy
+    indices [0, block_count).
     """
     radii: Optional[mx.array] = None
     angle_codes_l1: Optional[mx.array] = None
@@ -27,12 +28,16 @@ class PolarKBlockStorage:
     radii_scales: Optional[mx.array] = None
     block_count: int = 0
     capacity: int = 0
+    block_size: int = 0
+    head_dim: int = 0
     metadata: dict = field(default_factory=dict)
     reallocation_count: int = 0
     bytes_copied_during_growth: int = 0
 
     def _init_buffers(self, block: PolarKeyBlock, initial_capacity: int):
         self.metadata = block.metadata
+        self.block_size = block.block_size
+        self.head_dim = block.head_dim
         radii = _expand_block_dim(block.radii)
         angle_l1 = _expand_block_dim(block.angle_codes_l1)
         angle_deep = _expand_block_dim(block.angle_codes_deep)
@@ -55,9 +60,9 @@ class PolarKBlockStorage:
         self.block_count = 1
 
     def _grow(self):
-        new_capacity = self.capacity * 2
+        new_capacity = self.capacity + 1
         def grow(x):
-            shape = x.shape[:2] + (new_capacity - self.capacity,) + x.shape[3:]
+            shape = x.shape[:2] + (1,) + x.shape[3:]
             extra = mx.zeros(shape, dtype=x.dtype)
             return mx.concatenate([x, extra], axis=2)
         self.bytes_copied_during_growth += int(self.radii.size * self.radii.itemsize)
@@ -72,7 +77,7 @@ class PolarKBlockStorage:
         self.capacity = new_capacity
         self.reallocation_count += 1
 
-    def append(self, block: PolarKeyBlock, initial_capacity: int = 4):
+    def append(self, block: PolarKeyBlock, initial_capacity: int = 1):
         if self.radii is None:
             self._init_buffers(block, initial_capacity)
             return
@@ -96,8 +101,8 @@ class PolarKBlockStorage:
             angle_codes_deep=self.angle_codes_deep[:, :, :self.block_count, :, :],
             radii_scales=self.radii_scales[:, :, :self.block_count, :, :] if self.radii_scales is not None else None,
             shape=shape,
-            block_size=self.metadata.get("block_size", shape[-1]),
-            head_dim=shape[-1],
+            block_size=self.block_size,
+            head_dim=self.head_dim,
             metadata=self.metadata,
         )
 
@@ -106,8 +111,9 @@ class PolarKBlockStorage:
 class QuantVBlockStorage:
     """Persistent storage for quantized value blocks.
 
-    Buffers are allocated lazily on first append with capacity and grow by doubling.
-    Valid blocks occupy indices [0, block_count).
+    Buffers are allocated lazily on first append with capacity 1 and grow by
+    exactly one block on each append that exceeds capacity. Valid blocks occupy
+    indices [0, block_count).
     """
     codes: Optional[mx.array] = None
     scales: Optional[mx.array] = None
@@ -134,9 +140,9 @@ class QuantVBlockStorage:
         self.block_count = 1
 
     def _grow(self):
-        new_capacity = self.capacity * 2
+        new_capacity = self.capacity + 1
         def grow(x):
-            shape = x.shape[:2] + (new_capacity - self.capacity,) + x.shape[3:]
+            shape = x.shape[:2] + (1,) + x.shape[3:]
             extra = mx.zeros(shape, dtype=x.dtype)
             return mx.concatenate([x, extra], axis=2)
         self.bytes_copied_during_growth += int(self.codes.size * self.codes.itemsize)
@@ -146,7 +152,7 @@ class QuantVBlockStorage:
         self.capacity = new_capacity
         self.reallocation_count += 1
 
-    def append(self, block: QuantizedVBlock, initial_capacity: int = 4):
+    def append(self, block: QuantizedVBlock, initial_capacity: int = 1):
         if self.codes is None:
             self._init_buffers(block, initial_capacity)
             return

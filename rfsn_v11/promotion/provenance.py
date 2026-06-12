@@ -12,7 +12,7 @@ from typing import Any, Dict
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.promotion.schema import BenchmarkProvenance
+from rfsn_v11.promotion.schema import BenchmarkProvenance, GitTreeState
 
 
 def _run(cmd: list[str]) -> str:
@@ -74,9 +74,15 @@ def capture_provenance(
 ) -> BenchmarkProvenance:
     """Build a BenchmarkProvenance record from the current environment."""
     git_commit = _run(["git", "rev-parse", "HEAD"])
-    git_dirty = _run(["git", "status", "--porcelain"]) != ""
+    porcelain = _run(["git", "status", "--porcelain"])
+    if not git_commit:
+        git_tree_state = GitTreeState.UNKNOWN
+    elif porcelain == "":
+        git_tree_state = GitTreeState.CLEAN
+    else:
+        git_tree_state = GitTreeState.DIRTY
     git_diff_hash = ""
-    if git_dirty:
+    if git_tree_state == GitTreeState.DIRTY:
         git_diff_hash = hashlib.sha256(
             _run(["git", "diff", "HEAD"]).encode()
         ).hexdigest()[:16]
@@ -114,7 +120,7 @@ def capture_provenance(
         run_id=str(uuid.uuid4()),
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
         git_commit=git_commit,
-        git_dirty=git_dirty,
+        git_tree_state=git_tree_state,
         git_diff_hash=git_diff_hash,
         python_version=platform.python_version(),
         mlx_version=mx.__version__,

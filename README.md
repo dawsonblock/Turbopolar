@@ -37,10 +37,11 @@ Anything outside this scope is unsupported and will raise an error. See `docs/SU
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"        # core + test dependencies
+pip install -e ".[all]"        # includes mlx-lm for real-model benchmarks
 ```
 
-Requires Python ≥3.10 and MLX ≥0.31.2.
+Requires Python ≥3.10 and MLX ≥0.31.2. Real-model benchmarks also require `mlx-lm`.
 
 ## Run tests
 
@@ -50,21 +51,18 @@ make test
 
 All tests should pass. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
 
-## Run the real-model benchmark
+## Run the real-model benchmarks
 
 ```bash
 make bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make fused-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make speed-matrix MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make memory-bench
+make cartesian-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make promote MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 ```
 
-This compares dense KV-cache logits against TurboPolar logits on a real MLX model and writes a report to `artifacts/`. See `benchmarks/README.md` for details.
-
-## Run the fused-attention benchmark
-
-```bash
-make fast-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-```
-
-This uses an explicit mlx_lm Llama adapter so decode steps run the custom TurboPolar Metal attention kernels directly on compressed K/V. Quality matches dense, but the fused path is still being validated for speed and memory.
+These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. See `benchmarks/README.md` for details.
 
 ## Quick example
 
@@ -102,8 +100,8 @@ rfsn_v11/
 │   ├── polar/           # Key polar quantization encode/decode
 │   ├── qjl/             # QJL score estimator (experimental, disabled)
 │   └── v_quant/         # Value int8 quantization
-├── baselines/           # Alternative KV-cache baselines (e.g., Cartesian int8)
-└── tests/               # Unit, kernel, integration, and governance tests
+├── tests/               # Unit, kernel, integration, and governance tests
+└── benchmarks/          # Real-model validation harnesses and baselines
 ```
 
 ## Current limitations

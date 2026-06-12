@@ -61,22 +61,41 @@ class TestUnsupportedAttentionRejection(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "GQA ratio"):
             self.cache.decode_attention(q, k, v, scale=self.config.attention_scale)
 
-    def test_standard_causal_mask_accepted(self):
-        mask = mx.tril(mx.ones((1, 1, 1, 10), dtype=mx.float16))
-        self.assertTrue(_is_standard_causal_mask(mask, 1, 10))
-
     def test_none_mask_accepted(self):
         self.assertTrue(_is_standard_causal_mask(None, 1, 10))
 
-    def test_non_causal_mask_rejected(self):
+    def test_boolean_all_true_mask_rejected(self):
         mask = mx.ones((1, 1, 1, 10), dtype=mx.float16)
         self.assertFalse(_is_standard_causal_mask(mask, 1, 10))
+        with self.assertRaisesRegex(NotImplementedError, "mask=None"):
+            self.cache.decode_attention(
+                *self._valid_qkv(), scale=self.config.attention_scale, mask=mask
+            )
 
-    def test_sliding_window_mask_rejected_by_shape(self):
-        # A sliding-window mask would not match the full-history causal shape.
+    def test_triangular_mask_rejected(self):
+        mask = mx.tril(mx.ones((1, 1, 1, 10), dtype=mx.float16))
+        self.assertFalse(_is_standard_causal_mask(mask, 1, 10))
+        with self.assertRaisesRegex(NotImplementedError, "mask=None"):
+            self.cache.decode_attention(
+                *self._valid_qkv(), scale=self.config.attention_scale, mask=mask
+            )
+
+    def test_additive_zero_mask_rejected(self):
+        mask = mx.zeros((1, 1, 1, 10), dtype=mx.float16)
+        self.assertFalse(_is_standard_causal_mask(mask, 1, 10))
+        with self.assertRaisesRegex(NotImplementedError, "mask=None"):
+            self.cache.decode_attention(
+                *self._valid_qkv(), scale=self.config.attention_scale, mask=mask
+            )
+
+    def test_sliding_window_mask_rejected(self):
         mask = mx.zeros((1, 1, 1, 10), dtype=mx.float16)
         mask[..., -4:] = 1.0
         self.assertFalse(_is_standard_causal_mask(mask, 1, 10))
+        with self.assertRaisesRegex(NotImplementedError, "mask=None"):
+            self.cache.decode_attention(
+                *self._valid_qkv(), scale=self.config.attention_scale, mask=mask
+            )
 
 
 if __name__ == "__main__":
