@@ -583,34 +583,26 @@ class TurboPolarKVCacheRuntime:
         return mx.concatenate(fetched, axis=2)
 
     def get_memory_stats(self) -> CacheMemoryStats:
-        """Return truthful memory accounting."""
+        """Return truthful memory accounting.
+
+        Uses the paged storage directly for allocated capacity (includes empty
+        page slots) rather than the cached concatenated views (which contain
+        only valid blocks).
+        """
         logical = 0
         allocated = 0
         dense_tail = 0
         metadata = 0
 
-        # Valid compressed K blocks.
+        # Paged storage reports truthfully from the underlying pages.
         if self.k_storage.block_count > 0:
-            k_arrays = [
-                self.k_storage.radii,
-                self.k_storage.angle_codes_l1,
-                self.k_storage.angle_codes_deep,
-            ]
-            if self.k_storage.radii_scales is not None:
-                k_arrays.append(self.k_storage.radii_scales)
-            for arr in k_arrays:
-                allocated += _nbytes(arr)
-                # Logical slice is only the valid blocks.
-                logical_slice = arr[:, :, :self.k_storage.block_count, :, :]
-                logical += _nbytes(logical_slice)
-
-        # Valid compressed V blocks.
+            k_logical, k_allocated = self.k_storage._paged.get_memory_stats()
+            logical += k_logical
+            allocated += k_allocated
         if self.v_storage.block_count > 0:
-            v_arrays = [self.v_storage.codes, self.v_storage.scales]
-            for arr in v_arrays:
-                allocated += _nbytes(arr)
-                logical_slice = arr[:, :, :self.v_storage.block_count, :, :]
-                logical += _nbytes(logical_slice)
+            v_logical, v_allocated = self.v_storage._paged.get_memory_stats()
+            logical += v_logical
+            allocated += v_allocated
 
         # Dense tail buffers: always allocated; only partial_length is logical.
         if self.partial_k_buffer is not None:

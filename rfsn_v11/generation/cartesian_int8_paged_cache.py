@@ -171,9 +171,16 @@ class PagedCartesianInt8KVCache:
                     self.partial_k_buffer[:, :, :self.partial_length, :],
                     self.partial_v_buffer[:, :, :self.partial_length, :],
                 )
+            # Empty history: infer shape from buffers if allocated, else generic.
+            if self.partial_k_buffer is not None:
+                B, H, _, D = self.partial_k_buffer.shape
+                return (
+                    mx.zeros((B, H, 0, D), dtype=mx.float16),
+                    mx.zeros((B, H, 0, D), dtype=mx.float16),
+                )
             return (
-                mx.zeros((0, 0, 0, 0), dtype=mx.float16),
-                mx.zeros((0, 0, 0, 0), dtype=mx.float16),
+                mx.zeros((1, 1, 0, 128), dtype=mx.float16),
+                mx.zeros((1, 1, 0, 128), dtype=mx.float16),
             )
 
         mono = self.storage.debug_materialize_all_blocks()

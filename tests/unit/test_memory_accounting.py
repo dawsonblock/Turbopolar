@@ -82,11 +82,21 @@ class TestMemoryAccounting(unittest.TestCase):
         expected_logical = expected_k + expected_v
         # Buffers for the dense tail are allocated even when empty after a flush.
         allocated_tail_buffers = B * H * L * D * 2 * 2
-        self.assertEqual(stats.logical_payload_bytes, expected_logical)
-        self.assertEqual(
-            stats.allocated_capacity_bytes,
-            expected_logical + allocated_tail_buffers,
+        # Paged storage allocates a full page (capacity 16 blocks) per page type.
+        page_capacity = 16
+        expected_k_allocated = (
+            B * H * page_capacity * L * half_d
+            + B * H * page_capacity * L * l1_dims
+            + B * H * page_capacity * L * deep_dims
+            + B * H * page_capacity * 1 * 1 * 2
         )
+        expected_v_allocated = (
+            B * H * page_capacity * L * D
+            + B * H * page_capacity * L * num_groups * 2
+        )
+        expected_allocated = expected_k_allocated + expected_v_allocated + allocated_tail_buffers
+        self.assertEqual(stats.logical_payload_bytes, expected_logical)
+        self.assertEqual(stats.allocated_capacity_bytes, expected_allocated)
         self.assertEqual(stats.dense_tail_bytes, 0)
         self.assertEqual(
             stats.dense_equivalent_bytes,
