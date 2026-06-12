@@ -560,6 +560,7 @@ class MetalKernelBridge:
         total_tokens = 0
         v_dequantizer = GroupedVQuantizer(group_size=32)
 
+        qk_metal_used = False
         for page_view in pages:
             valid_blocks = page_view.valid_blocks
             if valid_blocks == 0:
@@ -582,7 +583,10 @@ class MetalKernelBridge:
                 metadata=page_view.metadata,
             )
 
-            scores = self._cpu_fused_qk(q, block, config)
+            prev_fused_qk = self._stats.fused_qk_calls
+            scores = self.execute_fused_qk(q, block, config)
+            if self._stats.fused_qk_calls > prev_fused_qk:
+                qk_metal_used = True
             T_page = scores.shape[-1]
 
             # Dequantize V for this page.
@@ -622,14 +626,14 @@ class MetalKernelBridge:
         output = output.astype(mx.float16)
 
         self._stats.online_attention_calls += 1
-        self._stats.fallback_calls += 1
         if pages and tail_k is not None and tail_k.shape[2] > 0:
             self._stats.dense_tail_calls += 1
 
         trace = {
-            "kernel_name": "paged_online_attention_cpu",
-            "metal_used": False,
-            "fallback_used": True,
+            "kernel_name": "paged_online_attention_qk_metal",
+            "metal_used": qk_metal_used,
+            "qk_metal_used": qk_metal_used,
+            "fallback_used": not qk_metal_used,
             "qjl_used": False,
             "quant_v_used": True,
             "actual_seq_len": actual_seq_len,
