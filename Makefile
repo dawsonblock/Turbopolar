@@ -1,4 +1,4 @@
-.PHONY: all install install-dev test test-fast compile lint clean smoke status
+.PHONY: all install install-dev test test-fast bench compile lint clean smoke status
 
 all: install-dev test
 
@@ -19,6 +19,9 @@ compile:
 
 lint:
 	python -m compileall rfsn_v11 tests scripts
+
+bench:
+	python benchmarks/run_dense_vs_turbopolar.py --model $(MODEL)
 
 smoke:
 	python scripts/smoke_test.py
