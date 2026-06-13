@@ -677,9 +677,11 @@ class MetalKernelBridge:
             )
         except Exception:
             self._stats.fallback_calls += 1
-            return self._execute_paged_online_attention_reference(
+            out, trace = self._execute_paged_online_attention_reference(
                 q, pages, tail_k, tail_v, config, actual_seq_len
             )
+            trace["fallback_used"] = True
+            return out, trace
 
     def _execute_paged_online_attention_reference(
         self,
@@ -704,12 +706,30 @@ class MetalKernelBridge:
                 continue
             decoder = PolarQuantDecoder()
             vq = GroupedVQuantizer(group_size=page_view.v_page.group_size)
-            k_dense = decoder.decode_block(page_view.k_page)[
-                :, :, : valid_blocks * config.block_size, :
-            ]
-            v_dense = vq.dequantize_block(page_view.v_page)[
-                :, :, : valid_blocks * config.block_size, :
-            ]
+            k_page = page_view.k_page
+            block = PolarKeyBlock(
+                radii=k_page.radii[:, :, :valid_blocks, :, :],
+                angle_codes_l1=k_page.angle_codes_l1[:, :, :valid_blocks, :, :],
+                angle_codes_deep=k_page.angle_codes_deep[:, :, :valid_blocks, :, :],
+                radii_scales=(
+                    k_page.radii_scales[:, :, :valid_blocks, :, :]
+                    if k_page.radii_scales is not None
+                    else None
+                ),
+                shape=(B, k_page.radii.shape[1], valid_blocks * config.block_size, D),
+                block_size=config.block_size,
+                head_dim=D,
+                metadata=page_view.metadata,
+            )
+            k_dense = decoder.decode_block(block)
+            v_page = page_view.v_page
+            v_dense = vq.dequantize_block(
+                QuantizedVBlock(
+                    codes=v_page.codes[:, :, :valid_blocks, :, :],
+                    scales=v_page.scales[:, :, :valid_blocks, :, :],
+                    group_size=v_page.group_size,
+                )
+            ).reshape(B, v_page.codes.shape[1], valid_blocks * config.block_size, D)
             scores = (
                 mx.sum(q[:, :, None, :] * k_dense, axis=-1) * config.attention_scale
             )
