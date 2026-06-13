@@ -357,9 +357,9 @@ def main():
     parser.add_argument(
         "--execution-mode",
         type=str,
-        default="development_auto",
+        default="metal_strict",
         choices=["reference", "metal_strict", "development_auto"],
-        help="Execution mode for TurboPolar attention (default: development_auto)",
+        help="Execution mode for TurboPolar attention (default: metal_strict)",
     )
     args = parser.parse_args()
 

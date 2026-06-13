@@ -92,9 +92,10 @@ def _run_forward(model, tokens: mx.array, cache: List):
 
 
 def _teacher_forced_logits(
-    model, tokenizer, prompt_text: str, cache: List, max_tokens: int
+    model, tokenizer, prompt_text: str, cache: List, max_tokens: int, tokens: Optional[List[int]] = None
 ):
-    tokens = tokenizer.encode(prompt_text)
+    if tokens is None:
+        tokens = tokenizer.encode(prompt_text)
     if len(tokens) > max_tokens:
         tokens = tokens[:max_tokens]
     tokens_mx = mx.array(tokens)[None, :]  # (1, L)
@@ -262,7 +263,7 @@ def _measure_decode_speed(
 
 
 def benchmark_prompt(
-    model, tokenizer, prompt_text: str, max_tokens: int, num_decode: int
+    model, tokenizer, prompt_text: Optional[str] = None, max_tokens: int = 128, num_decode: int = 32, tokens: Optional[List[int]] = None
 ) -> PromptResult:
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
     num_layers = (
@@ -270,16 +271,16 @@ def benchmark_prompt(
     )
 
     dense_cache = _make_dense_cache(num_layers)
-    dense_logits, tokens, dense_cache = _teacher_forced_logits(
-        model, tokenizer, prompt_text, dense_cache, max_tokens
+    dense_logits, tokens_out, dense_cache = _teacher_forced_logits(
+        model, tokenizer, prompt_text or "", dense_cache, max_tokens, tokens=tokens
     )
 
     turbo_cache = _make_turbo_cache(num_layers, num_q_heads, num_kv_heads, head_dim)
     turbo_logits, _tokens, turbo_cache = _teacher_forced_logits(
-        model, tokenizer, prompt_text, turbo_cache, max_tokens
+        model, tokenizer, prompt_text or "", turbo_cache, max_tokens, tokens=tokens
     )
 
-    if _tokens != tokens:
+    if _tokens != tokens_out:
         raise RuntimeError("Token mismatch between dense and TurboPolar runs")
 
     telem = turbo_cache[0].runtime.get_io_telemetry()
@@ -311,9 +312,10 @@ def benchmark_prompt(
                 )
             )
 
+    display_prompt = prompt_text or f"<synthetic_{len(tokens_out)}>"
     return PromptResult(
-        prompt=prompt_text,
-        prompt_tokens=len(tokens),
+        prompt=display_prompt,
+        prompt_tokens=len(tokens_out),
         dense_logits_shape=dense_logits.shape,
         turbo_logits_shape=turbo_logits.shape,
         logit_cosine=_logit_cosine(dense_logits, turbo_logits),
@@ -321,7 +323,7 @@ def benchmark_prompt(
         top10_overlap=_topk_overlap(dense_logits, turbo_logits, k=10),
         kl_divergence=_kl_divergence(dense_logits, turbo_logits),
         perplexity_delta=abs(
-            _perplexity(dense_logits, tokens) - _perplexity(turbo_logits, tokens)
+            _perplexity(dense_logits, tokens_out) - _perplexity(turbo_logits, tokens_out)
         ),
         argmax_agreement=_argmax_agreement(dense_logits, turbo_logits),
         compression_ratio=compression_ratio,
@@ -372,6 +374,13 @@ def main():
     parser.add_argument(
         "--skip-decode-speed", action="store_true", help="Skip decode speed measurement"
     )
+    parser.add_argument(
+        "--context-lengths",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Deterministic synthetic context lengths to benchmark (ignores prompt-suite)",
+    )
     args = parser.parse_args()
 
     mx.random.seed(args.seed)
@@ -381,33 +390,51 @@ def main():
     print(f"Loading model: {model_path}")
     model, tokenizer = load(str(model_path))
 
-    prompts = load_prompts(args.prompt_suite)
-    if not prompts:
-        raise ValueError(f"No prompts found in {args.prompt_suite}")
-
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
     )
 
     results = []
-    for i, prompt in enumerate(prompts):
-        print(
-            f"Benchmarking prompt {i + 1}/{len(prompts)} ({len(tokenizer.encode(prompt))} tokens)"
-        )
-        result = benchmark_prompt(
-            model, tokenizer, prompt, args.max_tokens, args.num_decode
-        )
-        results.append(result)
-        print(
-            f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x"
-        )
+    if args.context_lengths:
+        rng = np.random.RandomState(args.seed)
+        for i, ctx_len in enumerate(args.context_lengths):
+            print(f"Benchmarking synthetic context {i + 1}/{len(args.context_lengths)} ({ctx_len} tokens)")
+            tokens = [int(rng.randint(0, tokenizer.vocab_size)) for _ in range(ctx_len)]
+            result = benchmark_prompt(
+                model, tokenizer, max_tokens=args.max_tokens, num_decode=args.num_decode, tokens=tokens
+            )
+            results.append(result)
+            print(
+                f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x"
+            )
+    else:
+        prompts = load_prompts(args.prompt_suite)
+        if not prompts:
+            raise ValueError(f"No prompts found in {args.prompt_suite}")
+        for i, prompt in enumerate(prompts):
+            print(
+                f"Benchmarking prompt {i + 1}/{len(prompts)} ({len(tokenizer.encode(prompt))} tokens)"
+            )
+            result = benchmark_prompt(
+                model, tokenizer, prompt_text=prompt, max_tokens=args.max_tokens, num_decode=args.num_decode
+            )
+            results.append(result)
+            print(
+                f"  cosine={result.logit_cosine:.4f} top5={result.top5_overlap:.4f} ppl_delta={result.perplexity_delta:.4f} ratio={result.compression_ratio:.3f}x"
+            )
 
     # Decode speed measured separately on the first prompt so it does not corrupt per-prompt caches.
     dense_decode_tok_per_sec: Optional[float] = None
     turbo_decode_tok_per_sec: Optional[float] = None
-    if not args.skip_decode_speed and prompts:
+    if not args.skip_decode_speed and results:
         print("Measuring decode speed...")
-        tokens = tokenizer.encode(prompts[0])[: args.max_tokens]
+        if args.context_lengths:
+            rng = np.random.RandomState(args.seed)
+            first_len = args.context_lengths[0]
+            tokens = [int(rng.randint(0, tokenizer.vocab_size)) for _ in range(first_len)]
+            tokens = tokens[:args.max_tokens]
+        else:
+            tokens = tokenizer.encode(prompts[0])[: args.max_tokens]
         num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
         dense_cache = _make_dense_cache(num_layers)
         dense_decode_tok_per_sec = _measure_decode_speed(
@@ -493,6 +520,12 @@ def main():
         "total_prompts": len(results),
     }
 
+    evaluated_contexts = (
+        sorted(args.context_lengths)
+        if args.context_lengths
+        else sorted({r.prompt_tokens for r in results})
+    )
+
     report = BenchmarkReport(
         model=str(args.model),
         mlx_version=mx.__version__,
@@ -500,9 +533,10 @@ def main():
         dtype=str(_first_param_dtype(model.parameters())),
         seed=args.seed,
         num_layers=num_layers,
-        num_prompts=len(prompts),
+        num_prompts=len(results),
         prompts=results,
         aggregate=aggregate,
+        evaluated_contexts=evaluated_contexts,
     )
 
     write_json_report(report, args.output_dir / "report.json")

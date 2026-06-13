@@ -204,6 +204,9 @@ def _aggregate_execution_stats(turbo_cache: List[Any]) -> Dict[str, int]:
         "fallback_calls": stats.fallback_calls,
         "compressed_page_dispatches": getattr(stats, "compressed_page_dispatches", 0),
         "dense_tail_dispatches": getattr(stats, "dense_tail_dispatches", 0),
+        "compressed_page_fallbacks": getattr(stats, "compressed_page_fallbacks", 0),
+        "dense_tail_fallbacks": getattr(stats, "dense_tail_fallbacks", 0),
+        "full_attention_fallbacks": getattr(stats, "full_attention_fallbacks", 0),
     }
 
 
@@ -347,6 +350,15 @@ def _compute_aggregate(
     total_tail_dispatches = sum(
         r.kernel_stats.get("dense_tail_dispatches", 0) for r in results
     )
+    total_page_fallbacks = sum(
+        r.kernel_stats.get("compressed_page_fallbacks", 0) for r in results
+    )
+    total_tail_fallbacks = sum(
+        r.kernel_stats.get("dense_tail_fallbacks", 0) for r in results
+    )
+    total_full_fallbacks = sum(
+        r.kernel_stats.get("full_attention_fallbacks", 0) for r in results
+    )
 
     # Separate numerical failures from actual fallback reasons.
     numerical_failures = []
@@ -435,9 +447,9 @@ def _compute_aggregate(
         dense_tail_metal_calls=total_tail_dispatches,
         merge_metal_calls=0,
         finalization_metal_calls=0,
-        compressed_page_fallback_calls=total_fallback,
-        dense_tail_fallback_calls=0,
-        full_attention_fallback_calls=total_fallback,
+        compressed_page_fallback_calls=total_page_fallbacks,
+        dense_tail_fallback_calls=total_tail_fallbacks,
+        full_attention_fallback_calls=total_full_fallbacks,
         fallback_reasons=[],
         numerical_failure_reasons=numerical_failures,
         dense_perplexity=dense_ppl,

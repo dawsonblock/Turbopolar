@@ -51,6 +51,7 @@ class BenchmarkReport:
     num_prompts: int
     aggregate: Dict[str, Any] = field(default_factory=dict)
     prompts: List[PromptResult] = field(default_factory=list)
+    evaluated_contexts: List[int] = field(default_factory=list)
 
 
 @dataclass
