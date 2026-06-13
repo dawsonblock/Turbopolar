@@ -455,6 +455,10 @@ class TurboPolarKVCacheRuntime:
         compressed_k = None
         quant_v = None
         if self.k_storage.block_count > 0:
+            if self._batch_size is None:
+                raise RuntimeError(
+                    "Cache not initialized with append/append_many"
+                )
             B = self._batch_size
             H = self._num_kv_heads
             D = self._head_dim

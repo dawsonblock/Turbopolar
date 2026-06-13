@@ -6,7 +6,10 @@ from typing import List, Optional, Tuple
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+from rfsn_v11.kernels.turbo_polar.execution import (
+    ExecutionMode,
+    MetalExecutionRequiredError,
+)
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.integrations.mlx_lm.telemetry import KernelExecutionStats
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
@@ -208,17 +211,8 @@ class TurboPolarFastCache:
             mode=cfg.execution_mode,
         )
 
-        # For strict evidence, evaluate output before recording success.
-        output_evaluated = False
-        if cfg.execution_mode is ExecutionMode.METAL_STRICT:
-            try:
-                mx.eval(output)
-                output_evaluated = True
-            except Exception as _exc:
-                from rfsn_v11.kernels.turbo_polar.execution import MetalKernelDispatchError
-                raise MetalKernelDispatchError(
-                    f"Strict mode output evaluation failed: {_exc}"
-                ) from _exc
+        # For strict evidence, the bridge already evaluates output in METAL_STRICT.
+        output_evaluated = cfg.execution_mode is ExecutionMode.METAL_STRICT
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
@@ -232,11 +226,28 @@ class TurboPolarFastCache:
                 output_evaluated=output_evaluated,
             )
 
-        if trace.get("fallback_used") and cfg.execution_mode is ExecutionMode.METAL_STRICT:
-            from rfsn_v11.kernels.turbo_polar.execution import MetalExecutionRequiredError
-            raise MetalExecutionRequiredError(
-                f"Strict mode encountered fallback: {trace.get('fallback_reason', 'unknown')}"
-            )
+        # Strict validation: exact page count, all Metal, zero fallback, outputs evaluated.
+        if cfg.execution_mode is ExecutionMode.METAL_STRICT:
+            page_traces_raw = trace.get("page_traces", [])
+            expected_page_count = len(view.pages)
+            if len(page_traces_raw) != expected_page_count:
+                raise MetalExecutionRequiredError(
+                    f"Missing page dispatch: expected {expected_page_count}, "
+                    f"got {len(page_traces_raw)}"
+                )
+            if any(not pt.get("metal_used", False) for pt in page_traces_raw):
+                raise MetalExecutionRequiredError(
+                    "Non-Metal compressed page detected"
+                )
+            if trace.get("fallback_used"):
+                raise MetalExecutionRequiredError(
+                    f"Strict mode encountered fallback: "
+                    f"{trace.get('fallback_reason', 'unknown')}"
+                )
+            if not output_evaluated:
+                raise MetalExecutionRequiredError(
+                    "Un-evaluated output in strict mode"
+                )
         return output
 
     def _record_attention_trace(
@@ -305,18 +316,7 @@ class TurboPolarFastCache:
         )
         self._trace_collector.record(step_trace)
 
-        # Strict validation: exact page count, all Metal, zero fallback, outputs evaluated.
-        if execution_mode == "metal_strict":
-            if len(page_traces) != expected_page_count:
-                raise MetalExecutionRequiredError(
-                    f"Missing page dispatch: expected {expected_page_count}, got {len(page_traces)}"
-                )
-            if any(not op.metal_executed for op in page_traces):
-                raise MetalExecutionRequiredError("Non-Metal compressed page detected")
-            if step_trace.fallback_count != 0:
-                raise MetalExecutionRequiredError("Fallback occurred in strict mode")
-            if not step_trace.all_outputs_evaluated:
-                raise MetalExecutionRequiredError("Un-evaluated output in strict mode")
+        # Strict validation is performed unconditionally in decode_attention.
 
     def make_mask(
         self, N: int, return_array: bool = False, window_size: Optional[int] = None

@@ -77,6 +77,8 @@ class TurboPolarLlamaAdapter:
         original_attentions: Dict[int, Any] = {}
         try:
             for i, layer in enumerate(layers):
+                if i in self._original_attentions:
+                    continue  # already installed
                 attention = getattr(
                     layer, "attention", getattr(layer, "self_attn", None)
                 )

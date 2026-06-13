@@ -464,13 +464,41 @@ class MetalKernelBridge:
             raise ValueError(f"Could not find body start for {kernel_name}")
         depth = 1
         i = brace_start + 1
+        in_string = False
+        string_char = None
+        in_line_comment = False
+        in_block_comment = False
         while i < len(source) and depth > 0:
-            if source[i] == "{":
+            ch = source[i]
+            prev = source[i - 1] if i > 0 else ""
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+            elif in_block_comment:
+                if prev == "*" and ch == "/":
+                    in_block_comment = False
+            elif in_string:
+                if ch == string_char and prev != "\\":
+                    in_string = False
+                elif ch == "\\":
+                    i += 1  # skip escaped char
+            elif ch == "/" and i + 1 < len(source):
+                nxt = source[i + 1]
+                if nxt == "/":
+                    in_line_comment = True
+                    i += 1
+                elif nxt == "*":
+                    in_block_comment = True
+                    i += 1
+            elif ch in ('"', "'"):
+                in_string = True
+                string_char = ch
+            elif ch == "{":
                 depth += 1
-            elif source[i] == "}":
+            elif ch == "}":
                 depth -= 1
             i += 1
-        body = source[brace_start + 1 : i - 1].strip()
+        body = source[brace_start + 1:i - 1].strip()
 
         # The original kernel signature is removed by extraction. Re-create the
         # identifiers it provided using the built-in variables MLX generates.
@@ -505,6 +533,10 @@ class MetalKernelBridge:
         """
         if self.grid_semantics == "total_threads":
             b_dim *= self._tg_x
+        elif self.grid_semantics != "threadgroups":
+            raise ValueError(
+                f"Unknown grid_semantics: {self.grid_semantics}"
+            )
         return (b_dim, h_dim, s_dim)
 
     # ------------------------------------------------------------------
@@ -926,7 +958,7 @@ class MetalKernelBridge:
             "kernel_name": "paged_online_attention_full_metal",
             "execution_mode": "metal_strict",
             "metal_used": True,
-            "attn_metal_used": len(page_traces) > 0,
+            "attn_metal_used": len(page_traces) > 0 or dense_tail_metal,
             "dense_tail_metal": dense_tail_metal,
             "fallback_used": False,
             "qjl_used": False,
@@ -1333,7 +1365,8 @@ class MetalKernelBridge:
         elif block.radii.dtype == mx.float16:
             polar_radii = mx.contiguous(block.radii)
             polar_radii_i8 = mx.zeros((2,), dtype=mx.int8)
-            radii_scales = mx.zeros((2, 2, 2), dtype=mx.float16)
+            B, H, S, L, _ = block.radii.shape
+            radii_scales = mx.zeros((B, H, S), dtype=mx.float16)
             int8_radii = 0
             log_radii = 0
         else:

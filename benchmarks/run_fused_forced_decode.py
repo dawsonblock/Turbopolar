@@ -118,7 +118,10 @@ def _js_divergence(p: np.ndarray, q: np.ndarray) -> float:
 def _rank_of_token_in_logits(logits: np.ndarray, token_id: int) -> int:
     """Return the rank (0 = highest logit) of token_id in logits."""
     sorted_indices = np.argsort(logits)[::-1]
-    return int(np.where(sorted_indices == token_id)[0][0])
+    matches = np.where(sorted_indices == token_id)[0]
+    if len(matches) == 0:
+        return -1
+    return int(matches[0])
 
 
 def _compute_step_metrics(

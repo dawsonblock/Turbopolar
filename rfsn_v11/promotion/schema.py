@@ -161,7 +161,11 @@ class FusedDecodeReport:
             argmax_agreement=data.get("argmax_agreement"),
             mean_perplexity_delta=data.get("mean_perplexity_delta"),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
-            execution_mode=data.get("execution_mode"),
+            execution_mode=(
+                data.get("execution_mode", "").strip().lower()
+                if data.get("execution_mode")
+                else None
+            ),
             compressed_page_metal_calls=data.get("compressed_page_metal_calls"),
             dense_tail_metal_calls=data.get("dense_tail_metal_calls"),
             merge_metal_calls=data.get("merge_metal_calls"),

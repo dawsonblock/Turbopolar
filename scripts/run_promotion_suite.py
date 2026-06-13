@@ -102,10 +102,18 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
 
     metal_present: Set[str] = set()
     metal_passed: Set[str] = set()
+    testcases: List[Dict[str, Any]] = []
     for testcase in testsuite.findall("testcase"):
         cls = testcase.get("classname", "")
         failed = any(child.tag in ("failure", "error") for child in testcase)
         skipped_tc = any(child.tag == "skipped" for child in testcase)
+        testcases.append(
+            {
+                "classname": cls,
+                "failed": failed,
+                "skipped": skipped_tc,
+            }
+        )
         # Map class name to module prefix.
         parts = cls.split(".")
         if len(parts) >= 2:
@@ -122,6 +130,7 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
         "passed": passed,
         "failed": failures + errors,
         "skipped": skipped,
+        "testcases": testcases,
         "metal_tests_required": sorted(REQUIRED_METAL_TESTS),
         "metal_tests_present": sorted(metal_present),
         "metal_tests_passed": sorted(metal_passed),
@@ -129,19 +138,42 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
 
 
 def _run_pytest(artifact_dir: Path) -> KernelReport:
-    """Run pytest and record pass/fail at the report level."""
+    """Run pytest and record pass/fail per category from JUnit XML."""
     junit_path = artifact_dir / "pytest.xml"
     result = _run(
         [sys.executable, "-m", "pytest", "tests/", "-q", f"--junitxml={junit_path}"],
         timeout=600,
     )
-    passed = result.returncode == 0
     junit = _parse_junit_xml(junit_path)
+
+    # Categorize by module prefix for independent booleans.
+    unit_prefixes = ("tests.unit.",)
+    kernel_prefixes = ("tests.kernels.", "tests.benchmarks.")
+    integration_prefixes = ("tests.integrations.",)
+
+    def _prefix_match(cls: str, prefixes: tuple) -> bool:
+        return any(cls.startswith(p) for p in prefixes)
+
+    def _all_passed(prefixes: tuple) -> bool:
+        for testcase in junit.get("testcases", []):
+            cls = testcase.get("classname", "")
+            if _prefix_match(cls, prefixes):
+                if testcase.get("failed") or testcase.get("skipped"):
+                    return False
+        return True
+
+    all_passed = result.returncode == 0
     return KernelReport(
-        all_unit_tests_passed=passed,
-        all_kernel_tests_passed=passed,
-        all_integration_tests_passed=passed,
-        cpu_metal_agreement_verified=passed,
+        all_unit_tests_passed=(
+            all_passed and _all_passed(unit_prefixes)
+        ),
+        all_kernel_tests_passed=(
+            all_passed and _all_passed(kernel_prefixes)
+        ),
+        all_integration_tests_passed=(
+            all_passed and _all_passed(integration_prefixes)
+        ),
+        cpu_metal_agreement_verified=all_passed,
         notes=[
             "pytest exit code: " + str(result.returncode),
             "stdout lines: " + str(len(result.stdout.splitlines())),
@@ -184,14 +216,19 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     agg = report.get("aggregate", {})
     return TeacherForcedReport(
         model=model,
+        evaluated_contexts=list(report.get("evaluated_contexts", [])),
+        total_positions=int(report.get("total_positions", 0)),
         mean_logit_cosine=agg.get("mean_logit_cosine"),
         p05_logit_cosine=agg.get("p05_logit_cosine"),
         min_logit_cosine=agg.get("min_logit_cosine"),
+        argmax_agreement=agg.get("argmax_agreement"),
         mean_top5_overlap=agg.get("mean_top5_overlap"),
         mean_top10_overlap=agg.get("mean_top10_overlap"),
-        argmax_agreement=agg.get("argmax_agreement"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
-        any_nans_or_infs=agg.get("any_nans_or_infs", True),
+        any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
+        raw_metrics_path=str(output_dir / "teacher_forced" / "report.json"),
+        raw_metrics_hash="",
+        notes=list(report.get("notes", [])),
     )
 
 

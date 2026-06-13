@@ -29,10 +29,11 @@ def _decode_dense_reference(cache, q, scale):
 
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     if block is not None:
+        num_kv_heads = block.radii.shape[1]
         k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-        v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
-            :, :, :actual_len, :
-        ]
+        v_dense = v_dequant.dequantize_block(quant_v).reshape(
+            1, num_kv_heads, -1, 128
+        )[:, :, :actual_len, :]
         if tail_k is not None and tail_k.shape[2] > 0:
             k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
             v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)

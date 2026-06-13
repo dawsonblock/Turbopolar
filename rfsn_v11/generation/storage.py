@@ -48,34 +48,6 @@ class PolarKBlockStorage:
     reallocation_count: int = 0
     bytes_copied_during_growth: int = 0
 
-    def _refresh_cache(self):
-        if self._paged.total_valid_blocks == 0:
-            self.radii = None
-            self.angle_codes_l1 = None
-            self.angle_codes_deep = None
-            self.radii_scales = None
-            self.block_count = 0
-            self.capacity = 0
-            return
-
-        B = self._paged.pages[0].radii.shape[0]
-        H = self._paged.pages[0].radii.shape[1]
-        L = self._paged.block_size
-        D = self._paged.head_dim
-        S = self._paged.total_valid_blocks
-        unified = self._paged.debug_materialize_all_blocks((B, H, S * L, D))
-        self.radii = unified.radii
-        self.angle_codes_l1 = unified.angle_codes_l1
-        self.angle_codes_deep = unified.angle_codes_deep
-        self.radii_scales = unified.radii_scales
-        self.block_count = S
-        self.capacity = sum(p.capacity_blocks for p in self._paged.pages)
-        self.block_size = self._paged.block_size
-        self.head_dim = self._paged.head_dim
-        self.metadata = self._paged.metadata
-        self.reallocation_count = self._paged.page_allocations
-        self.bytes_copied_during_growth = self._paged.bytes_copied_during_growth
-
     def append(self, block: PolarKeyBlock, initial_capacity: int = 1):
         del initial_capacity  # ignored; paged storage manages capacity
         self._paged.append(block)
@@ -115,23 +87,6 @@ class QuantVBlockStorage:
     capacity: int = 0
     reallocation_count: int = 0
     bytes_copied_during_growth: int = 0
-
-    def _refresh_cache(self):
-        if self._paged.total_valid_blocks == 0:
-            self.codes = None
-            self.scales = None
-            self.block_count = 0
-            self.capacity = 0
-            return
-
-        unified = self._paged.debug_materialize_all_blocks()
-        self.codes = unified.codes
-        self.scales = unified.scales
-        self.group_size = self._paged.group_size
-        self.block_count = self._paged.total_valid_blocks
-        self.capacity = sum(p.capacity_blocks for p in self._paged.pages)
-        self.reallocation_count = self._paged.page_allocations
-        self.bytes_copied_during_growth = self._paged.bytes_copied_during_growth
 
     def append(self, block: QuantizedVBlock, initial_capacity: int = 1):
         del initial_capacity  # ignored; paged storage manages capacity
