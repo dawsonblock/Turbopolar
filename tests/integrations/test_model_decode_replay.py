@@ -288,10 +288,8 @@ class TestModelDecodeReplay(unittest.TestCase):
             f"Expected {expected_tail_dispatches} dense_tail_calls, got {total_dense_tail_calls}"
         )
 
-        # Verify traces: each layer/step/page is unique across all caches.
-        all_traces = []
-        for cache in turbo_cache:
-            all_traces.extend(cache.execution_traces())
+        # Verify traces: shared collector across all caches; read once from cache[0].
+        all_traces = turbo_cache[0].execution_traces()
         self.assertEqual(
             len(all_traces), num_layers * num_decode_steps,
             f"Expected {num_layers * num_decode_steps} traces, got {len(all_traces)}"

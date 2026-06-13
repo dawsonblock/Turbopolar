@@ -9,6 +9,7 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.kernels.turbo_polar.execution import (
     ExecutionMode,
     MetalExecutionRequiredError,
+    TraceValidationMode,
 )
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.integrations.mlx_lm.telemetry import KernelExecutionStats
@@ -26,7 +27,7 @@ from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
 class TurboPolarFastCache:
     """MLX-LM-compatible cache that uses fused Metal attention for decode."""
 
-    def __init__(self, config: TurboPolarConfig):
+    def __init__(self, config: TurboPolarConfig, trace_collector: Optional[ExecutionTraceCollector] = None):
         self.config = config
         self.runtime = TurboPolarKVCacheRuntime(config)
         self.bridge = MetalKernelBridge()
@@ -36,7 +37,7 @@ class TurboPolarFastCache:
         self.qjl_encoder: Optional[QJLResidualEncoder] = (
             self.runtime.qjl_encoder if config.use_qjl else None
         )
-        self._trace_collector = ExecutionTraceCollector()
+        self._trace_collector = trace_collector if trace_collector is not None else ExecutionTraceCollector()
 
     @property
     def offset(self) -> int:
@@ -209,10 +210,15 @@ class TurboPolarFastCache:
             cfg,
             view.total_tokens,
             mode=cfg.execution_mode,
+            trace_validation_mode=cfg.trace_validation_mode,
         )
 
-        # For strict evidence, the bridge already evaluates output in METAL_STRICT.
-        output_evaluated = cfg.execution_mode is ExecutionMode.METAL_STRICT
+        # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs internally.
+        # In ASYNC_PERFORMANCE mode evaluation is deferred to the caller.
+        output_evaluated = (
+            cfg.execution_mode is ExecutionMode.METAL_STRICT
+            and cfg.trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
+        )
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
@@ -363,6 +369,7 @@ def make_turbo_caches(
     head_dim: int,
     use_qjl: bool = False,
     execution_mode: Optional[ExecutionMode] = None,
+    trace_validation_mode: Optional[TraceValidationMode] = None,
 ) -> List[TurboPolarFastCache]:
     """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
     if head_dim != 128:
@@ -381,5 +388,7 @@ def make_turbo_caches(
         k_angle_bits_deep=8,
         split_dim=0,
         execution_mode=execution_mode if execution_mode is not None else ExecutionMode.DEVELOPMENT_AUTO,
+        trace_validation_mode=trace_validation_mode if trace_validation_mode is not None else TraceValidationMode.SYNCHRONOUS_EVIDENCE,
     )
-    return [TurboPolarFastCache(config) for _ in range(num_layers)]
+    shared_collector = ExecutionTraceCollector()
+    return [TurboPolarFastCache(config, trace_collector=shared_collector) for _ in range(num_layers)]

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run isolated-subprocess memory benchmarks across sequence lengths.
+"""Run full-model memory benchmarks across sequence lengths.
 
-Each length is measured in a fresh Python process to avoid allocator
-fragmentation and ensure peak-memory readings are not polluted by prior
-allocations.
+Each length is measured in a fresh Python process for each mode to isolate
+peak-memory readings from allocator fragmentation.
 """
 
 import argparse
@@ -17,70 +16,55 @@ from typing import Any, Dict, List
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
-
-def _dense_peak_bytes(B: int, H: int, T: int, D: int) -> int:
-    import mlx.core as mx
-
-    mx.reset_peak_memory()
-    k = mx.zeros((B, H, T, D), dtype=mx.float16)
-    v = mx.zeros((B, H, T, D), dtype=mx.float16)
-    mx.eval(k, v)
-    return int(mx.get_peak_memory())
-
-
-def _measure_length(
-    length: int, config: TurboPolarConfig, seed: int, worker: Path
+def _measure_mode(
+    model: str,
+    length: int,
+    mode: str,
+    execution_mode: str,
+    seed: int,
+    worker: Path,
+    forced_decode_count: int = 128,
 ) -> Dict[str, Any]:
-    payload = json.dumps(
-        {
-            "length": length,
-            "seed": seed,
-            "config": {
-                "num_q_heads": config.num_q_heads,
-                "num_kv_heads": config.num_kv_heads,
-                "head_dim": config.head_dim,
-                "block_size": config.block_size,
-                "storage_mode": config.storage_mode,
-                "use_int8_radii": config.use_int8_radii,
-                "k_angle_bits_level1": config.k_angle_bits_level1,
-                "k_angle_bits_deep": config.k_angle_bits_deep,
-                "split_dim": config.split_dim,
-            },
-        }
-    )
+    """Run full_model_memory_worker.py for one mode and length."""
+    cmd = [
+        sys.executable,
+        str(worker),
+        "--model", model,
+        "--context-length", str(length),
+        "--mode", mode,
+        "--forced-decode-count", str(forced_decode_count),
+        "--execution-mode", execution_mode,
+        "--seed", str(seed),
+    ]
     result = subprocess.run(
-        [sys.executable, str(worker)],
-        input=payload,
+        cmd,
         capture_output=True,
         text=True,
         timeout=300,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"memory_worker failed for length={length}: {result.stderr}")
-    turbo = json.loads(result.stdout)
-
-    B, H, D = 1, config.num_kv_heads, config.head_dim
-    dense_peak = _dense_peak_bytes(B, H, length, D)
-
-    turbo["dense_peak_bytes"] = dense_peak
-    turbo["peak_device_memory_ratio"] = (
-        dense_peak / turbo["peak_device_memory_bytes"]
-        if turbo["peak_device_memory_bytes"] > 0
-        else 0.0
-    )
-    return turbo
+        raise RuntimeError(
+            f"memory_worker failed for length={length} mode={mode}: {result.stderr}"
+        )
+    # The worker prints the JSON result to stdout.
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip().startswith("{")]
+    if not lines:
+        raise RuntimeError(
+            f"memory_worker produced no JSON for length={length} mode={mode}"
+        )
+    return json.loads(lines[-1])
 
 
 def main():
     parser = argparse.ArgumentParser(description="TurboPolar memory matrix benchmark")
+    parser.add_argument("--model", required=True, help="MLX model path or HF identifier")
     parser.add_argument(
         "--lengths",
         type=int,
         nargs="+",
-        default=[64, 128, 256, 512, 1024, 2048, 4096, 8192],
-        help="Sequence lengths to measure",
+        default=[64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384],
+        help="Sequence lengths to benchmark",
     )
     parser.add_argument(
         "--output-dir",
@@ -88,28 +72,64 @@ def main():
         default=Path(__file__).parent / "outputs" / "memory_matrix",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        default="metal_strict",
+        help="Execution mode for TurboPolar (default: metal_strict)",
+    )
+    parser.add_argument(
+        "--forced-decode-count",
+        type=int,
+        default=128,
+        help="Forced decode positions per measurement",
+    )
     args = parser.parse_args()
 
-    config = TurboPolarConfig(
-        num_q_heads=32,
-        num_kv_heads=8,
-        head_dim=128,
-        block_size=64,
-        storage_mode="kv_quant",
-        use_int8_radii=True,
-        k_angle_bits_deep=8,
-        split_dim=0,
-    )
-
-    worker = Path(__file__).parent / "memory_worker.py"
+    worker = Path(__file__).parent / "full_model_memory_worker.py"
     records: List[Dict[str, Any]] = []
 
     print(f"Benchmarking lengths: {args.lengths}")
     for length in sorted(args.lengths):
         t0 = time.perf_counter()
-        record = _measure_length(length, config, args.seed, worker)
-        elapsed = time.perf_counter() - t0
+        dense = _measure_mode(
+            args.model, length, "dense", args.execution_mode, args.seed, worker,
+            forced_decode_count=args.forced_decode_count,
+        )
+        turbo = _measure_mode(
+            args.model, length, "turbopolar_strict", args.execution_mode, args.seed, worker,
+            forced_decode_count=args.forced_decode_count,
+        )
+
+        dense_bytes = dense.get("post_decode_bytes", 0)
+        turbo_logical = turbo.get("logical_cache_bytes", 0)
+        turbo_allocated = turbo.get("allocated_cache_bytes", 0)
+        turbo_peak = turbo.get("post_decode_bytes", 0)
+
+        logical_kv_ratio = (
+            dense_bytes / turbo_logical if turbo_logical > 0 else 0.0
+        )
+        persistent_storage_ratio = (
+            dense_bytes / turbo_allocated if turbo_allocated > 0 else 0.0
+        )
+        peak_device_memory_ratio = (
+            dense_bytes / turbo_peak if turbo_peak > 0 else 0.0
+        )
+
+        record = {
+            "length": length,
+            "dense_post_decode_bytes": dense_bytes,
+            "turbo_logical_bytes": turbo_logical,
+            "turbo_allocated_bytes": turbo_allocated,
+            "turbo_post_decode_bytes": turbo_peak,
+            "logical_kv_ratio": logical_kv_ratio,
+            "persistent_storage_ratio": persistent_storage_ratio,
+            "peak_device_memory_ratio": peak_device_memory_ratio,
+            "hidden_dense_cache_detected": turbo.get("retained_dense_k_history", False),
+            "fallback_count": turbo.get("fallback_count", 0),
+        }
         records.append(record)
+        elapsed = time.perf_counter() - t0
         print(
             f"  length={length:5d} logical_ratio={record['logical_kv_ratio']:.3f}x "
             f"allocated_ratio={record['persistent_storage_ratio']:.3f}x "
@@ -119,12 +139,7 @@ def main():
 
     report = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "config": {
-            "num_q_heads": config.num_q_heads,
-            "num_kv_heads": config.num_kv_heads,
-            "head_dim": config.head_dim,
-            "block_size": config.block_size,
-        },
+        "model": args.model,
         "records": records,
     }
 

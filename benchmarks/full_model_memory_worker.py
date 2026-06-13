@@ -73,7 +73,8 @@ def _record_memory_baseline() -> int:
     return int(mx.get_peak_memory())
 
 
-def _record_current_memory() -> int:
+def _record_peak_memory() -> int:
+    """Return peak MLX allocator bytes since last reset."""
     return int(mx.get_peak_memory())
 
 
@@ -112,7 +113,7 @@ def run_memory_worker(
     baseline_bytes = _record_memory_baseline()
 
     # 2. Record memory after model load.
-    model_loaded_bytes = _record_current_memory()
+    model_loaded_bytes = _record_peak_memory()
 
     # Build deterministic tokens.
     base_tokens = list(range(0, min(tokenizer.vocab_size, 10000)))
@@ -125,8 +126,8 @@ def run_memory_worker(
     if mode == "dense":
         cache = [KVCache() for _ in range(num_layers)]
         prompt_mx = mx.array(tokens)[None, :]
-        _ = model(prompt_mx, cache=cache)
-        mx.eval(mx.array(0))
+        prefill_out = model(prompt_mx, cache=cache)
+        mx.eval(prefill_out)
     elif mode == "turbopolar_strict":
         turbo_config = _make_turbo_config(
             num_q_heads, num_kv_heads, head_dim, execution_mode=execution_mode
@@ -140,14 +141,16 @@ def run_memory_worker(
         prompt_mx = mx.array(tokens)[None, :]
         adapter.install(model)
         try:
-            _ = model(prompt_mx, cache=cache)
+            prefill_out = model(prompt_mx, cache=cache)
         finally:
             adapter.uninstall()
-        mx.eval(mx.array(0))
+        mx.eval(prefill_out)
     else:
         raise ValueError(f"Unsupported memory worker mode: {mode}")
 
-    post_prefill_bytes = _record_current_memory()
+    # Reset peak counter so post-prefill reading is isolated.
+    mx.reset_peak_memory()
+    post_prefill_bytes = _record_peak_memory()
 
     # 4. Forced decode.
     if mode == "dense":
@@ -165,7 +168,8 @@ def run_memory_worker(
         finally:
             adapter.uninstall()
 
-    post_decode_bytes = _record_current_memory()
+    mx.reset_peak_memory()
+    post_decode_bytes = _record_peak_memory()
     peak_device_bytes = int(mx.get_peak_memory())
     peak_delta_bytes = peak_device_bytes - baseline_bytes
 
@@ -178,20 +182,20 @@ def run_memory_worker(
             "logical_cache_bytes": stats.logical_payload_bytes,
             "allocated_cache_bytes": stats.allocated_capacity_bytes,
             "dense_tail_bytes": stats.dense_tail_bytes,
-            "temporary_peak_estimate": stats.allocated_capacity_bytes - stats.logical_payload_bytes,
         }
         bridge_stats = cache[0].execution_stats()
         fallback_count = getattr(bridge_stats, 'fallback_calls', 0)
 
-    # 6. Dense history retention check.
+    # 6. Dense history retention audit.
     retained_dense_k = False
     retained_dense_v = False
     if mode == "turbopolar_strict" and hasattr(cache[0], 'runtime'):
         audit = cache[0].runtime.get_memory_stats()
-        # If allocated exceeds logical by more than dense_tail + metadata,
-        # some dense history may be retained.
-        retained_dense_k = False  # TurboPolar does not retain dense K history
-        retained_dense_v = False
+        # Audit: if allocated exceeds logical + dense_tail + metadata margin,
+        # flag potential retained dense history.
+        margin = audit.dense_tail_bytes + 1024  # metadata tolerance
+        retained_dense_k = audit.allocated_capacity_bytes > audit.logical_payload_bytes + margin
+        retained_dense_v = retained_dense_k
 
     result = {
         "context_length": context_length,
@@ -204,7 +208,6 @@ def run_memory_worker(
         "logical_cache_bytes": cache_stats.get("logical_cache_bytes", 0),
         "allocated_cache_bytes": cache_stats.get("allocated_cache_bytes", 0),
         "dense_tail_bytes": cache_stats.get("dense_tail_bytes", 0),
-        "temporary_peak_estimate": cache_stats.get("temporary_peak_estimate", 0),
         "retained_dense_k_history": retained_dense_k,
         "retained_dense_v_history": retained_dense_v,
         "fallback_count": fallback_count,

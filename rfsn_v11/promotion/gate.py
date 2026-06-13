@@ -344,11 +344,15 @@ class PromotionGate:
         pv = evidence.provenance
         if pv.git_tree_state == GitTreeState.UNKNOWN:
             reasons.append("Git tree state unknown; cannot verify reproducibility.")
-            return PromotionDecision(
-                state=PromotionState.REVIEW_REQUIRED,
-                reasons=reasons,
-                evidence=evidence,
-            )
+            # Do not soften hard quantitative failures into REVIEW_REQUIRED.
+            if reasons[:-1]:
+                pass  # Already has failures; continue to FAILED below.
+            else:
+                return PromotionDecision(
+                    state=PromotionState.INCOMPLETE,
+                    reasons=reasons,
+                    evidence=evidence,
+                )
         if pv.git_tree_state == GitTreeState.DIRTY:
             reasons.append(
                 f"Source tree was dirty (diff hash {pv.git_diff_hash}); promotion requires a clean tree."

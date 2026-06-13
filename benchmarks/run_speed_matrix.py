@@ -66,14 +66,19 @@ def _model_cache_config(model: Any) -> Tuple[int, int, int]:
 
 
 def _make_turbo_config(
-    num_q_heads: int, num_kv_heads: int, head_dim: int, execution_mode=None
+    num_q_heads: int, num_kv_heads: int, head_dim: int, execution_mode=None,
+    trace_validation_mode=None,
 ) -> TurboPolarConfig:
-    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
 
     if execution_mode is None:
         execution_mode = ExecutionMode.DEVELOPMENT_AUTO
     elif isinstance(execution_mode, str):
         execution_mode = ExecutionMode(execution_mode)
+    if trace_validation_mode is None:
+        trace_validation_mode = TraceValidationMode.SYNCHRONOUS_EVIDENCE
+    elif isinstance(trace_validation_mode, str):
+        trace_validation_mode = TraceValidationMode(trace_validation_mode)
     return TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
@@ -86,6 +91,7 @@ def _make_turbo_config(
         k_angle_bits_deep=8,
         split_dim=0,
         execution_mode=execution_mode,
+        trace_validation_mode=trace_validation_mode,
     )
 
 
@@ -116,8 +122,10 @@ def _measure_decode_loop_forced(
     the same history. Does NOT warm up the measured cache.
     """
     prompt_mx = mx.array(tokens)[None, :]
+    t_prefill = time.perf_counter()
     prefill_out = model(prompt_mx, cache=cache)
     mx.eval(prefill_out)
+    prefill_seconds = time.perf_counter() - t_prefill
 
     per_token_ms = []
     start = time.perf_counter()
@@ -140,7 +148,7 @@ def _measure_decode_loop_forced(
         }
 
     return {
-        "prefill_seconds": 0.0,
+        "prefill_seconds": prefill_seconds,
         "first_token_ms": per_token_ms[0] if per_token_ms else 0.0,
         "per_token_ms": per_token_ms,
         "throughput_tps": num_decode / elapsed if elapsed > 0 else 0.0,
@@ -197,48 +205,57 @@ def benchmark_length_forced(
     """Return detailed speed results for one prefill length using forced tokens.
 
     Protocol:
-    1. Construct disposable cache, prefill, run warm-up decode, destroy.
-    2. Construct fresh measured cache, prefill, measure forced decode.
-    3. Record per-trial raw results with dispatch counts.
+    1. Construct disposable cache, prefill, run 16-token warm-up decode, destroy.
+    2. Construct fresh measured cache, reset telemetry, prefill, measure forced decode.
+    3. TurboPolar uses ASYNC_PERFORMANCE to avoid per-page synchronous overhead.
+    4. Record per-trial raw results with dispatch counts.
 
     The ``turbo_first`` flag alternates which path is measured first.
     """
-    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
 
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
     )
 
     methods = [
-        ("dense", lambda: _make_dense_cache(num_layers)),
+        ("dense", lambda: _make_dense_cache(num_layers), None),
         (
             "turbo",
             lambda: make_turbo_caches(
                 num_layers, num_q_heads, num_kv_heads, head_dim,
                 execution_mode=execution_mode,
+                trace_validation_mode=TraceValidationMode.ASYNC_PERFORMANCE,
             ),
+            TraceValidationMode.ASYNC_PERFORMANCE,
         ),
     ]
     if turbo_first:
         methods = list(reversed(methods))
 
     results: Dict[str, Any] = {}
-    for name, make_cache in methods:
-        # Step 1: disposable warm-up cache.
+    for name, make_cache, _trace_mode in methods:
+        # Step 1: disposable warm-up cache (16 tokens only).
         warm_cache = make_cache()
+        warm_up_tokens = forced_continuation[:16]
+        if not warm_up_tokens:
+            warm_up_tokens = forced_continuation
         if name == "turbo":
             adapter.install(model)
             try:
-                _measure_decode_loop(model, warm_cache, tokens, num_decode=len(forced_continuation))
+                _measure_decode_loop(model, warm_cache, tokens, num_decode=len(warm_up_tokens))
             finally:
                 adapter.uninstall()
         else:
-            _measure_decode_loop(model, warm_cache, tokens, num_decode=len(forced_continuation))
+            _measure_decode_loop(model, warm_cache, tokens, num_decode=len(warm_up_tokens))
         del warm_cache
 
         # Step 2: fresh measured cache.
         cache = make_cache()
         if name == "turbo":
+            # Reset global bridge counters and shared trace collector before measurement.
+            if hasattr(cache[0], 'reset_execution_stats'):
+                cache[0].reset_execution_stats()
             adapter.install(model)
             try:
                 result = _measure_decode_loop_forced(
@@ -434,10 +451,10 @@ def main():
                 f"turbo={turbo_result['throughput_tps']:.2f} tok/s"
             )
 
-        if len(dense_rates) < 5:
-            print(
-                f"WARNING: length={length} has only {len(dense_rates)} valid trials; "
-                f"required minimum is 5."
+        if args.execution_mode == "metal_strict" and len(dense_rates) < 5:
+            raise RuntimeError(
+                f"length={length} has only {len(dense_rates)} valid trials; "
+                f"required minimum is 5 for strict evidence."
             )
 
         record = {

@@ -257,6 +257,14 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
     return FusedDecodeReport(
         model=model,
         contexts_evaluated=contexts,
+        requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
+        positions_per_context=dict(agg.get("positions_per_context", {})),
+        failed_positions_per_context=dict(agg.get("failed_positions_per_context", {})),
+        compressed_page_dispatches_per_context=dict(agg.get("compressed_page_dispatches_per_context", {})),
+        dense_tail_dispatches_per_context=dict(agg.get("dense_tail_dispatches_per_context", {})),
+        fallback_calls_per_context=dict(agg.get("fallback_calls_per_context", {})),
+        trace_artifact_path=report.get("trace_artifact_path", ""),
+        trace_artifact_hash=report.get("trace_artifact_hash", ""),
         mean_logit_cosine=agg.get("mean_logit_cosine"),
         p05_logit_cosine=agg.get("p05_logit_cosine"),
         min_logit_cosine=agg.get("min_logit_cosine"),
@@ -323,10 +331,16 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     min_4096, max_4096, _ = _ratios_at(4096)
     _, _, median_8192 = _ratios_at(8192)
 
+    # Use minimum valid_trials across all contexts, not requested trial count.
+    min_valid_trials = min(
+        (r.get("valid_trials", 0) for r in records),
+        default=0,
+    )
+
     return SpeedReport(
         model=model,
         contexts_evaluated=contexts,
-        trials_per_context=report.get("trials", 0),
+        trials_per_context=min_valid_trials,
         median_ratio=float(sorted(speedups)[len(speedups) // 2]) if speedups else None,
         min_ratio_at_4096_plus=min_4096,
         max_ratio_at_4096_plus=max_4096,
@@ -334,9 +348,11 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     )
 
 
-def _memory_report(output_dir: Path) -> MemoryReport:
+def _memory_report(model: str, output_dir: Path) -> MemoryReport:
     _run_benchmark(
         "run_memory_matrix.py",
+        "--model",
+        model,
         "--lengths",
         "64",
         "128",
@@ -376,12 +392,16 @@ def _baseline_comparison_report(
 ) -> BaselineComparisonReport:
     _run_benchmark(
         "run_cartesian_int8_baseline.py",
+        "--model",
+        model,
         "--lengths",
         "64",
         "128",
         "256",
         "512",
         "1024",
+        "--execution-mode",
+        "metal_strict",
         "--output-dir",
         str(output_dir / "cartesian_baseline"),
         timeout=1200,
@@ -528,7 +548,7 @@ def main():
         speed_report = _speed_report(args.model, artifact_dir)
 
         print("Step 5/5: memory benchmark...")
-        memory_report = _memory_report(artifact_dir)
+        memory_report = _memory_report(args.model, artifact_dir)
 
         print("Step 6/5: Cartesian int8 baseline comparison...")
         baseline_report = _baseline_comparison_report(args.model, artifact_dir)

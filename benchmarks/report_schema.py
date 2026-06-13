@@ -81,6 +81,7 @@ class ForcedDecodeFixtureResult:
     kernel_stats: Dict[str, int] = field(default_factory=dict)
     dense_nll_per_token: List[float] = field(default_factory=list)
     candidate_nll_per_token: List[float] = field(default_factory=list)
+    execution_traces: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -126,6 +127,10 @@ class ForcedDecodeAggregate:
     actual_fused_positions: int = 0
     positions_per_context: Dict[int, int] = field(default_factory=dict)
     failed_positions: int = 0
+    failed_positions_per_context: Dict[int, int] = field(default_factory=dict)
+    compressed_page_dispatches_per_context: Dict[int, int] = field(default_factory=dict)
+    dense_tail_dispatches_per_context: Dict[int, int] = field(default_factory=dict)
+    fallback_calls_per_context: Dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -140,5 +145,7 @@ class ForcedDecodeReport:
     num_layers: int
     forced_decode_tokens: int
     contexts_evaluated: List[int] = field(default_factory=list)
+    trace_artifact_path: str = ""
+    trace_artifact_hash: str = ""
     aggregate: ForcedDecodeAggregate = field(default_factory=lambda: ForcedDecodeAggregate(mean_logit_cosine=0.0, median_logit_cosine=0.0, p05_logit_cosine=0.0, p95_logit_cosine=0.0, min_logit_cosine=0.0, max_logit_cosine=0.0, mean_top1_agreement=0.0, mean_top5_overlap=0.0, mean_top10_overlap=0.0, mean_kl_divergence=0.0, mean_js_divergence=0.0, mean_perplexity_delta=0.0, min_dense_argmax_rank=0, max_dense_argmax_rank=0, mean_dense_argmax_prob_delta=0.0))
     fixtures: List[ForcedDecodeFixtureResult] = field(default_factory=list)

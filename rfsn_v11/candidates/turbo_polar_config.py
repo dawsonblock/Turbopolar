@@ -84,7 +84,7 @@ class TurboPolarConfig:
     validate_finite_inputs: bool = False
     finite_audit_interval: int = 0
     execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
-    trace_validation_mode: TraceValidationMode = TraceValidationMode.ASYNC_PERFORMANCE
+    trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):

@@ -10,6 +10,7 @@ from rfsn_v11.kernels.turbo_polar.execution import (
     MetalExecutionRequiredError,
     MetalKernelDispatchError,
     MetalKernelInitializationError,
+    TraceValidationMode,
 )
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.polar.payload import PolarKeyBlock
@@ -726,6 +727,7 @@ class MetalKernelBridge:
         config,
         actual_seq_len: int,
         mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO,
+        trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Page-based online-softmax attention without full-cache materialization.
 
@@ -737,6 +739,9 @@ class MetalKernelBridge:
             config: TurboPolarConfig with attention_scale.
             actual_seq_len: total valid tokens for masking.
             mode: ExecutionMode. METAL_STRICT raises on any fallback.
+            trace_validation_mode: TraceValidationMode. SYNCHRONOUS_EVIDENCE evaluates each
+                page and the final output immediately. ASYNC_PERFORMANCE defers evaluation
+                for speed benchmarking.
 
         Returns:
             [B, H_q, D] attention output and execution trace dict.
@@ -747,15 +752,17 @@ class MetalKernelBridge:
             )
         if mode is ExecutionMode.METAL_STRICT:
             return self._execute_paged_online_attention_metal_strict(
-                q, pages, tail_k, tail_v, config, actual_seq_len
+                q, pages, tail_k, tail_v, config, actual_seq_len,
+                trace_validation_mode=trace_validation_mode,
             )
         # DEVELOPMENT_AUTO: try strict, fall back to reference on documented
         # Metal availability/dispatch failures only. Programming errors propagate.
         try:
             return self._execute_paged_online_attention_metal_strict(
-                q, pages, tail_k, tail_v, config, actual_seq_len
+                q, pages, tail_k, tail_v, config, actual_seq_len,
+                trace_validation_mode=trace_validation_mode,
             )
-        except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError, RuntimeError) as _exc:
+        except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError) as _exc:
             self._stats.full_attention_fallbacks += 1
             self._stats.fallback_calls += 1
             out, trace = self._execute_paged_online_attention_reference(
@@ -845,6 +852,7 @@ class MetalKernelBridge:
         tail_v: Optional[mx.array],
         config,
         actual_seq_len: int,
+        trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Strict Metal path: any missing kernel or dispatch error is fatal."""
         if self._kernel_attn_quant_raw is None:
@@ -857,6 +865,7 @@ class MetalKernelBridge:
         num_queries_per_kv = (
             H_q // config.num_kv_heads if config.num_kv_heads > 0 else 1
         )
+        synchronous = trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
 
         state = MetalKernelBridge.OnlineSoftmaxState(
             max_score=mx.full((B, H_q), -float("inf"), dtype=mx.float32),
@@ -903,6 +912,7 @@ class MetalKernelBridge:
                     config,
                     actual_seq_len=valid_blocks * config.block_size,
                     strict=True,
+                    evaluate_outputs=synchronous,
                 )
             )
             if page_trace.get("fallback_used"):
@@ -942,9 +952,11 @@ class MetalKernelBridge:
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)
-        mx.eval(output)
+        if synchronous:
+            mx.eval(output)
 
-        # Count successful dispatches only after output evaluation.
+        # Count successful dispatches only after output evaluation in sync mode,
+        # or immediately in async mode (graph construction succeeded).
         for _ in page_traces:
             self._stats.compressed_page_dispatches += 1
         if dense_tail_metal:
@@ -967,7 +979,7 @@ class MetalKernelBridge:
             "total_tokens_processed": total_tokens,
             "num_queries_per_kv": num_queries_per_kv,
             "page_traces": page_traces,
-            "output_evaluated": True,
+            "output_evaluated": synchronous,
         }
         return output, trace
 
@@ -1810,6 +1822,7 @@ class MetalKernelBridge:
         actual_seq_len: int,
         use_qjl: bool = False,
         strict: bool = False,
+        evaluate_outputs: bool = True,
     ) -> Tuple[mx.array, mx.array, mx.array, Dict[str, Any]]:
         """Return raw online-softmax state (weighted_sum, max_score, exp_sum) without normalizing."""
         B, H_kv, S, L, _ = block.radii.shape
@@ -1931,7 +1944,8 @@ class MetalKernelBridge:
         weighted_sum = result[0]
         max_score = result[1]
         exp_sum = result[2]
-        mx.eval(weighted_sum, max_score, exp_sum)
+        if evaluate_outputs:
+            mx.eval(weighted_sum, max_score, exp_sum)
         trace = {
             "kernel_name": "tqpolar_online_attention_quant_v_raw",
             "metal_used": True,

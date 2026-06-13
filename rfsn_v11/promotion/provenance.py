@@ -121,6 +121,12 @@ def capture_provenance(
     prompt_suite_hash = _file_sha256(prompt_suite_path)
     config_hash = _hash_jsonable(config_dict)
 
+    # Reject placeholder "unknown" revisions so the gate fails explicitly.
+    if model_revision == "unknown":
+        model_revision = ""
+    if tokenizer_revision == "unknown":
+        tokenizer_revision = ""
+
     return BenchmarkProvenance(
         run_id=str(uuid.uuid4()),
         timestamp_utc=datetime.now(timezone.utc).isoformat(),

@@ -282,6 +282,13 @@ def benchmark_forced_decode_fixture(
 
     kernel_stats = _aggregate_execution_stats(turbo_cache)
 
+    # Collect execution traces from the shared collector.
+    import dataclasses
+    traces = []
+    if turbo_cache:
+        for t in turbo_cache[0].execution_traces():
+            traces.append(dataclasses.asdict(t))
+
     # Validate that the paged attention path was exercised.
     if kernel_stats["online_attention_calls"] == 0:
         raise RuntimeError(
@@ -300,6 +307,7 @@ def benchmark_forced_decode_fixture(
         kernel_stats=kernel_stats,
         dense_nll_per_token=dense_nlls,
         candidate_nll_per_token=turbo_nlls,
+        execution_traces=traces,
     )
 
 
@@ -347,16 +355,26 @@ def _compute_aggregate(
             if step.any_nan_or_inf:
                 numerical_failures.append(f"NaN/Inf at {r.fixture_id} pos {step.position}")
 
-    # Track per-context fused position counts.
+    # Track per-context fused position counts and execution stats.
     positions_per_context: Dict[int, int] = {}
+    failed_positions_per_context: Dict[int, int] = {}
+    page_dispatches_per_context: Dict[int, int] = {}
+    tail_dispatches_per_context: Dict[int, int] = {}
+    fallback_per_context: Dict[int, int] = {}
     actual_fused_positions = 0
     failed_positions = 0
     for r in results:
         ctx_len = r.context_length
         fused_count = sum(1 for s in r.steps if s.position > 0)
-        positions_per_context[ctx_len] = fused_count
+        positions_per_context[ctx_len] = positions_per_context.get(ctx_len, 0) + fused_count
+        failed_in_ctx = sum(1 for s in r.steps if s.position > 0 and s.any_nan_or_inf)
+        failed_positions_per_context[ctx_len] = failed_positions_per_context.get(ctx_len, 0) + failed_in_ctx
         actual_fused_positions += fused_count
-        failed_positions += sum(1 for s in r.steps if s.position > 0 and s.any_nan_or_inf)
+        failed_positions += failed_in_ctx
+
+        page_dispatches_per_context[ctx_len] = page_dispatches_per_context.get(ctx_len, 0) + r.kernel_stats.get("compressed_page_dispatches", 0)
+        tail_dispatches_per_context[ctx_len] = tail_dispatches_per_context.get(ctx_len, 0) + r.kernel_stats.get("dense_tail_dispatches", 0)
+        fallback_per_context[ctx_len] = fallback_per_context.get(ctx_len, 0) + r.kernel_stats.get("fallback_calls", 0)
 
     worst_cosine = min(all_cosines) if all_cosines else 0.0
     worst_idx = all_cosines.index(worst_cosine) if all_cosines else 0
@@ -429,6 +447,10 @@ def _compute_aggregate(
         actual_fused_positions=actual_fused_positions,
         positions_per_context=positions_per_context,
         failed_positions=failed_positions,
+        failed_positions_per_context=failed_positions_per_context,
+        compressed_page_dispatches_per_context=page_dispatches_per_context,
+        dense_tail_dispatches_per_context=tail_dispatches_per_context,
+        fallback_calls_per_context=fallback_per_context,
     )
 
     from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
@@ -535,9 +557,9 @@ def main():
             )
     else:
         fixtures = []
-        for entry in normalized:
-            tokens = entry["tokens"]
-            for ctx_len in args.contexts:
+        for ctx_len in args.contexts:
+            for entry in normalized:
+                tokens = entry["tokens"]
                 if len(tokens) >= ctx_len + args.forced_decode_tokens:
                     fixtures.append(
                         {
@@ -572,6 +594,20 @@ def main():
             f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
+    # Serialize execution traces from all fixtures into a sidecar artifact.
+    trace_artifact_path = ""
+    trace_artifact_hash = ""
+    if results:
+        import hashlib
+        all_traces = []
+        for r in results:
+            all_traces.extend(r.execution_traces)
+        trace_data = json.dumps(all_traces, sort_keys=True, default=str)
+        trace_artifact_hash = hashlib.sha256(trace_data.encode()).hexdigest()
+        trace_artifact_path = str(args.output_dir / "execution_traces.json")
+        with open(trace_artifact_path, "w") as f:
+            f.write(trace_data)
+
     # One continuation token is scored by prefill; the remainder are fused decode.
     requested_fused = max(0, args.forced_decode_tokens - 1)
     aggregate = _compute_aggregate(
@@ -588,6 +624,8 @@ def main():
     print(f"Kernel online_attention_calls: {aggregate.online_attention_calls}")
     print(f"Kernel fallback_calls: {aggregate.fallback_calls}")
 
+    contexts_evaluated = sorted({r.context_length for r in results})
+
     report = ForcedDecodeReport(
         model=str(args.model),
         mlx_version=mx.__version__,
@@ -598,7 +636,9 @@ def main():
         if hasattr(model, "layers")
         else len(model.model.layers),
         forced_decode_tokens=args.forced_decode_tokens,
-        contexts_evaluated=args.contexts,
+        contexts_evaluated=contexts_evaluated,
+        trace_artifact_path=trace_artifact_path,
+        trace_artifact_hash=trace_artifact_hash,
         aggregate=aggregate,
         fixtures=results,
     )
