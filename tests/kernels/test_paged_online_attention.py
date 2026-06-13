@@ -81,7 +81,7 @@ def test_paged_online_attention_matches_dense(num_tokens):
 
     # Paged online attention.
     bridge = MetalKernelBridge()
-    paged_out, _ = bridge.execute_paged_online_attention(
+    paged_out, trace = bridge.execute_paged_online_attention(
         q.squeeze(2),
         view.pages,
         view.partial_k,
@@ -93,6 +93,12 @@ def test_paged_online_attention_matches_dense(num_tokens):
     assert mx.allclose(
         paged_out, dense_out, atol=5e-3
     ), f"Paged attention mismatch for {num_tokens} tokens"
+
+    # When compressed pages exist, the full paged attention path must use Metal.
+    if view.pages:
+        assert (
+            trace.get("attn_metal_used") is True
+        ), f"Expected attn_metal_used=True for {num_tokens} tokens, got {trace}"
 
 
 def test_paged_attention_zero_pages_tail_only():
@@ -158,7 +164,7 @@ def test_paged_attention_crosses_page_boundary():
     dense_out = _dense_attention(q, k_dense, v_dense, scale)
 
     bridge = MetalKernelBridge()
-    paged_out, _ = bridge.execute_paged_online_attention(
+    paged_out, trace = bridge.execute_paged_online_attention(
         q.squeeze(2),
         view.pages,
         view.partial_k,
@@ -167,6 +173,7 @@ def test_paged_attention_crosses_page_boundary():
         view.total_tokens,
     )
     assert mx.allclose(paged_out, dense_out, atol=5e-3)
+    assert trace.get("attn_metal_used") is True
 
 
 def test_paged_attention_multiple_pages():
@@ -203,7 +210,7 @@ def test_paged_attention_multiple_pages():
     dense_out = _dense_attention(q, k_dense, v_dense, scale)
 
     bridge = MetalKernelBridge()
-    paged_out, _ = bridge.execute_paged_online_attention(
+    paged_out, trace = bridge.execute_paged_online_attention(
         q.squeeze(2),
         view.pages,
         view.partial_k,
@@ -212,6 +219,7 @@ def test_paged_attention_multiple_pages():
         view.total_tokens,
     )
     assert mx.allclose(paged_out, dense_out, atol=5e-3)
+    assert trace.get("attn_metal_used") is True
 
 
 def test_paged_attention_two_pages_plus_tail():
@@ -249,7 +257,7 @@ def test_paged_attention_two_pages_plus_tail():
     dense_out = _dense_attention(q, k_dense, v_dense, scale)
 
     bridge = MetalKernelBridge()
-    paged_out, _ = bridge.execute_paged_online_attention(
+    paged_out, trace = bridge.execute_paged_online_attention(
         q.squeeze(2),
         view.pages,
         view.partial_k,
@@ -258,6 +266,7 @@ def test_paged_attention_two_pages_plus_tail():
         view.total_tokens,
     )
     assert mx.allclose(paged_out, dense_out, atol=5e-3)
+    assert trace.get("attn_metal_used") is True
 
 
 def test_fast_cache_decode_attention_uses_paged_path():

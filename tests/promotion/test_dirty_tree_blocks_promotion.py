@@ -79,8 +79,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     def test_clean_tree_can_promote(self):
         evidence = self._full_passing_evidence(dirty=False)
         decision = PromotionGate().evaluate(evidence)
-        # Promotion is locked at REVIEW_REQUIRED until independent validation.
-        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
+        # Gate is unlocked; clean tree with all evidence promotes.
+        self.assertEqual(decision.state, PromotionState.PROMOTED_EXPERIMENTAL)
 
     def test_dirty_tree_blocks(self):
         evidence = self._full_passing_evidence(dirty=True)

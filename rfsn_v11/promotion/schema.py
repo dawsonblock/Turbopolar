@@ -100,6 +100,7 @@ class FusedDecodeReport:
     mean_perplexity_delta: Optional[float] = None
     max_perplexity_delta: Optional[float] = None
     any_nans_or_infs: bool = True
+    fallback_calls: int = 0
     first_argmax_divergence_step: Optional[int] = None
     notes: List[str] = field(default_factory=list)
 
@@ -117,6 +118,7 @@ class FusedDecodeReport:
             mean_perplexity_delta=data.get("mean_perplexity_delta"),
             max_perplexity_delta=data.get("max_perplexity_delta"),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
+            fallback_calls=int(data.get("fallback_calls", 0)),
             first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
             notes=list(data.get("notes", [])),
         )

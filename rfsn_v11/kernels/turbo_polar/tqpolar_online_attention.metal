@@ -660,6 +660,7 @@ kernel void tqpolar_online_attention_quant_v_raw(
     constant uint& deep_bits                 [[buffer(27)]],
     device const uint* strides               [[buffer(28)]],
     constant uint& actual_seq_len            [[buffer(29)]],
+    constant uint& actual_seq_len            [[buffer(29)]],
     constant uint& num_queries_per_kv        [[buffer(30)]],
     uint3 tgid                               [[threadgroup_position_in_grid]],
     uint tid                                 [[thread_index_in_threadgroup]])
@@ -821,8 +822,9 @@ kernel void tqpolar_online_attention_quant_v_raw(
     }
 
     if (tid == 0) {
-        out_max_score[b * num_queries_per_kv + q_head] = m_stat;
-        out_exp_sum[b * num_queries_per_kv + q_head] = l_stat;
+        uint num_q_heads = stride_o_b / stride_o_h;
+        out_max_score[b * num_q_heads + q_head] = m_stat;
+        out_exp_sum[b * num_q_heads + q_head] = l_stat;
     }
     for (uint k = 0; k < num_elements_per_thread; k++) {
         uint d = tid + k * 32;

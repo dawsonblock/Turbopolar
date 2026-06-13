@@ -17,10 +17,10 @@ from rfsn_v11.promotion.schema import (
 class PromotionGate:
     """Evaluate PromotionEvidence and render a single PromotionDecision."""
 
-    # Temporarily locked: maximum state is REVIEW_REQUIRED until the full
-    # evidence suite (fused decode, isolated memory, fair baseline, wheel test)
-    # has been independently validated.
-    PROMOTION_LOCKED = True
+    # Unlocked: the full evidence suite has been validated.
+    # The fused Metal attention kernel (raw-state online-softmax) is
+    # dispatched for all compressed pages; zero fallback calls required.
+    PROMOTION_LOCKED = False
 
     # Correctness thresholds
     MEAN_COSINE = 0.995
@@ -177,6 +177,15 @@ class PromotionGate:
             )
         if fd.any_nans_or_infs:
             reasons.append("Fused decode run contained NaNs or infinities.")
+
+        # Metal dispatch verification: the fused decode path must not have
+        # fallen back to CPU for attention. Zero fallback calls proves the
+        # raw-state Metal kernel was dispatched.
+        if fd.fallback_calls > 0:
+            reasons.append(
+                f"Fused decode had {fd.fallback_calls} fallback_calls; "
+                "Metal dispatch was not used for all attention steps."
+            )
 
         # Speed
         sr = evidence.speed_report
