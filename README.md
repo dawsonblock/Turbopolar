@@ -2,7 +2,7 @@
 
 A compressed KV cache for Llama-style models on MLX / Apple Silicon.
 
-This is **research alpha software**. 117 test functions are present. Native Apple Silicon results require attached benchmark artifacts. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. Do not use it in production.
+This is **research alpha software**. ~208 test functions are present. Native Apple Silicon results require attached benchmark artifacts. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. Do not use it in production.
 
 ## What it does
 
@@ -49,7 +49,7 @@ Requires Python ≥3.10 and MLX ≥0.31.2. Real-model benchmarks also require `m
 make test
 ```
 
-117 test functions are present. If a Metal kernel fails to compile, the bridge falls back to CPU and reports it.
+~208 test functions are present. Three execution modes are supported: `REFERENCE` (CPU/Python reference), `METAL_STRICT` (Metal required, no fallback), and `DEVELOPMENT_AUTO` (try Metal, fall back to reference on failure). Promotion benchmarks use `METAL_STRICT`.
 
 ## Run the real-model benchmarks
 

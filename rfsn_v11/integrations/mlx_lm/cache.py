@@ -173,6 +173,7 @@ class TurboPolarFastCache:
             view.partial_v,
             cfg,
             view.total_tokens,
+            mode=cfg.execution_mode,
         )
         return output
 
@@ -220,12 +221,15 @@ def make_turbo_caches(
     num_kv_heads: int,
     head_dim: int,
     use_qjl: bool = False,
+    execution_mode=None,
 ) -> List[TurboPolarFastCache]:
     """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
     if head_dim != 128:
         raise ValueError(
             f"TurboPolar fused MLX path only supports head_dim=128, got {head_dim}"
         )
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
     config = TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
@@ -237,5 +241,6 @@ def make_turbo_caches(
         use_int8_radii=True,
         k_angle_bits_deep=8,
         split_dim=0,
+        execution_mode=execution_mode if execution_mode is not None else ExecutionMode.DEVELOPMENT_AUTO,
     )
     return [TurboPolarFastCache(config) for _ in range(num_layers)]

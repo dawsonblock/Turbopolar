@@ -143,4 +143,5 @@ class TurboPolarLlamaAdapter:
             num_kv_heads=self.turbo_config.num_kv_heads,
             head_dim=self.turbo_config.head_dim,
             use_qjl=self.turbo_config.use_qjl,
+            execution_mode=self.turbo_config.execution_mode,
         )

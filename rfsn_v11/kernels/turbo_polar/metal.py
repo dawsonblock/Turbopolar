@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, Tuple
 from rfsn_v11.kernels.turbo_polar.execution import (
     ExecutionMode,
     MetalExecutionRequiredError,
+    MetalKernelDispatchError,
     MetalKernelInitializationError,
 )
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
@@ -121,11 +122,17 @@ class MetalKernelBridge:
         except Exception as _exc:
             MetalKernelBridge._initialized = False
             self._kernel_qk = None
+            self._kernel_qk_qjl = None
             self._kernel_attn_dense = None
             self._kernel_attn_quant = None
             self._kernel_attn_quant_dt = None
             self._kernel_attn_quant_raw = None
+            self._kernel_attn_quant_dense_tail = None
             self._kernel_dense_tail_raw = None
+            self.threadgroup_supported = False
+            self.grid_semantics = "unknown"
+            self._tg_x = 32
+            self._stats = KernelExecutionStats()
             raise MetalKernelInitializationError(
                 f"TurboPolar Metal initialization failed: {_exc}"
             ) from _exc
@@ -157,7 +164,7 @@ class MetalKernelBridge:
         qk_header, qk_body = self._extract_kernel_parts(
             qk_source, "tqpolar_fused_dequant_qk"
         )
-        self._kernel_qk = mx.fast.metal_kernel(
+        _kernel_qk = mx.fast.metal_kernel(
             name="tqpolar_fused_dequant_qk",
             input_names=[
                 "q",
@@ -187,7 +194,7 @@ class MetalKernelBridge:
         qk_qjl_header, qk_qjl_body = self._extract_kernel_parts(
             qk_source, "tqpolar_fused_dequant_qk_qjl"
         )
-        self._kernel_qk_qjl = mx.fast.metal_kernel(
+        _kernel_qk_qjl = mx.fast.metal_kernel(
             name="tqpolar_fused_dequant_qk_qjl",
             input_names=[
                 "q",
@@ -221,7 +228,7 @@ class MetalKernelBridge:
         attn_dense_header, attn_dense_body = self._extract_kernel_parts(
             attn_source, "tqpolar_online_attention_dense_v"
         )
-        self._kernel_attn_dense = mx.fast.metal_kernel(
+        _kernel_attn_dense = mx.fast.metal_kernel(
             name="tqpolar_online_attention_dense_v",
             input_names=[
                 "q",
@@ -259,7 +266,7 @@ class MetalKernelBridge:
         attn_quant_header, attn_quant_body = self._extract_kernel_parts(
             attn_source, "tqpolar_online_attention_quant_v"
         )
-        self._kernel_attn_quant = mx.fast.metal_kernel(
+        _kernel_attn_quant = mx.fast.metal_kernel(
             name="tqpolar_online_attention_quant_v",
             input_names=[
                 "q",
@@ -299,7 +306,7 @@ class MetalKernelBridge:
         attn_quant_raw_header, attn_quant_raw_body = self._extract_kernel_parts(
             attn_source, "tqpolar_online_attention_quant_v_raw"
         )
-        self._kernel_attn_quant_raw = mx.fast.metal_kernel(
+        _kernel_attn_quant_raw = mx.fast.metal_kernel(
             name="tqpolar_online_attention_quant_v_raw",
             input_names=[
                 "q",
@@ -339,7 +346,7 @@ class MetalKernelBridge:
         attn_quant_dt_header, attn_quant_dt_body = self._extract_kernel_parts(
             attn_source, "tqpolar_online_attention_quant_v_dense_tail"
         )
-        self._kernel_attn_quant_dense_tail = mx.fast.metal_kernel(
+        _kernel_attn_quant_dense_tail = mx.fast.metal_kernel(
             name="tqpolar_online_attention_quant_v_dense_tail",
             input_names=[
                 "q",
@@ -369,7 +376,7 @@ class MetalKernelBridge:
         dense_tail_raw_header, dense_tail_raw_body = self._extract_kernel_parts(
             attn_source, "tqpolar_dense_tail_state_raw"
         )
-        self._kernel_dense_tail_raw = mx.fast.metal_kernel(
+        _kernel_dense_tail_raw = mx.fast.metal_kernel(
             name="tqpolar_dense_tail_state_raw",
             input_names=[
                 "q",
@@ -386,7 +393,18 @@ class MetalKernelBridge:
             source=dense_tail_raw_body,
         )
 
-        self.threadgroup_supported, self.grid_semantics = _probe_metal_dispatch()
+        _threadgroup_supported, _grid_semantics = _probe_metal_dispatch()
+
+        # Atomic assignment: all kernels built successfully or none are retained.
+        self._kernel_qk = _kernel_qk
+        self._kernel_qk_qjl = _kernel_qk_qjl
+        self._kernel_attn_dense = _kernel_attn_dense
+        self._kernel_attn_quant = _kernel_attn_quant
+        self._kernel_attn_quant_raw = _kernel_attn_quant_raw
+        self._kernel_attn_quant_dense_tail = _kernel_attn_quant_dense_tail
+        self._kernel_dense_tail_raw = _kernel_dense_tail_raw
+        self.threadgroup_supported = _threadgroup_supported
+        self.grid_semantics = _grid_semantics
         self._tg_x = 32
         self._stats = KernelExecutionStats()
 
@@ -670,17 +688,19 @@ class MetalKernelBridge:
             return self._execute_paged_online_attention_metal_strict(
                 q, pages, tail_k, tail_v, config, actual_seq_len
             )
-        # DEVELOPMENT_AUTO: try strict, fall back to reference on failure.
+        # DEVELOPMENT_AUTO: try strict, fall back to reference on documented
+        # Metal availability/dispatch failures only. Programming errors propagate.
         try:
             return self._execute_paged_online_attention_metal_strict(
                 q, pages, tail_k, tail_v, config, actual_seq_len
             )
-        except Exception:
+        except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError, RuntimeError) as _exc:
             self._stats.fallback_calls += 1
             out, trace = self._execute_paged_online_attention_reference(
                 q, pages, tail_k, tail_v, config, actual_seq_len
             )
             trace["fallback_used"] = True
+            trace["fallback_reason"] = f"{_exc.__class__.__name__}: {_exc}"
             return out, trace
 
     def _execute_paged_online_attention_reference(
@@ -819,8 +839,13 @@ class MetalKernelBridge:
                     quant_v,
                     config,
                     actual_seq_len=valid_blocks * config.block_size,
+                    strict=True,
                 )
             )
+            if page_trace.get("fallback_used"):
+                raise MetalExecutionRequiredError(
+                    f"Compressed-page trace reported fallback_used=True for page with {valid_blocks} blocks"
+                )
             state = self._online_softmax_combine_raw(
                 state, page_max, page_exp, page_weighted
             )
@@ -834,9 +859,14 @@ class MetalKernelBridge:
                 raise MetalExecutionRequiredError(
                     "Dense-tail raw-state Metal kernel is unavailable."
                 )
-            tail_weighted, tail_max, tail_exp = self._execute_dense_tail_raw(
-                q, tail_k, tail_v, config
-            )
+            try:
+                tail_weighted, tail_max, tail_exp = self._execute_dense_tail_raw(
+                    q, tail_k, tail_v, config
+                )
+            except Exception as _exc:
+                raise MetalKernelDispatchError(
+                    f"Dense-tail raw-state Metal kernel dispatch failed: {_exc}"
+                ) from _exc
             state = self._online_softmax_combine_raw(
                 state, tail_max, tail_exp, tail_weighted
             )
@@ -1687,6 +1717,7 @@ class MetalKernelBridge:
         config,
         actual_seq_len: int,
         use_qjl: bool = False,
+        strict: bool = False,
     ) -> Tuple[mx.array, mx.array, mx.array, Dict[str, Any]]:
         """Return raw online-softmax state (weighted_sum, max_score, exp_sum) without normalizing."""
         B, H_kv, S, L, _ = block.radii.shape
@@ -1695,6 +1726,15 @@ class MetalKernelBridge:
             None, None, B, q.shape[1], H_kv, S, L, config.qjl_proj_dim, use_qjl
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            if strict:
+                reason = []
+                if not self.threadgroup_supported:
+                    reason.append("threadgroup probe failed")
+                if not self._metal_supports_block(block):
+                    reason.append("block metadata unsupported")
+                raise MetalExecutionRequiredError(
+                    f"Raw compressed-page Metal kernel unavailable: {', '.join(reason)}"
+                )
             self._stats.fallback_calls += 1
             v_dequant = GroupedVQuantizer(
                 group_size=quant_v.group_size

@@ -697,7 +697,6 @@ kernel void tqpolar_online_attention_quant_v_raw(
     constant uint& deep_bits                 [[buffer(27)]],
     device const uint* strides               [[buffer(28)]],
     constant uint& actual_seq_len            [[buffer(29)]],
-    constant uint& actual_seq_len            [[buffer(29)]],
     constant uint& num_queries_per_kv        [[buffer(30)]],
     uint3 tgid                               [[threadgroup_position_in_grid]],
     uint tid                                 [[thread_index_in_threadgroup]])

@@ -208,6 +208,7 @@ def benchmark_forced_decode_fixture(
     context_tokens: List[int],
     continuation_tokens: List[int],
     adapter: TurboPolarLlamaAdapter,
+    execution_mode=None,
 ) -> ForcedDecodeFixtureResult:
     """Run one forced-decode fixture and return per-step metrics."""
     num_layers = (
@@ -217,7 +218,12 @@ def benchmark_forced_decode_fixture(
 
     dense_cache = [KVCache() for _ in range(num_layers)]
     turbo_cache = make_turbo_caches(
-        num_layers, num_q_heads, num_kv_heads, head_dim, use_qjl=False
+        num_layers,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        use_qjl=False,
+        execution_mode=execution_mode,
     )
     _reset_all_execution_stats(turbo_cache)
 
@@ -277,10 +283,9 @@ def benchmark_forced_decode_fixture(
             "Fused forced-decode produced zero online_attention_calls; "
             "the benchmark did not exercise the paged attention path."
         )
-    # NOTE: The current paged attention path is a CPU/MLX fallback reference
-    # implementation.  A true fused Metal kernel does not yet exist.
-    # We record fallback usage but do not fail the benchmark, so quality
-    # evidence can still be collected while the kernel is in development.
+    # NOTE: The benchmark respects the configured execution_mode.
+    # METAL_STRICT will raise if any fallback occurs; DEVELOPMENT_AUTO
+    # falls back to the reference path on Metal unavailability.
 
     return ForcedDecodeFixtureResult(
         fixture_id=f"ctx_{len(context_tokens)}_cont_{len(continuation_tokens)}",
@@ -295,6 +300,7 @@ def benchmark_forced_decode_fixture(
 
 def _compute_aggregate(
     results: List[ForcedDecodeFixtureResult],
+    execution_mode: str = "unknown",
 ) -> ForcedDecodeAggregate:
     all_cosines = [s.logit_cosine for r in results for s in r.steps]
     all_top1 = [float(s.top1_agreement) for r in results for s in r.steps]
@@ -319,6 +325,12 @@ def _compute_aggregate(
     total_online = sum(r.kernel_stats.get("online_attention_calls", 0) for r in results)
     total_dense_tail = sum(r.kernel_stats.get("dense_tail_calls", 0) for r in results)
     total_fallback = sum(r.kernel_stats.get("fallback_calls", 0) for r in results)
+
+    fallback_reasons = []
+    for r in results:
+        for step in r.steps:
+            if step.any_nan_or_inf:
+                fallback_reasons.append(f"NaN/Inf at {r.fixture_id} pos {step.position}")
 
     worst_cosine = min(all_cosines)
     worst_idx = all_cosines.index(worst_cosine)
@@ -346,7 +358,7 @@ def _compute_aggregate(
     def _percentile(arr, p):
         return float(np.percentile(arr, p))
 
-    return ForcedDecodeAggregate(
+    aggregate = ForcedDecodeAggregate(
         mean_logit_cosine=float(np.mean(all_cosines)),
         median_logit_cosine=float(np.median(all_cosines)),
         p05_logit_cosine=_percentile(all_cosines, 5),
@@ -369,10 +381,27 @@ def _compute_aggregate(
         online_attention_calls=total_online,
         dense_tail_calls=total_dense_tail,
         fallback_calls=total_fallback,
+        execution_mode=execution_mode,
+        compressed_page_metal_calls=total_online,
+        dense_tail_metal_calls=total_dense_tail,
+        merge_metal_calls=0,
+        finalization_metal_calls=0,
+        compressed_page_fallback_calls=total_fallback,
+        dense_tail_fallback_calls=0,
+        full_attention_fallback_calls=total_fallback,
+        fallback_reasons=fallback_reasons,
         dense_perplexity=dense_ppl,
         candidate_perplexity=candidate_ppl,
         relative_perplexity_delta=rel_ppl_delta,
     )
+
+    if execution_mode == "metal_strict" and total_fallback > 0:
+        raise RuntimeError(
+            f"METAL_STRICT benchmark recorded {total_fallback} fallback call(s); "
+            "strict mode prohibits any fallback."
+        )
+
+    return aggregate
 
 
 def main():
@@ -407,6 +436,13 @@ def main():
         default=[512, 2048, 4096, 8192, 16384],
         help="Context lengths to evaluate",
     )
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        default="development_auto",
+        choices=["reference", "metal_strict", "development_auto"],
+        help="Execution mode for TurboPolar attention (default: development_auto)",
+    )
     args = parser.parse_args()
 
     mx.random.seed(args.seed)
@@ -416,6 +452,9 @@ def main():
     model, tokenizer = load(str(args.model))
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
+    execution_mode = ExecutionMode(args.execution_mode)
     turbo_config = TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
@@ -427,6 +466,7 @@ def main():
         use_int8_radii=True,
         k_angle_bits_deep=8,
         split_dim=0,
+        execution_mode=execution_mode,
     )
     adapter = TurboPolarLlamaAdapter(turbo_config)
 
@@ -482,7 +522,10 @@ def main():
         print(
             f"Fixture {i + 1}/{len(fixtures)}: context={len(ctx)} continuation={len(cont)}"
         )
-        result = benchmark_forced_decode_fixture(model, tokenizer, ctx, cont, adapter)
+        result = benchmark_forced_decode_fixture(
+            model, tokenizer, ctx, cont, adapter,
+            execution_mode=args.execution_mode,
+        )
         results.append(result)
         print(
             f"  mean_cosine={np.mean([s.logit_cosine for s in result.steps]):.4f} "
@@ -490,7 +533,7 @@ def main():
             f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
-    aggregate = _compute_aggregate(results)
+    aggregate = _compute_aggregate(results, execution_mode=args.execution_mode)
     print(f"\nAggregate mean cosine: {aggregate.mean_logit_cosine:.4f}")
     print(f"Aggregate min cosine:  {aggregate.min_logit_cosine:.4f}")
     print(f"Aggregate p05 cosine:  {aggregate.p05_logit_cosine:.4f}")

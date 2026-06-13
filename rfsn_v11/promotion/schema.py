@@ -136,7 +136,7 @@ class FusedDecodeReport:
             compressed_page_fallback_calls=data.get("compressed_page_fallback_calls"),
             dense_tail_fallback_calls=data.get("dense_tail_fallback_calls"),
             full_attention_fallback_calls=data.get("full_attention_fallback_calls"),
-            fallback_reasons=list(data.get("fallback_reasons", [])),
+            fallback_reasons=list(data.get("fallback_reasons") or []),
             fallback_calls=int(data.get("fallback_calls", 0)),
             first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
             notes=list(data.get("notes", [])),

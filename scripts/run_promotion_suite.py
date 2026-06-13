@@ -70,6 +70,8 @@ REQUIRED_METAL_TESTS = {
     "tests.kernels.test_paged_online_attention",
     "tests.kernels.test_qjl_scaled_fused_qk",
     "tests.kernels.test_qjl_scaled_online_attention",
+    "tests.kernels.test_metal_strict",
+    "tests.kernels.test_fallback_injection",
     "tests.benchmarks.test_turbopolar_fast_attention",
     "tests.benchmarks.test_turbo_polar_online_attention",
 }
@@ -208,6 +210,8 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "16384",
         "--forced-decode-tokens",
         "128",
+        "--execution-mode",
+        "metal_strict",
         timeout=1200,
     )
     report = _load_json(output_dir / "fused_decode" / "report.json")
@@ -224,6 +228,17 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         argmax_agreement=agg.get("mean_top1_agreement"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
         any_nans_or_infs=agg.get("any_nans_or_infs", True),
+        execution_mode=agg.get("execution_mode"),
+        compressed_page_metal_calls=agg.get("compressed_page_metal_calls"),
+        dense_tail_metal_calls=agg.get("dense_tail_metal_calls"),
+        merge_metal_calls=agg.get("merge_metal_calls"),
+        finalization_metal_calls=agg.get("finalization_metal_calls"),
+        compressed_page_fallback_calls=agg.get("compressed_page_fallback_calls"),
+        dense_tail_fallback_calls=agg.get("dense_tail_fallback_calls"),
+        full_attention_fallback_calls=agg.get("full_attention_fallback_calls"),
+        fallback_reasons=agg.get("fallback_reasons"),
+        fallback_calls=agg.get("fallback_calls", 0),
+        first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
     )
 
 

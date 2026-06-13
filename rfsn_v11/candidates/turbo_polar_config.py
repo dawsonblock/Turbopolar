@@ -2,6 +2,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Any
 
+from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
 
 def validate_supported_configuration(config: "TurboPolarConfig") -> None:
     """Reject unsupported configurations immediately.
@@ -77,6 +79,7 @@ class TurboPolarConfig:
     num_kv_heads: int = 8
     validate_finite_inputs: bool = False
     finite_audit_interval: int = 0
+    execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):

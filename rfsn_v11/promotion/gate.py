@@ -50,6 +50,8 @@ class PromotionGate:
         "tests.kernels.test_paged_online_attention",
         "tests.kernels.test_qjl_scaled_fused_qk",
         "tests.kernels.test_qjl_scaled_online_attention",
+        "tests.kernels.test_metal_strict",
+        "tests.kernels.test_fallback_injection",
         "tests.benchmarks.test_turbopolar_fast_attention",
         "tests.benchmarks.test_turbo_polar_online_attention",
     }

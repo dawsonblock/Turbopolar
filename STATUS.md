@@ -8,9 +8,12 @@
 
 **Promotion state:** Maximum state is capped at `REVIEW_REQUIRED`. `PROMOTED_EXPERIMENTAL` is **locked** until the full evidence suite has been independently validated on native Apple Silicon.
 
-TurboPolar remains an end-to-end research alpha. All required benchmark and
-promotion plumbing is now in place, but the default operating point does not yet
-meet the quantitative thresholds defined in `rfsn_v11/promotion/gate.py`.
+TurboPolar remains an end-to-end research alpha. Explicit `METAL_STRICT` and
+`DEVELOPMENT_AUTO` execution modes are now defined, the model runtime passes the
+mode into every attention call, and the forced-decode benchmark can run in
+strict mode. The promotion pipeline expects strict Metal evidence fields.
+However, native Apple Silicon benchmark artifacts are still required to prove
+the quantitative thresholds in `rfsn_v11/promotion/gate.py`.
 Promotion is blocked until reproducible artifacts independently prove:
 
 1. **Correctness:** fused compressed attention produces acceptably close logits to dense attention during actual autoregressive decode.
@@ -25,7 +28,7 @@ No promotion claim may be made by any component other than the single promotion 
 - **MLX dispatch is correct:** we probe and adapt to the `grid == total_threads` semantics in this MLX version.
 - **Unit tests present:** 50 core tests pass (unit + packaging). Integration tests requiring mlx-lm model loading are present but not executed in this environment.
 - **Decompress-on-read path:** satisfies historical promotion-style gates on Llama-3.2-1B at 512-token context, but this path is not sufficient for `PROMOTED_EXPERIMENTAL`.
-- **Fused attention path:** partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended separately in a single fused kernel. Native Apple Silicon results require attached benchmark artifacts.
+- **Fused attention path:** partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended via a separate dense-tail Metal kernel. Page-state merging and finalization currently use ordinary MLX operations. Native Apple Silicon results require attached benchmark artifacts.
 - **Instance-level Llama adapter:** `TurboPolarLlamaAdapter` installs per-model, rolls back on failure, and prevents double install. Parameter-tree and state-dict preservation remain under validation.
 - **Truthful memory accounting:** `CacheMemoryStats` separates logical payload, allocated capacity, dense tail, metadata, and dense equivalent; `measure_append_peak_memory()` probes the MLX allocator peak.
 - **Paged storage:** persistent compressed blocks now use fixed-size pages (16 blocks/page), eliminating the quadratic historical copying that occurred with single-block-at-a-time array growth.
@@ -60,21 +63,22 @@ See `docs/SUPPORTED_CONFIGURATION.md`. The narrow supported scope is:
 
 Promotion to `PROMOTED_EXPERIMENTAL` requires:
 
-1. All unit, kernel, and integration tests pass.
-2. Fused forced-decode mean logit cosine ≥ 0.995, p05 ≥ 0.990, minimum ≥ 0.975.
-3. Top-5 overlap ≥ 0.95, top-10 overlap ≥ 0.97, argmax agreement ≥ 0.97.
-4. Perplexity delta vs dense ≤ 0.02.
-5. No NaNs or infinities; no catastrophic outlier prompt.
-6. Logical KV compression ≥ 1.85×.
-7. Measured persistent storage improves materially.
-8. Peak device memory improves at 8192+ context.
-9. No dense full-history cache remains resident.
-10. No >3% regression at 4096+ context.
-11. At least one long-context tier improves ≥ 5%.
-12. 8192+ median steady-state decode ratio exceeds 1.03× across alternating trials.
-13. TurboPolar beats or meaningfully differentiates from grouped Cartesian int8 K/V.
-14. Exact model revision, software versions, prompt hashes, and config hashes recorded.
-15. Promotion decision produced solely by `rfsn_v11/promotion/gate.py`.
+1. All unit, kernel, and integration tests pass, including `tests.kernels.test_metal_strict` and `tests.kernels.test_fallback_injection`.
+2. Fused forced-decode runs in `METAL_STRICT` mode with zero fallback calls and emits all required Metal dispatch fields.
+3. Fused forced-decode mean logit cosine ≥ 0.995, p05 ≥ 0.990, minimum ≥ 0.975.
+4. Top-5 overlap ≥ 0.95, top-10 overlap ≥ 0.97, argmax agreement ≥ 0.97.
+5. Perplexity delta vs dense ≤ 0.02.
+6. No NaNs or infinities; no catastrophic outlier prompt.
+7. Logical KV compression ≥ 1.85×.
+8. Measured persistent storage improves materially.
+9. Peak device memory improves at 8192+ context.
+10. No dense full-history cache remains resident.
+11. No >3% regression at 4096+ context.
+12. At least one long-context tier improves ≥ 5%.
+13. 8192+ median steady-state decode ratio exceeds 1.03× across alternating trials.
+14. TurboPolar beats or meaningfully differentiates from grouped Cartesian int8 K/V.
+15. Exact model revision, software versions, prompt hashes, and config hashes recorded.
+16. Promotion decision produced solely by `rfsn_v11/promotion/gate.py`.
 
 **Promotion allowed:** NO.
 
