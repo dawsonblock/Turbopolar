@@ -297,21 +297,31 @@ class PromotionGate:
             reasons.append(
                 f"Fused decode contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {contexts_set}"
             )
+        # Required fused decode position count.
+        if fd and fd.actual_fused_positions is not None:
+            if fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS:
+                reasons.append(
+                    f"Fused decode actual positions {fd.actual_fused_positions} < "
+                    f"required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                )
+        else:
+            reasons.append("Fused decode actual_fused_positions missing.")
+
         sr = evidence.speed_report
         if sr and sr.trials_per_context < self.MIN_TRIALS_PER_CONTEXT:
             reasons.append(
                 f"Speed trials per context {sr.trials_per_context} < {self.MIN_TRIALS_PER_CONTEXT}"
             )
         speed_contexts = set(sr.contexts_evaluated) if sr and sr.contexts_evaluated else set()
-        if speed_contexts != self.REQUIRED_CONTEXTS:
+        if not self.REQUIRED_CONTEXTS.issubset(speed_contexts):
             reasons.append(
-                f"Speed contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {speed_contexts}"
+                f"Speed contexts incomplete: required {self.REQUIRED_CONTEXTS} not in {speed_contexts}"
             )
         mr = evidence.memory_report
         memory_contexts = set(mr.contexts_evaluated) if mr and mr.contexts_evaluated else set()
-        if memory_contexts != self.REQUIRED_CONTEXTS:
+        if not self.REQUIRED_CONTEXTS.issubset(memory_contexts):
             reasons.append(
-                f"Memory contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {memory_contexts}"
+                f"Memory contexts incomplete: required {self.REQUIRED_CONTEXTS} not in {memory_contexts}"
             )
 
         # Provenance

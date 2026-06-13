@@ -59,6 +59,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 dense_tail_fallback_calls=0,
                 full_attention_fallback_calls=0,
                 fallback_reasons=[],
+                actual_fused_positions=128,
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,

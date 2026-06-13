@@ -907,7 +907,17 @@ class MetalKernelBridge:
         tail_v: mx.array,
         config,
     ) -> Tuple[mx.array, mx.array, mx.array]:
-        """Dispatch dense-tail raw-state Metal kernel."""
+        """Dispatch dense-tail raw-state Metal kernel.
+
+        Before stride generation, all inputs are forced contiguous because
+        tail_k/tail_v may be non-contiguous views (e.g. sliced from a larger
+        fixed tail buffer) and q may carry non-contiguous strides from
+        upstream reshape/transpose/RoPE operations.
+        """
+        q = mx.contiguous(q)
+        tail_k = mx.contiguous(tail_k)
+        tail_v = mx.contiguous(tail_v)
+
         B, H_q, D = q.shape[0], q.shape[1], config.head_dim
         tail_length = tail_k.shape[2]
         num_queries_per_kv = (

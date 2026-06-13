@@ -19,6 +19,7 @@ class PromptResult:
     top10_overlap: float
     kl_divergence: float
     perplexity_delta: float
+    argmax_agreement: float
     compression_ratio: float
     peak_kv_bytes_turbo: int
     peak_kv_bytes_dense: int
@@ -102,9 +103,14 @@ class ForcedDecodeAggregate:
     dense_tail_fallback_calls: int = 0
     full_attention_fallback_calls: int = 0
     fallback_reasons: List[str] = field(default_factory=list)
+    numerical_failure_reasons: List[str] = field(default_factory=list)
     dense_perplexity: float = 0.0
     candidate_perplexity: float = 0.0
     relative_perplexity_delta: float = 0.0
+    requested_fused_positions: int = 0
+    actual_fused_positions: int = 0
+    positions_per_context: Dict[int, int] = field(default_factory=dict)
+    failed_positions: int = 0
 
 
 @dataclass

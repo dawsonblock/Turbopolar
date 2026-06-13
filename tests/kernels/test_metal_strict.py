@@ -49,9 +49,10 @@ def _decode_dense_reference(cache, q, scale):
     block, quant_v, tail_k, tail_v, _, actual_len = cache.get_fused_attention_inputs()
     if block is not None:
         k_dense = decoder.decode_block(block)[:, :, :actual_len, :]
-        v_dense = v_dequant.dequantize_block(quant_v).reshape(1, 4, -1, 128)[
-            :, :, :actual_len, :
-        ]
+        num_kv_heads = block.radii.shape[1]
+        v_dense = v_dequant.dequantize_block(quant_v).reshape(
+            1, num_kv_heads, -1, 128
+        )[:, :, :actual_len, :]
         if tail_k is not None and tail_k.shape[2] > 0:
             k_dense = mx.concatenate([k_dense, tail_k[:, :, :actual_len, :]], axis=2)
             v_dense = mx.concatenate([v_dense, tail_v[:, :, :actual_len, :]], axis=2)
@@ -316,4 +317,104 @@ class TestMetalStrictPagedAttention:
         ), f"Max diff: {mx.max(mx.abs(out - dense_out)).item()}"
         assert trace["execution_mode"] == "metal_strict"
         assert trace["fallback_used"] is False
+        assert trace["dense_tail_metal"] is True
+
+
+class TestMetalStrictGQA:
+    """Strict Metal paged attention with GQA ratio > 1 must never fall back."""
+
+    def _run_strict_assertions(self, cache, q, expected_page_count=None):
+        view = cache.attention_view()
+        bridge = MetalKernelBridge()
+        out, trace = bridge.execute_paged_online_attention(
+            q.squeeze(2),
+            view.pages,
+            view.partial_k,
+            view.partial_v,
+            cache.config,
+            view.total_tokens,
+            mode=ExecutionMode.METAL_STRICT,
+        )
+        dense_out = _decode_dense_reference(cache, q, cache.config.attention_scale)
+        mx.eval(out, dense_out)
+        assert mx.allclose(
+            out, dense_out, atol=5e-3
+        ), f"Max diff: {mx.max(mx.abs(out - dense_out)).item()}"
+        assert trace["execution_mode"] == "metal_strict"
+        assert trace["fallback_used"] is False
+        assert trace["attn_metal_used"] is True
+        if expected_page_count is not None:
+            assert len(trace.get("page_traces", [])) == expected_page_count, (
+                f"Expected {expected_page_count} page traces, got {len(trace.get('page_traces', []))}"
+            )
+        for pt in trace.get("page_traces", []):
+            assert pt["metal_used"] is True
+            assert pt["fallback_used"] is False
+        return out, trace
+
+    def test_strict_gqa_two_pages(self):
+        """2048 tokens = 2 pages with GQA ratio 4:1 (8 q heads, 2 kv heads)."""
+        mx.random.seed(4100)
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=8,
+            num_kv_heads=2,
+            use_int8_radii=True,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=8,
+            storage_mode="kv_quant",
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+
+        k = mx.random.normal((1, 2, 2048, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 2, 2048, 128)).astype(mx.float16)
+        cache.append_many(k, v)
+
+        q = mx.random.normal((1, 8, 1, 128)).astype(mx.float16)
+        self._run_strict_assertions(cache, q, expected_page_count=2)
+
+    def test_strict_gqa_four_pages(self):
+        """4096 tokens = 4 pages with GQA ratio 4:1."""
+        mx.random.seed(4101)
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=8,
+            num_kv_heads=2,
+            use_int8_radii=True,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=8,
+            storage_mode="kv_quant",
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+
+        k = mx.random.normal((1, 2, 4096, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 2, 4096, 128)).astype(mx.float16)
+        cache.append_many(k, v)
+
+        q = mx.random.normal((1, 8, 1, 128)).astype(mx.float16)
+        self._run_strict_assertions(cache, q, expected_page_count=4)
+
+    def test_strict_gqa_sixteen_pages_plus_tail(self):
+        """16385 tokens = 16 pages + 1 tail with GQA ratio 4:1."""
+        mx.random.seed(4102)
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=8,
+            num_kv_heads=2,
+            use_int8_radii=True,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=8,
+            storage_mode="kv_quant",
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+
+        k = mx.random.normal((1, 2, 16385, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 2, 16385, 128)).astype(mx.float16)
+        cache.append_many(k, v)
+
+        q = mx.random.normal((1, 8, 1, 128)).astype(mx.float16)
+        out, trace = self._run_strict_assertions(cache, q, expected_page_count=16)
         assert trace["dense_tail_metal"] is True

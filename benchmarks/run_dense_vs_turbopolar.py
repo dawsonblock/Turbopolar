@@ -118,6 +118,20 @@ def _logit_cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a_flat, b_flat) / denom)
 
 
+def _argmax_agreement(a: np.ndarray, b: np.ndarray) -> float:
+    """Fraction of positions where argmax of a equals argmax of b."""
+    if np.isnan(a).any() or np.isnan(b).any():
+        return 0.0
+    if a.ndim == 2:
+        a = a[None, ...]
+        b = b[None, ...]
+    a_argmax = np.argmax(a, axis=-1)
+    b_argmax = np.argmax(b, axis=-1)
+    matches = np.sum(a_argmax == b_argmax)
+    total = a_argmax.size
+    return float(matches / total) if total > 0 else 0.0
+
+
 def _topk_overlap(a: np.ndarray, b: np.ndarray, k: int) -> float:
     if np.isnan(a).any() or np.isnan(b).any():
         return 0.0
@@ -228,6 +242,7 @@ def benchmark_prompt(
         perplexity_delta=abs(
             _perplexity(dense_logits, tokens) - _perplexity(turbo_logits, tokens)
         ),
+        argmax_agreement=_argmax_agreement(dense_logits, turbo_logits),
         compression_ratio=compression_ratio,
         peak_kv_bytes_turbo=peak_turbo,
         peak_kv_bytes_dense=peak_dense,
@@ -334,17 +349,27 @@ def main():
         )
         gate_results = results
 
+    cosines = [r.logit_cosine for r in gate_results]
     aggregate = {
-        "logit_cosine": float(np.mean([r.logit_cosine for r in gate_results])),
-        "top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])),
-        "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])),
-        "kl_divergence": float(np.mean([r.kl_divergence for r in gate_results])),
-        "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])),
+        # Legacy keys (kept for backward compat)
+        "logit_cosine": float(np.mean(cosines)) if cosines else 0.0,
+        "top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])) if gate_results else 0.0,
+        "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])) if gate_results else 0.0,
+        "kl_divergence": float(np.mean([r.kl_divergence for r in gate_results])) if gate_results else 0.0,
+        "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])) if gate_results else 0.0,
+        # Promotion-converter keys
+        "mean_logit_cosine": float(np.mean(cosines)) if cosines else 0.0,
+        "p05_logit_cosine": float(np.percentile(cosines, 5)) if cosines else 0.0,
+        "min_logit_cosine": float(np.min(cosines)) if cosines else 0.0,
+        "mean_top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])) if gate_results else 0.0,
+        "mean_top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])) if gate_results else 0.0,
+        "argmax_agreement": float(np.mean([r.argmax_agreement for r in gate_results])) if gate_results else 0.0,
+        "mean_perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])) if gate_results else 0.0,
         "compression_ratio": float(
             np.mean([r.compression_ratio for r in gate_results])
-        ),
-        "peak_kv_bytes_dense": int(np.max([r.peak_kv_bytes_dense for r in results])),
-        "peak_kv_bytes_turbo": int(np.max([r.peak_kv_bytes_turbo for r in results])),
+        ) if gate_results else 0.0,
+        "peak_kv_bytes_dense": int(np.max([r.peak_kv_bytes_dense for r in results])) if results else 0,
+        "peak_kv_bytes_turbo": int(np.max([r.peak_kv_bytes_turbo for r in results])) if results else 0,
         "decode_speed_dense_tok_per_sec": dense_decode_tok_per_sec,
         "decode_speed_turbo_tok_per_sec": turbo_decode_tok_per_sec,
         "decode_speed_ratio": (

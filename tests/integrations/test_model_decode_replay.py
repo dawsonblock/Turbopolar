@@ -13,6 +13,7 @@ import numpy as np
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
+from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 
 
 class _FakeTokenizer:
@@ -144,6 +145,111 @@ class TestModelDecodeReplay(unittest.TestCase):
                 model.layers[0].self_attn(x, mask=fake_mask, cache=turbo_cache[0])
         finally:
             adapter.uninstall()
+
+    def test_strict_model_adapter_with_compressed_pages(self):
+        """METAL_STRICT through the real model adapter must not fallback at 2K context."""
+        mx.random.seed(4200)
+        model = self._tiny_model()
+        tokenizer = _FakeTokenizer()
+        # 2048 tokens = 2 full pages, enough to exercise compressed-page path.
+        context_tokens = [
+            int(i % tokenizer.vocab_size) for i in range(2048)
+        ]
+        continuation_tokens = tokenizer.encode(" forced decode replay ")
+
+        num_layers = len(model.layers)
+        turbo_config = TurboPolarConfig(
+            num_q_heads=4,
+            num_kv_heads=2,
+            head_dim=128,
+            block_size=64,
+            storage_mode="kv_quant",
+            use_int8_radii=True,
+            k_angle_bits_deep=8,
+            split_dim=0,
+            execution_mode=ExecutionMode.METAL_STRICT,
+        )
+        adapter = TurboPolarLlamaAdapter(turbo_config)
+        turbo_cache = make_turbo_caches(
+            num_layers, 4, 2, 128, use_qjl=False,
+            execution_mode=ExecutionMode.METAL_STRICT,
+        )
+        for c in turbo_cache:
+            c.reset_execution_stats()
+
+        context_mx = mx.array(context_tokens)[None, :]
+
+        # Prefill.
+        adapter.install(model)
+        try:
+            turbo_prefill = model(context_mx, cache=turbo_cache)
+        finally:
+            adapter.uninstall()
+        mx.eval(turbo_prefill)
+
+        # Fused decode in strict mode.
+        adapter.install(model)
+        try:
+            for forced_token in continuation_tokens:
+                token_mx = mx.array([[forced_token]])
+                turbo_logits = model(token_mx, cache=turbo_cache)
+                mx.eval(turbo_logits)
+                turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
+                self.assertFalse(
+                    np.isnan(turbo_last).any(),
+                    f"NaN in turbo logits at strict position"
+                )
+                self.assertFalse(
+                    np.isinf(turbo_last).any(),
+                    f"Inf in turbo logits at strict position"
+                )
+        finally:
+            adapter.uninstall()
+
+        # Verify strict path: zero fallback, compressed pages dispatched.
+        stats = [c.execution_stats() for c in turbo_cache]
+        total_online = sum(s.online_attention_calls for s in stats)
+        total_fallback = sum(s.fallback_calls for s in stats)
+        total_page_dispatches = sum(
+            getattr(s, "compressed_page_dispatches", 0) for s in stats
+        )
+        total_tail_dispatches = sum(
+            getattr(s, "dense_tail_dispatches", 0) for s in stats
+        )
+        total_dense_tail_calls = sum(
+            getattr(s, "dense_tail_calls", 0) for s in stats
+        )
+
+        num_decode_steps = len(continuation_tokens)
+        num_layers = len(model.layers)
+        # 2048 tokens with block_size=64 and 16 blocks/page = 2 full pages,
+        # 0 tail after prefill. Each decode appends 1 token to the tail,
+        # so every step dispatches 2 pages + 1 tail.
+        expected_pages_per_step = 2
+        expected_page_dispatches = expected_pages_per_step * num_layers * num_decode_steps
+        expected_tail_dispatches = num_layers * num_decode_steps
+        expected_online_calls = num_layers * num_decode_steps
+
+        self.assertEqual(
+            total_online, expected_online_calls,
+            f"Expected {expected_online_calls} online_attention_calls, got {total_online}"
+        )
+        self.assertEqual(
+            total_fallback, 0,
+            f"METAL_STRICT model adapter recorded {total_fallback} fallback(s)"
+        )
+        self.assertEqual(
+            total_page_dispatches, expected_page_dispatches,
+            f"Expected {expected_page_dispatches} page dispatches, got {total_page_dispatches}"
+        )
+        self.assertEqual(
+            total_tail_dispatches, expected_tail_dispatches,
+            f"Expected {expected_tail_dispatches} tail dispatches, got {total_tail_dispatches}"
+        )
+        self.assertEqual(
+            total_dense_tail_calls, expected_tail_dispatches,
+            f"Expected {expected_tail_dispatches} dense_tail_calls, got {total_dense_tail_calls}"
+        )
 
 
 if __name__ == "__main__":

@@ -112,6 +112,7 @@ class FusedDecodeReport:
     fallback_reasons: Optional[List[str]] = None
     fallback_calls: int = 0  # deprecated; kept for backward compat
     first_argmax_divergence_step: Optional[int] = None
+    actual_fused_positions: Optional[int] = None
     notes: List[str] = field(default_factory=list)
 
     @classmethod
@@ -139,6 +140,7 @@ class FusedDecodeReport:
             fallback_reasons=list(data.get("fallback_reasons") or []),
             fallback_calls=int(data.get("fallback_calls", 0)),
             first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
+            actual_fused_positions=data.get("actual_fused_positions"),
             notes=list(data.get("notes", [])),
         )
 

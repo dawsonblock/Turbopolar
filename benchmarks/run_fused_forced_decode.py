@@ -303,6 +303,7 @@ def benchmark_forced_decode_fixture(
 def _compute_aggregate(
     results: List[ForcedDecodeFixtureResult],
     execution_mode=None,
+    requested_fused_positions: int = 0,
 ) -> ForcedDecodeAggregate:
     # Exclude prefill (position == 0) from fused-decode aggregates.
     fused_steps = [s for r in results for s in r.steps if s.position > 0]
@@ -336,11 +337,23 @@ def _compute_aggregate(
         r.kernel_stats.get("dense_tail_dispatches", 0) for r in results
     )
 
-    fallback_reasons = []
+    # Separate numerical failures from actual fallback reasons.
+    numerical_failures = []
     for r in results:
         for step in r.steps:
             if step.any_nan_or_inf:
-                fallback_reasons.append(f"NaN/Inf at {r.fixture_id} pos {step.position}")
+                numerical_failures.append(f"NaN/Inf at {r.fixture_id} pos {step.position}")
+
+    # Track per-context fused position counts.
+    positions_per_context: Dict[int, int] = {}
+    actual_fused_positions = 0
+    failed_positions = 0
+    for r in results:
+        ctx_len = r.context_length
+        fused_count = sum(1 for s in r.steps if s.position > 0)
+        positions_per_context[ctx_len] = fused_count
+        actual_fused_positions += fused_count
+        failed_positions += sum(1 for s in r.steps if s.position > 0 and s.any_nan_or_inf)
 
     worst_cosine = min(all_cosines) if all_cosines else 0.0
     worst_idx = all_cosines.index(worst_cosine) if all_cosines else 0
@@ -404,10 +417,15 @@ def _compute_aggregate(
         compressed_page_fallback_calls=total_fallback,
         dense_tail_fallback_calls=0,
         full_attention_fallback_calls=total_fallback,
-        fallback_reasons=fallback_reasons,
+        fallback_reasons=[],
+        numerical_failure_reasons=numerical_failures,
         dense_perplexity=dense_ppl,
         candidate_perplexity=candidate_ppl,
         relative_perplexity_delta=rel_ppl_delta,
+        requested_fused_positions=requested_fused_positions,
+        actual_fused_positions=actual_fused_positions,
+        positions_per_context=positions_per_context,
+        failed_positions=failed_positions,
     )
 
     from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
@@ -442,8 +460,10 @@ def main():
     parser.add_argument(
         "--forced-decode-tokens",
         type=int,
-        default=128,
-        help="Number of forced continuation tokens per fixture (default 128)",
+        default=129,
+        help="Number of forced continuation tokens per fixture (default 129). "
+             "The first token is scored by prefill; the remainder are fused one-token decode steps. "
+             "With the default 129 tokens, 128 actual fused decode positions are produced.",
     )
     parser.add_argument(
         "--contexts",
@@ -549,11 +569,19 @@ def main():
             f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
-    aggregate = _compute_aggregate(results, execution_mode=execution_mode)
+    # One continuation token is scored by prefill; the remainder are fused decode.
+    requested_fused = max(0, args.forced_decode_tokens - 1)
+    aggregate = _compute_aggregate(
+        results,
+        execution_mode=execution_mode,
+        requested_fused_positions=requested_fused,
+    )
     print(f"\nAggregate mean cosine: {aggregate.mean_logit_cosine:.4f}")
     print(f"Aggregate min cosine:  {aggregate.min_logit_cosine:.4f}")
     print(f"Aggregate p05 cosine:  {aggregate.p05_logit_cosine:.4f}")
     print(f"Aggregate top1 agree:  {aggregate.mean_top1_agreement:.4f}")
+    print(f"Requested fused positions: {aggregate.requested_fused_positions}")
+    print(f"Actual fused positions: {aggregate.actual_fused_positions}")
     print(f"Kernel online_attention_calls: {aggregate.online_attention_calls}")
     print(f"Kernel fallback_calls: {aggregate.fallback_calls}")
 

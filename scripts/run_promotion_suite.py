@@ -209,7 +209,7 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "8192",
         "16384",
         "--forced-decode-tokens",
-        "128",
+        "129",
         "--execution-mode",
         "metal_strict",
         timeout=1200,
@@ -239,6 +239,7 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         fallback_reasons=agg.get("fallback_reasons"),
         fallback_calls=agg.get("fallback_calls", 0),
         first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
+        actual_fused_positions=agg.get("actual_fused_positions"),
     )
 
 
@@ -308,6 +309,7 @@ def _memory_report(output_dir: Path) -> MemoryReport:
         "2048",
         "4096",
         "8192",
+        "16384",
         "--output-dir",
         str(output_dir / "memory_matrix"),
         timeout=600,
