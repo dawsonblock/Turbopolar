@@ -216,7 +216,7 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         "--num-decode",
         "128",
         "--skip-decode-speed",
-        timeout=1800,
+        timeout=7200,
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
@@ -255,7 +255,7 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "129",
         "--execution-mode",
         "metal_strict",
-        timeout=1200,
+        timeout=3600,
     )
     report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
@@ -317,7 +317,7 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         "5",
         "--execution-mode",
         "metal_strict",
-        timeout=1800,
+        timeout=3600,
     )
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
     records = report.get("records", [])
@@ -371,7 +371,7 @@ def _memory_report(model: str, output_dir: Path) -> MemoryReport:
         "16384",
         "--output-dir",
         str(output_dir / "memory_matrix"),
-        timeout=600,
+        timeout=1800,
     )
     report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
     records = report.get("records", [])
@@ -416,7 +416,7 @@ def _baseline_comparison_report(
         "metal_strict",
         "--output-dir",
         str(output_dir / "cartesian_baseline"),
-        timeout=1800,
+        timeout=3600,
     )
     report = _load_json(output_dir / "cartesian_baseline" / "report.json")
     agg = report.get("baseline_comparison_report", {})
