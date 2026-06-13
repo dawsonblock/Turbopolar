@@ -7,6 +7,97 @@ inline half unpack_bit_online(device const uchar* packed_signs, uint offset, uin
     return (byte_val & bit_mask) ? 1.0h : -1.0h;
 }
 
+template <typename T1, typename T2>
+inline float _tqpolar_decode_radius(
+    T1 polar_radii,
+    T2 polar_radii_i8,
+    float radii_scale,
+    uint offset_r,
+    uint int8_radii,
+    uint log_radii
+)
+{
+    if (int8_radii == 0) {
+        return float(polar_radii[offset_r]);
+    } else {
+        auto code = polar_radii_i8[offset_r];
+        float value = float(code) * radii_scale;
+        return (log_radii != 0) ? exp(value) : value;
+    }
+}
+
+template <typename T1, typename T2>
+inline float _tqpolar_decode_angle(
+    T1 angle_codes_l1,
+    T2 angle_codes_deep,
+    uint j,
+    uint split_half_d,
+    uint offset_c1,
+    uint offset_cd,
+    uint l1_bits,
+    uint deep_bits,
+    half l1_scale,
+    half deep_scale
+)
+{
+    if (j < split_half_d) {
+        uchar code;
+        if (l1_bits == 8) {
+            code = angle_codes_l1[offset_c1 + j];
+        } else {
+            uchar byte = angle_codes_l1[offset_c1 + j / 2];
+            code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+        }
+        return float(static_cast<half>(code) / l1_scale);
+    } else {
+        uint rel_j = j - split_half_d;
+        uchar code;
+        if (deep_bits == 8) {
+            code = angle_codes_deep[offset_cd + rel_j];
+        } else if (deep_bits == 4) {
+            uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
+            code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+        } else {
+            uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
+            uint shift = (rel_j % 4) * 2;
+            code = (byte >> shift) & 0x03;
+        }
+        return float(static_cast<half>(code) / deep_scale);
+    }
+}
+
+template <typename T1, typename T2, typename T3>
+inline float _tqpolar_qjl_correction(
+    uint b, uint q_head, uint kv_head, uint s, uint l,
+    T1 qjl_packed_signs,
+    T2 qjl_norms,
+    T3 q_proj_signs,
+    uint qjl_proj_dim, uint qjl_bytes,
+    float q_norm, float attention_scale_val,
+    uint use_qjl, uint tid,
+    uint stride_qjl_b, uint stride_qjl_h, uint stride_qjl_s, uint stride_qjl_l,
+    uint stride_qn_b, uint stride_qn_h, uint stride_qn_s, uint stride_qn_l,
+    uint stride_qp_b, uint stride_qp_h
+)
+{
+    if (use_qjl == 0) {
+        return 0.0f;
+    }
+    uint local_hamming = 0;
+    for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
+        uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
+        uchar k_byte = qjl_packed_signs[offset_qjl];
+        uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
+        local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
+    }
+    uint total_hamming_dist = simd_sum(local_hamming);
+    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
+    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
+    float sign_corr = match_score / float(qjl_proj_dim);
+    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
+    return (norm_E * q_norm) * cos_est * attention_scale_val;
+}
+
 kernel void tqpolar_online_attention_dense_v(
     device const half* q                     [[buffer(0)]],
     device const half* polar_radii           [[buffer(1)]],
@@ -83,45 +174,14 @@ kernel void tqpolar_online_attention_dense_v(
                 }
                 continue;
             }
+            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r;
-                if (int8_radii == 0) {
-                    r = float(polar_radii[offset_r]);
-                } else {
-                    int8_t code = polar_radii_i8[offset_r];
-                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
-                    float value = float(code) * scale;
-                    r = (log_radii != 0) ? exp(value) : value;
-                }
-                float norm_angle;
-                if (j < split_half_d) {
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
-                    uchar code;
-                    if (l1_bits == 8) {
-                        code = angle_codes_l1[offset_c1 + j];
-                    } else {
-                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
-                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    }
-                    norm_angle = float(static_cast<half>(code) / l1_scale);
-                } else {
-                    uint rel_j = j - split_half_d;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
-                    uchar code;
-                    if (deep_bits == 8) {
-                        code = angle_codes_deep[offset_cd + rel_j];
-                    } else if (deep_bits == 4) {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
-                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    } else {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
-                        uint shift = (rel_j % 4) * 2;
-                        code = (byte >> shift) & 0x03;
-                    }
-                    norm_angle = float(static_cast<half>(code) / deep_scale);
-                }
+                uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
+                float norm_angle = _tqpolar_decode_angle(angle_codes_l1, angle_codes_deep, j, split_half_d, offset_c1, offset_cd, l1_bits, deep_bits, l1_scale, deep_scale);
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
                 float k_y = r * sin(angle);
@@ -129,28 +189,19 @@ kernel void tqpolar_online_attention_dense_v(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            uint local_hamming = 0;
-            if (use_qjl != 0) {
-                for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
-                    uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
-                    uchar k_byte = qjl_packed_signs[offset_qjl];
-                    uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
-                    local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
-                }
-            }
             float total_polar_score = simd_sum(private_sum);
-            uint total_hamming_dist = simd_sum(local_hamming);
+            float qjl_term = _tqpolar_qjl_correction(
+                b, q_head, kv_head, s, l,
+                qjl_packed_signs, qjl_norms, q_proj_signs,
+                qjl_proj_dim, qjl_bytes,
+                q_norm, float(attention_scale),
+                use_qjl, tid,
+                stride_qjl_b, stride_qjl_h, stride_qjl_s, stride_qjl_l,
+                stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
+                stride_qp_b, stride_qp_h
+            );
             if (tid == 0) {
-                if (use_qjl != 0) {
-                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
-                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float sign_corr = match_score / float(qjl_proj_dim);
-                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
-                    float qjl_correction = (norm_E * q_norm) * cos_est;
-                    shared_scores[l] = total_polar_score + qjl_correction * float(attention_scale);
-                } else {
-                    shared_scores[l] = total_polar_score;
-                }
+                shared_scores[l] = total_polar_score + qjl_term;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -273,45 +324,14 @@ kernel void tqpolar_online_attention_quant_v(
                 }
                 continue;
             }
+            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r;
-                if (int8_radii == 0) {
-                    r = float(polar_radii[offset_r]);
-                } else {
-                    int8_t code = polar_radii_i8[offset_r];
-                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
-                    float value = float(code) * scale;
-                    r = (log_radii != 0) ? exp(value) : value;
-                }
-                float norm_angle;
-                if (j < split_half_d) {
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
-                    uchar code;
-                    if (l1_bits == 8) {
-                        code = angle_codes_l1[offset_c1 + j];
-                    } else {
-                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
-                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    }
-                    norm_angle = float(static_cast<half>(code) / l1_scale);
-                } else {
-                    uint rel_j = j - split_half_d;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
-                    uchar code;
-                    if (deep_bits == 8) {
-                        code = angle_codes_deep[offset_cd + rel_j];
-                    } else if (deep_bits == 4) {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
-                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    } else {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
-                        uint shift = (rel_j % 4) * 2;
-                        code = (byte >> shift) & 0x03;
-                    }
-                    norm_angle = float(static_cast<half>(code) / deep_scale);
-                }
+                uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
+                float norm_angle = _tqpolar_decode_angle(angle_codes_l1, angle_codes_deep, j, split_half_d, offset_c1, offset_cd, l1_bits, deep_bits, l1_scale, deep_scale);
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
                 float k_y = r * sin(angle);
@@ -319,28 +339,19 @@ kernel void tqpolar_online_attention_quant_v(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            uint local_hamming = 0;
-            if (use_qjl != 0) {
-                for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
-                    uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
-                    uchar k_byte = qjl_packed_signs[offset_qjl];
-                    uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
-                    local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
-                }
-            }
             float total_polar_score = simd_sum(private_sum);
-            uint total_hamming_dist = simd_sum(local_hamming);
+            float qjl_term = _tqpolar_qjl_correction(
+                b, q_head, kv_head, s, l,
+                qjl_packed_signs, qjl_norms, q_proj_signs,
+                qjl_proj_dim, qjl_bytes,
+                q_norm, float(attention_scale),
+                use_qjl, tid,
+                stride_qjl_b, stride_qjl_h, stride_qjl_s, stride_qjl_l,
+                stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
+                stride_qp_b, stride_qp_h
+            );
             if (tid == 0) {
-                if (use_qjl != 0) {
-                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
-                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float sign_corr = match_score / float(qjl_proj_dim);
-                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
-                    float qjl_correction = (norm_E * q_norm) * cos_est;
-                    shared_scores[l] = total_polar_score + qjl_correction * float(attention_scale);
-                } else {
-                    shared_scores[l] = total_polar_score;
-                }
+                shared_scores[l] = total_polar_score + qjl_term;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -477,45 +488,14 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
                 }
                 continue;
             }
+            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r;
-                if (int8_radii == 0) {
-                    r = float(polar_radii[offset_r]);
-                } else {
-                    int8_t code = polar_radii_i8[offset_r];
-                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
-                    float value = float(code) * scale;
-                    r = (log_radii != 0) ? exp(value) : value;
-                }
-                float norm_angle;
-                if (j < split_half_d) {
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
-                    uchar code;
-                    if (l1_bits == 8) {
-                        code = angle_codes_l1[offset_c1 + j];
-                    } else {
-                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
-                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    }
-                    norm_angle = float(static_cast<half>(code) / l1_scale);
-                } else {
-                    uint rel_j = j - split_half_d;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
-                    uchar code;
-                    if (deep_bits == 8) {
-                        code = angle_codes_deep[offset_cd + rel_j];
-                    } else if (deep_bits == 4) {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
-                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    } else {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
-                        uint shift = (rel_j % 4) * 2;
-                        code = (byte >> shift) & 0x03;
-                    }
-                    norm_angle = float(static_cast<half>(code) / deep_scale);
-                }
+                uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
+                float norm_angle = _tqpolar_decode_angle(angle_codes_l1, angle_codes_deep, j, split_half_d, offset_c1, offset_cd, l1_bits, deep_bits, l1_scale, deep_scale);
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
                 float k_y = r * sin(angle);
@@ -523,28 +503,19 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            uint local_hamming = 0;
-            if (use_qjl != 0) {
-                for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
-                    uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
-                    uchar k_byte = qjl_packed_signs[offset_qjl];
-                    uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
-                    local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
-                }
-            }
             float total_polar_score = simd_sum(private_sum);
-            uint total_hamming_dist = simd_sum(local_hamming);
+            float qjl_term = _tqpolar_qjl_correction(
+                b, q_head, kv_head, s, l,
+                qjl_packed_signs, qjl_norms, q_proj_signs,
+                qjl_proj_dim, qjl_bytes,
+                q_norm, float(attention_scale),
+                use_qjl, tid,
+                stride_qjl_b, stride_qjl_h, stride_qjl_s, stride_qjl_l,
+                stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
+                stride_qp_b, stride_qp_h
+            );
             if (tid == 0) {
-                if (use_qjl != 0) {
-                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
-                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float sign_corr = match_score / float(qjl_proj_dim);
-                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
-                    float qjl_correction = (norm_E * q_norm) * cos_est;
-                    shared_scores[l] = total_polar_score + qjl_correction * float(attention_scale);
-                } else {
-                    shared_scores[l] = total_polar_score;
-                }
+                shared_scores[l] = total_polar_score + qjl_term;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -711,45 +682,14 @@ kernel void tqpolar_online_attention_quant_v_raw(
                 }
                 continue;
             }
+            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
-                float r;
-                if (int8_radii == 0) {
-                    r = float(polar_radii[offset_r]);
-                } else {
-                    int8_t code = polar_radii_i8[offset_r];
-                    float scale = float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
-                    float value = float(code) * scale;
-                    r = (log_radii != 0) ? exp(value) : value;
-                }
-                float norm_angle;
-                if (j < split_half_d) {
-                    uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
-                    uchar code;
-                    if (l1_bits == 8) {
-                        code = angle_codes_l1[offset_c1 + j];
-                    } else {
-                        uchar byte = angle_codes_l1[offset_c1 + j / 2];
-                        code = (j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    }
-                    norm_angle = float(static_cast<half>(code) / l1_scale);
-                } else {
-                    uint rel_j = j - split_half_d;
-                    uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
-                    uchar code;
-                    if (deep_bits == 8) {
-                        code = angle_codes_deep[offset_cd + rel_j];
-                    } else if (deep_bits == 4) {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 2];
-                        code = (rel_j % 2 == 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
-                    } else {
-                        uchar byte = angle_codes_deep[offset_cd + rel_j / 4];
-                        uint shift = (rel_j % 4) * 2;
-                        code = (byte >> shift) & 0x03;
-                    }
-                    norm_angle = float(static_cast<half>(code) / deep_scale);
-                }
+                uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
+                uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
+                float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
+                float norm_angle = _tqpolar_decode_angle(angle_codes_l1, angle_codes_deep, j, split_half_d, offset_c1, offset_cd, l1_bits, deep_bits, l1_scale, deep_scale);
                 float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
                 float k_x = r * cos(angle);
                 float k_y = r * sin(angle);
@@ -757,28 +697,19 @@ kernel void tqpolar_online_attention_quant_v_raw(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            uint local_hamming = 0;
-            if (use_qjl != 0) {
-                for (uint byte_idx = tid; byte_idx < qjl_bytes; byte_idx += 32) {
-                    uint offset_qjl = b * stride_qjl_b + kv_head * stride_qjl_h + s * stride_qjl_s + l * stride_qjl_l + byte_idx;
-                    uchar k_byte = qjl_packed_signs[offset_qjl];
-                    uchar q_byte = q_proj_signs[b * stride_qp_b + q_head * stride_qp_h + byte_idx];
-                    local_hamming += popcount(static_cast<uint>(k_byte ^ q_byte));
-                }
-            }
             float total_polar_score = simd_sum(private_sum);
-            uint total_hamming_dist = simd_sum(local_hamming);
+            float qjl_term = _tqpolar_qjl_correction(
+                b, q_head, kv_head, s, l,
+                qjl_packed_signs, qjl_norms, q_proj_signs,
+                qjl_proj_dim, qjl_bytes,
+                q_norm, float(attention_scale),
+                use_qjl, tid,
+                stride_qjl_b, stride_qjl_h, stride_qjl_s, stride_qjl_l,
+                stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
+                stride_qp_b, stride_qp_h
+            );
             if (tid == 0) {
-                if (use_qjl != 0) {
-                    float match_score = float(qjl_proj_dim) - 2.0f * float(total_hamming_dist);
-                    float norm_E = qjl_norms[b * stride_qn_b + kv_head * stride_qn_h + s * stride_qn_s + l * stride_qn_l];
-                    float sign_corr = match_score / float(qjl_proj_dim);
-                    float cos_est = sin((M_PI_F / 2.0f) * sign_corr);
-                    float qjl_correction = (norm_E * q_norm) * cos_est;
-                    shared_scores[l] = total_polar_score + qjl_correction * float(attention_scale);
-                } else {
-                    shared_scores[l] = total_polar_score;
-                }
+                shared_scores[l] = total_polar_score + qjl_term;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
