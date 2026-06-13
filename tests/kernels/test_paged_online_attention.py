@@ -42,6 +42,7 @@ def _dense_attention(q, k_hist, v_hist, scale):
     return mx.sum(weights[:, :, :, None] * v_rep, axis=-2)
 
 
+@pytest.mark.native_metal_required
 @pytest.mark.parametrize("num_tokens", [1, 63, 64, 65, 127, 128, 129, 1024, 2048])
 def test_paged_online_attention_matches_dense(num_tokens):
     """Paged online attention must match dense reference."""

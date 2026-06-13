@@ -6,6 +6,7 @@ is a test failure.
 """
 
 import mlx.core as mx
+import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
@@ -63,6 +64,7 @@ def _decode_dense_reference(cache, q, scale):
     return _dense_attention(q, k_dense, v_dense, scale)
 
 
+@pytest.mark.native_metal_required
 class TestMetalStrictPagedAttention:
     """Strict Metal paged attention must never fall back."""
 

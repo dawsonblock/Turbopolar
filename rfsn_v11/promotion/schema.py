@@ -59,38 +59,57 @@ class KernelReport:
 @dataclass
 class TeacherForcedReport:
     model: str = ""
+    evaluated_contexts: List[int] = field(default_factory=list)
+    total_positions: int = 0
     mean_logit_cosine: Optional[float] = None
     p05_logit_cosine: Optional[float] = None
     min_logit_cosine: Optional[float] = None
+    argmax_agreement: Optional[float] = None
     mean_top5_overlap: Optional[float] = None
     mean_top10_overlap: Optional[float] = None
-    argmax_agreement: Optional[float] = None
     mean_perplexity_delta: Optional[float] = None
-    max_perplexity_delta: Optional[float] = None
     any_nans_or_infs: bool = True
+    raw_metrics_path: str = ""
+    raw_metrics_hash: str = ""
     notes: List[str] = field(default_factory=list)
+    # Deprecated field kept for backward compatibility.
+    max_perplexity_delta: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TeacherForcedReport":
         return cls(
             model=data.get("model", ""),
+            evaluated_contexts=list(data.get("evaluated_contexts", [])),
+            total_positions=int(data.get("total_positions", 0)),
             mean_logit_cosine=data.get("mean_logit_cosine"),
             p05_logit_cosine=data.get("p05_logit_cosine"),
             min_logit_cosine=data.get("min_logit_cosine"),
+            argmax_agreement=data.get("argmax_agreement"),
             mean_top5_overlap=data.get("mean_top5_overlap"),
             mean_top10_overlap=data.get("mean_top10_overlap"),
-            argmax_agreement=data.get("argmax_agreement"),
             mean_perplexity_delta=data.get("mean_perplexity_delta"),
-            max_perplexity_delta=data.get("max_perplexity_delta"),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
+            raw_metrics_path=data.get("raw_metrics_path", ""),
+            raw_metrics_hash=data.get("raw_metrics_hash", ""),
             notes=list(data.get("notes", [])),
+            max_perplexity_delta=data.get("max_perplexity_delta"),
         )
 
 
 @dataclass
 class FusedDecodeReport:
     model: str = ""
+    # Per-context completeness (primary evidence).
     contexts_evaluated: List[int] = field(default_factory=list)
+    requested_fused_positions_per_context: int = 0
+    positions_per_context: Dict[int, int] = field(default_factory=dict)
+    failed_positions_per_context: Dict[int, int] = field(default_factory=dict)
+    compressed_page_dispatches_per_context: Dict[int, int] = field(default_factory=dict)
+    dense_tail_dispatches_per_context: Dict[int, int] = field(default_factory=dict)
+    fallback_calls_per_context: Dict[int, int] = field(default_factory=dict)
+    trace_artifact_path: str = ""
+    trace_artifact_hash: str = ""
+    # Quality summaries across all contexts.
     mean_logit_cosine: Optional[float] = None
     p05_logit_cosine: Optional[float] = None
     min_logit_cosine: Optional[float] = None
@@ -98,10 +117,10 @@ class FusedDecodeReport:
     mean_top10_overlap: Optional[float] = None
     argmax_agreement: Optional[float] = None
     mean_perplexity_delta: Optional[float] = None
-    max_perplexity_delta: Optional[float] = None
     any_nans_or_infs: bool = True
     # Strict Metal execution evidence. None means "not reported" (incomplete).
     execution_mode: Optional[str] = None
+    # Legacy global fields kept for backward compatibility.
     compressed_page_metal_calls: Optional[int] = None
     dense_tail_metal_calls: Optional[int] = None
     merge_metal_calls: Optional[int] = None
@@ -120,6 +139,20 @@ class FusedDecodeReport:
         return cls(
             model=data.get("model", ""),
             contexts_evaluated=list(data.get("contexts_evaluated", [])),
+            requested_fused_positions_per_context=int(
+                data.get("requested_fused_positions_per_context", 0)
+            ),
+            positions_per_context=dict(data.get("positions_per_context", {})),
+            failed_positions_per_context=dict(data.get("failed_positions_per_context", {})),
+            compressed_page_dispatches_per_context=dict(
+                data.get("compressed_page_dispatches_per_context", {})
+            ),
+            dense_tail_dispatches_per_context=dict(
+                data.get("dense_tail_dispatches_per_context", {})
+            ),
+            fallback_calls_per_context=dict(data.get("fallback_calls_per_context", {})),
+            trace_artifact_path=data.get("trace_artifact_path", ""),
+            trace_artifact_hash=data.get("trace_artifact_hash", ""),
             mean_logit_cosine=data.get("mean_logit_cosine"),
             p05_logit_cosine=data.get("p05_logit_cosine"),
             min_logit_cosine=data.get("min_logit_cosine"),
@@ -127,7 +160,6 @@ class FusedDecodeReport:
             mean_top10_overlap=data.get("mean_top10_overlap"),
             argmax_agreement=data.get("argmax_agreement"),
             mean_perplexity_delta=data.get("mean_perplexity_delta"),
-            max_perplexity_delta=data.get("max_perplexity_delta"),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
             execution_mode=data.get("execution_mode"),
             compressed_page_metal_calls=data.get("compressed_page_metal_calls"),

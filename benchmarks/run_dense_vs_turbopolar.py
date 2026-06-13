@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from benchmarks.turbopolar_mlxlm_cache import TurboPolarMLXLMCache
-from benchmarks.report_schema import BenchmarkReport, PromptResult
+from benchmarks.report_schema import BenchmarkReport, PositionMetrics, PromptResult
 from benchmarks.report_writer import write_json_report, write_markdown_report
 
 
@@ -116,6 +116,63 @@ def _logit_cosine(a: np.ndarray, b: np.ndarray) -> float:
     b_flat = b.flatten()
     denom = np.linalg.norm(a_flat) * np.linalg.norm(b_flat) + 1e-12
     return float(np.dot(a_flat, b_flat) / denom)
+
+
+def _position_logit_cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Per-position cosine between two logit arrays of shape (B, T, V)."""
+    if a.ndim == 2:
+        a = a[None, ...]
+        b = b[None, ...]
+    a_norm = np.linalg.norm(a, axis=-1, keepdims=True) + 1e-12
+    b_norm = np.linalg.norm(b, axis=-1, keepdims=True) + 1e-12
+    cos = np.sum(a * b, axis=-1) / (a_norm.squeeze(-1) * b_norm.squeeze(-1))
+    cos[np.isnan(cos)] = 0.0
+    return cos
+
+
+def _position_argmax_agreement(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Per-position argmax agreement (1.0 = match, 0.0 = mismatch)."""
+    if a.ndim == 2:
+        a = a[None, ...]
+        b = b[None, ...]
+    a_argmax = np.argmax(a, axis=-1)
+    b_argmax = np.argmax(b, axis=-1)
+    return (a_argmax == b_argmax).astype(np.float32)
+
+
+def _position_topk_overlap(a: np.ndarray, b: np.ndarray, k: int) -> np.ndarray:
+    """Per-position top-k overlap fraction."""
+    if a.ndim == 2:
+        a = a[None, ...]
+        b = b[None, ...]
+    B, T, V = a.shape
+    overlaps = np.zeros((B, T), dtype=np.float32)
+    for batch in range(B):
+        for t in range(T):
+            top_a = set(np.argsort(a[batch, t])[-k:].tolist())
+            top_b = set(np.argsort(b[batch, t])[-k:].tolist())
+            overlaps[batch, t] = len(top_a & top_b) / k if k > 0 else 0.0
+    return overlaps
+
+
+def _position_kl_divergence(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Per-position KL divergence."""
+    if p.ndim == 2:
+        p = p[None, ...]
+        q = q[None, ...]
+    p = _softmax(p, axis=-1)
+    q = _softmax(q, axis=-1)
+    eps = 1e-12
+    kl = np.sum(p * (np.log(p + eps) - np.log(q + eps)), axis=-1)
+    kl[np.isnan(kl)] = 0.0
+    return kl
+
+
+def _any_nans_or_infs(a: np.ndarray, b: np.ndarray) -> bool:
+    return bool(
+        np.isnan(a).any() or np.isnan(b).any()
+        or np.isinf(a).any() or np.isinf(b).any()
+    )
 
 
 def _argmax_agreement(a: np.ndarray, b: np.ndarray) -> float:
@@ -230,6 +287,30 @@ def benchmark_prompt(
     peak_dense = _peak_kv_bytes_dense(dense_cache)
     peak_turbo = _peak_kv_bytes_turbo(turbo_cache)
 
+    # Per-position metrics (Phase 8: position-level evidence).
+    pos_cosines = _position_logit_cosine(dense_logits, turbo_logits)
+    pos_argmax = _position_argmax_agreement(dense_logits, turbo_logits)
+    pos_top5 = _position_topk_overlap(dense_logits, turbo_logits, k=5)
+    pos_top10 = _position_topk_overlap(dense_logits, turbo_logits, k=10)
+    pos_kl = _position_kl_divergence(dense_logits, turbo_logits)
+    has_nan_inf = _any_nans_or_infs(dense_logits, turbo_logits)
+
+    position_metrics = []
+    B, T = pos_cosines.shape
+    for batch in range(B):
+        for t in range(T):
+            position_metrics.append(
+                PositionMetrics(
+                    position=t,
+                    logit_cosine=float(pos_cosines[batch, t]),
+                    argmax_agreement=float(pos_argmax[batch, t]),
+                    top5_overlap=float(pos_top5[batch, t]),
+                    top10_overlap=float(pos_top10[batch, t]),
+                    kl_divergence=float(pos_kl[batch, t]),
+                    any_nan_or_inf=has_nan_inf,
+                )
+            )
+
     return PromptResult(
         prompt=prompt_text,
         prompt_tokens=len(tokens),
@@ -246,6 +327,8 @@ def benchmark_prompt(
         compression_ratio=compression_ratio,
         peak_kv_bytes_turbo=peak_turbo,
         peak_kv_bytes_dense=peak_dense,
+        position_metrics=position_metrics,
+        any_nans_or_infs=has_nan_inf,
     )
 
 
@@ -349,6 +432,31 @@ def main():
         )
         gate_results = results
 
+    # Phase 8: aggregate from position-level metrics, not whole-prompt.
+    all_pos_cosines = []
+    all_pos_argmax = []
+    all_pos_top5 = []
+    all_pos_top10 = []
+    all_pos_kl = []
+    any_nans = False
+    worst_cosine = 1.0
+    worst_prompt = ""
+    worst_position = -1
+
+    for r in gate_results:
+        for pm in r.position_metrics:
+            all_pos_cosines.append(pm.logit_cosine)
+            all_pos_argmax.append(pm.argmax_agreement)
+            all_pos_top5.append(pm.top5_overlap)
+            all_pos_top10.append(pm.top10_overlap)
+            all_pos_kl.append(pm.kl_divergence)
+            if pm.any_nan_or_inf:
+                any_nans = True
+            if pm.logit_cosine < worst_cosine:
+                worst_cosine = pm.logit_cosine
+                worst_prompt = r.prompt
+                worst_position = pm.position
+
     cosines = [r.logit_cosine for r in gate_results]
     aggregate = {
         # Legacy keys (kept for backward compat)
@@ -357,14 +465,18 @@ def main():
         "top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])) if gate_results else 0.0,
         "kl_divergence": float(np.mean([r.kl_divergence for r in gate_results])) if gate_results else 0.0,
         "perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])) if gate_results else 0.0,
-        # Promotion-converter keys
-        "mean_logit_cosine": float(np.mean(cosines)) if cosines else 0.0,
-        "p05_logit_cosine": float(np.percentile(cosines, 5)) if cosines else 0.0,
-        "min_logit_cosine": float(np.min(cosines)) if cosines else 0.0,
-        "mean_top5_overlap": float(np.mean([r.top5_overlap for r in gate_results])) if gate_results else 0.0,
-        "mean_top10_overlap": float(np.mean([r.top10_overlap for r in gate_results])) if gate_results else 0.0,
-        "argmax_agreement": float(np.mean([r.argmax_agreement for r in gate_results])) if gate_results else 0.0,
+        # Phase 8: position-level promotion-converter keys
+        "mean_logit_cosine": float(np.mean(all_pos_cosines)) if all_pos_cosines else 0.0,
+        "p05_logit_cosine": float(np.percentile(all_pos_cosines, 5)) if all_pos_cosines else 0.0,
+        "min_logit_cosine": float(np.min(all_pos_cosines)) if all_pos_cosines else 0.0,
+        "mean_top5_overlap": float(np.mean(all_pos_top5)) if all_pos_top5 else 0.0,
+        "mean_top10_overlap": float(np.mean(all_pos_top10)) if all_pos_top10 else 0.0,
+        "argmax_agreement": float(np.mean(all_pos_argmax)) if all_pos_argmax else 0.0,
         "mean_perplexity_delta": float(np.mean([r.perplexity_delta for r in gate_results])) if gate_results else 0.0,
+        "any_nans_or_infs": any_nans,
+        "worst_prompt": worst_prompt,
+        "worst_position": worst_position,
+        "worst_cosine": worst_cosine,
         "compression_ratio": float(
             np.mean([r.compression_ratio for r in gate_results])
         ) if gate_results else 0.0,

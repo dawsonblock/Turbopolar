@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 import mlx.core as mx
 import numpy as np
@@ -20,12 +20,25 @@ from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer, QuantizedVBlock
 
 @dataclass
 class KernelExecutionStats:
+    """Process-level Metal kernel execution counters.
+
+    These counters are global to the process because MetalKernelBridge is a
+    singleton. Benchmark code must reset once, run, then read once.
+    """
+
+    attention_invocations: int = 0
+    compressed_page_dispatches: int = 0
+    compressed_page_failures: int = 0
+    compressed_page_fallbacks: int = 0
+    dense_tail_dispatches: int = 0
+    dense_tail_failures: int = 0
+    dense_tail_fallbacks: int = 0
+    full_attention_fallbacks: int = 0
+    # Deprecated legacy fields kept for backward compatibility.
     fused_qk_calls: int = 0
     online_attention_calls: int = 0
     dense_tail_calls: int = 0
     fallback_calls: int = 0
-    compressed_page_dispatches: int = 0
-    dense_tail_dispatches: int = 0
 
 
 def _probe_metal_dispatch() -> Tuple[bool, str]:
@@ -411,10 +424,16 @@ class MetalKernelBridge:
         self._stats = KernelExecutionStats()
 
     def reset_execution_stats(self):
+        """Reset all process-global counters to zero."""
         self._stats = KernelExecutionStats()
 
     def execution_stats(self) -> KernelExecutionStats:
-        return self._stats
+        """Return a snapshot copy of process-global counters.
+
+        Do not sum stats across multiple caches; all caches share one bridge.
+        Read once after an experiment completes.
+        """
+        return replace(self._stats)
 
     @staticmethod
     def _extract_kernel_parts(source: str, kernel_name: str) -> Tuple[str, str]:
@@ -697,6 +716,7 @@ class MetalKernelBridge:
                 q, pages, tail_k, tail_v, config, actual_seq_len
             )
         except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError, RuntimeError) as _exc:
+            self._stats.full_attention_fallbacks += 1
             self._stats.fallback_calls += 1
             out, trace = self._execute_paged_online_attention_reference(
                 q, pages, tail_k, tail_v, config, actual_seq_len
@@ -766,6 +786,7 @@ class MetalKernelBridge:
             state = self._online_softmax_combine(state, scores, tv)
             total_tokens += tail_k.shape[2]
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
+        self._stats.attention_invocations += 1
         trace = {
             "kernel_name": "paged_online_attention_reference",
             "execution_mode": "reference",
@@ -879,7 +900,9 @@ class MetalKernelBridge:
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)
+        mx.eval(output)
 
+        self._stats.attention_invocations += 1
         self._stats.online_attention_calls += 1
         if pages and tail_k is not None and tail_k.shape[2] > 0:
             self._stats.dense_tail_calls += 1
@@ -945,7 +968,9 @@ class MetalKernelBridge:
             grid=self._compute_grid(B, H_q, 1),
             threadgroup=(self._tg_x, 1, 1),
         )
-        return result[0], result[1], result[2]
+        weighted_sum, max_score, exp_sum = result[0], result[1], result[2]
+        mx.eval(weighted_sum, max_score, exp_sum)
+        return weighted_sum, max_score, exp_sum
 
     def _build_strides_dense_tail(
         self, q: mx.array, tail_k: mx.array, tail_v: mx.array
@@ -1318,6 +1343,7 @@ class MetalKernelBridge:
 
     def execute_fused_qk(self, q: mx.array, block: PolarKeyBlock, config) -> mx.array:
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.compressed_page_fallbacks += 1
             self._stats.fallback_calls += 1
             return self._cpu_fused_qk(q, block, config)
         B, H_q, S, L, _ = block.radii.shape
@@ -1379,6 +1405,7 @@ class MetalKernelBridge:
         config,
     ) -> mx.array:
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.compressed_page_fallbacks += 1
             self._stats.fallback_calls += 1
             return self._cpu_fused_qk_qjl(q, block, qjl_payload, q_proj_signs, config)
         B, H_q, S, L, _ = block.radii.shape
@@ -1497,6 +1524,7 @@ class MetalKernelBridge:
             use_qjl,
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.compressed_page_fallbacks += 1
             self._stats.fallback_calls += 1
             v_broadcast = mx.repeat(
                 v_dense.reshape(B, H_kv, S * L, config.head_dim),
@@ -1618,6 +1646,7 @@ class MetalKernelBridge:
             use_qjl,
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.compressed_page_fallbacks += 1
             self._stats.fallback_calls += 1
             v_dequant = GroupedVQuantizer(
                 group_size=quant_v.group_size
@@ -1749,6 +1778,7 @@ class MetalKernelBridge:
                 raise MetalExecutionRequiredError(
                     f"Raw compressed-page Metal kernel unavailable: {', '.join(reason)}"
                 )
+            self._stats.compressed_page_fallbacks += 1
             self._stats.fallback_calls += 1
             v_dequant = GroupedVQuantizer(
                 group_size=quant_v.group_size
@@ -1852,6 +1882,7 @@ class MetalKernelBridge:
         weighted_sum = result[0]
         max_score = result[1]
         exp_sum = result[2]
+        mx.eval(weighted_sum, max_score, exp_sum)
         trace = {
             "kernel_name": "tqpolar_online_attention_quant_v_raw",
             "metal_used": True,
@@ -1891,6 +1922,7 @@ class MetalKernelBridge:
             use_qjl,
         )
         if not self.threadgroup_supported or not self._metal_supports_block(block):
+            self._stats.dense_tail_fallbacks += 1
             self._stats.fallback_calls += 1
             return self._cpu_online_attention_dense_tail(
                 q,

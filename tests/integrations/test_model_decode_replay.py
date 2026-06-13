@@ -9,6 +9,7 @@ import unittest
 import mlx.core as mx
 import mlx_lm.models.llama as llama
 import numpy as np
+import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
@@ -25,6 +26,27 @@ class _FakeTokenizer:
 
 
 class TestModelDecodeReplay(unittest.TestCase):
+    @staticmethod
+    def _cosine_similarity(a, b):
+        dot = np.sum(a * b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    @staticmethod
+    def _argmax_agreement(a, b):
+        return float(np.argmax(a) == np.argmax(b))
+
+    @staticmethod
+    def _topk_overlap(a, b, k=5):
+        top_a = set(np.argsort(a)[-k:])
+        top_b = set(np.argsort(b)[-k:])
+        if len(top_a) == 0:
+            return 0.0
+        return len(top_a & top_b) / len(top_a)
+
     @staticmethod
     def _tiny_model():
         args = llama.ModelArgs(
@@ -43,6 +65,7 @@ class TestModelDecodeReplay(unittest.TestCase):
         )
         return llama.Model(args)
 
+    @pytest.mark.model_integration
     def test_fused_decode_replay_produces_finite_logits(self):
         model = self._tiny_model()
         tokenizer = _FakeTokenizer()
@@ -62,8 +85,8 @@ class TestModelDecodeReplay(unittest.TestCase):
         )
         adapter = TurboPolarLlamaAdapter(turbo_config)
         turbo_cache = make_turbo_caches(num_layers, 4, 2, 128, use_qjl=False)
-        for c in turbo_cache:
-            c.reset_execution_stats()
+        # Reset once via the bridge (singleton); do not sum per-cache stats.
+        turbo_cache[0].reset_execution_stats()
 
         context_mx = mx.array(context_tokens)[None, :]
 
@@ -106,10 +129,10 @@ class TestModelDecodeReplay(unittest.TestCase):
             adapter.uninstall()
 
         # Verify paged attention path was exercised.
-        total_online = sum(
-            c.execution_stats().online_attention_calls for c in turbo_cache
-        )
-        total_fallback = sum(c.execution_stats().fallback_calls for c in turbo_cache)
+        # Read singleton stats once from any cache; do not sum across caches.
+        stats = turbo_cache[0].execution_stats()
+        total_online = stats.online_attention_calls
+        total_fallback = stats.fallback_calls
         self.assertGreater(
             total_online, 0, "Decode did not exercise online_attention kernel"
         )
@@ -120,6 +143,7 @@ class TestModelDecodeReplay(unittest.TestCase):
         # At least 16 decode positions.
         self.assertGreaterEqual(len(continuation_tokens), 16)
 
+    @pytest.mark.model_integration
     def test_adapter_rejects_mask_not_none(self):
         model = self._tiny_model()
         turbo_config = TurboPolarConfig(
@@ -146,6 +170,7 @@ class TestModelDecodeReplay(unittest.TestCase):
         finally:
             adapter.uninstall()
 
+    @pytest.mark.native_metal_required
     def test_strict_model_adapter_with_compressed_pages(self):
         """METAL_STRICT through the real model adapter must not fallback at 2K context."""
         mx.random.seed(4200)
@@ -174,10 +199,14 @@ class TestModelDecodeReplay(unittest.TestCase):
             num_layers, 4, 2, 128, use_qjl=False,
             execution_mode=ExecutionMode.METAL_STRICT,
         )
-        for c in turbo_cache:
-            c.reset_execution_stats()
+        # Reset singleton stats once via any cache.
+        turbo_cache[0].reset_execution_stats()
 
         context_mx = mx.array(context_tokens)[None, :]
+
+        # Dense reference path for comparison.
+        dense_cache = [llama.KVCache() for _ in range(num_layers)]
+        _ = model(context_mx, cache=dense_cache)
 
         # Prefill.
         adapter.install(model)
@@ -187,13 +216,15 @@ class TestModelDecodeReplay(unittest.TestCase):
             adapter.uninstall()
         mx.eval(turbo_prefill)
 
-        # Fused decode in strict mode.
+        # Fused decode in strict mode with dense comparison.
         adapter.install(model)
         try:
-            for forced_token in continuation_tokens:
+            for i, forced_token in enumerate(continuation_tokens):
                 token_mx = mx.array([[forced_token]])
+                dense_logits = model(token_mx, cache=dense_cache)
                 turbo_logits = model(token_mx, cache=turbo_cache)
-                mx.eval(turbo_logits)
+                mx.eval(dense_logits, turbo_logits)
+                dense_last = np.array(dense_logits[:, -1, :].astype(mx.float32))
                 turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
                 self.assertFalse(
                     np.isnan(turbo_last).any(),
@@ -203,22 +234,28 @@ class TestModelDecodeReplay(unittest.TestCase):
                     np.isinf(turbo_last).any(),
                     f"Inf in turbo logits at strict position"
                 )
+                # Quality metrics per position.
+                cosine = self._cosine_similarity(dense_last[0], turbo_last[0])
+                self.assertGreater(
+                    cosine, 0.90,
+                    f"Logit cosine {cosine:.4f} at position {i} below threshold"
+                )
+                argmax_agree = self._argmax_agreement(dense_last[0], turbo_last[0])
+                self.assertEqual(
+                    argmax_agree, 1.0,
+                    f"Argmax disagreement at position {i}"
+                )
         finally:
             adapter.uninstall()
 
         # Verify strict path: zero fallback, compressed pages dispatched.
-        stats = [c.execution_stats() for c in turbo_cache]
-        total_online = sum(s.online_attention_calls for s in stats)
-        total_fallback = sum(s.fallback_calls for s in stats)
-        total_page_dispatches = sum(
-            getattr(s, "compressed_page_dispatches", 0) for s in stats
-        )
-        total_tail_dispatches = sum(
-            getattr(s, "dense_tail_dispatches", 0) for s in stats
-        )
-        total_dense_tail_calls = sum(
-            getattr(s, "dense_tail_calls", 0) for s in stats
-        )
+        # Read singleton stats once from the bridge via any cache.
+        stats = turbo_cache[0].execution_stats()
+        total_online = stats.online_attention_calls
+        total_fallback = stats.fallback_calls
+        total_page_dispatches = getattr(stats, "compressed_page_dispatches", 0)
+        total_tail_dispatches = getattr(stats, "dense_tail_dispatches", 0)
+        total_dense_tail_calls = getattr(stats, "dense_tail_calls", 0)
 
         num_decode_steps = len(continuation_tokens)
         num_layers = len(model.layers)
@@ -250,6 +287,20 @@ class TestModelDecodeReplay(unittest.TestCase):
             total_dense_tail_calls, expected_tail_dispatches,
             f"Expected {expected_tail_dispatches} dense_tail_calls, got {total_dense_tail_calls}"
         )
+
+        # Verify traces: each layer/step/page is unique.
+        traces = turbo_cache[0].execution_traces()
+        self.assertEqual(
+            len(traces), num_layers * num_decode_steps,
+            f"Expected {num_layers * num_decode_steps} traces, got {len(traces)}"
+        )
+        seen = set()
+        for t in traces:
+            key = (t.layer_index, t.decode_step)
+            self.assertNotIn(key, seen, f"Duplicate trace for layer={t.layer_index}, step={t.decode_step}")
+            seen.add(key)
+            self.assertEqual(t.fallback_count, 0, f"Fallback in trace for layer={t.layer_index}, step={t.decode_step}")
+            self.assertTrue(t.all_outputs_evaluated, f"Un-evaluated output in trace for layer={t.layer_index}, step={t.decode_step}")
 
 
 if __name__ == "__main__":

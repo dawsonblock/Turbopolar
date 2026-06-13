@@ -9,6 +9,19 @@ from typing import Any, Dict, List, Tuple
 
 
 @dataclass
+class PositionMetrics:
+    """Per-token-position quality metrics."""
+
+    position: int
+    logit_cosine: float
+    argmax_agreement: float
+    top5_overlap: float
+    top10_overlap: float
+    kl_divergence: float
+    any_nan_or_inf: bool
+
+
+@dataclass
 class PromptResult:
     prompt: str
     prompt_tokens: int
@@ -23,6 +36,8 @@ class PromptResult:
     compression_ratio: float
     peak_kv_bytes_turbo: int
     peak_kv_bytes_dense: int
+    position_metrics: List[PositionMetrics] = field(default_factory=list)
+    any_nans_or_infs: bool = False
 
 
 @dataclass

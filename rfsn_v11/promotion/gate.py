@@ -288,7 +288,7 @@ class PromotionGate:
                 "TurboPolar does not differentiate from Cartesian int8 on quality, memory, or speed."
             )
 
-        # Experiment completeness
+        # Experiment completeness: per-context fused decode evidence.
         fd = evidence.fused_decode_report
         contexts_set = (
             set(fd.contexts_evaluated) if fd and fd.contexts_evaluated else set()
@@ -297,7 +297,22 @@ class PromotionGate:
             reasons.append(
                 f"Fused decode contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {contexts_set}"
             )
-        # Required fused decode position count.
+
+        # Per-context completeness gates.
+        for context in self.REQUIRED_CONTEXTS:
+            if context not in fd.positions_per_context:
+                reasons.append(f"Missing fused decode positions for context {context}")
+            elif fd.positions_per_context.get(context, 0) < self.REQUIRED_FORCED_DECODE_TOKENS:
+                reasons.append(
+                    f"Context {context}: fused positions {fd.positions_per_context.get(context, 0)} "
+                    f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                )
+            if fd.failed_positions_per_context.get(context, 0) != 0:
+                reasons.append(f"Context {context}: has failed fused positions")
+            if fd.fallback_calls_per_context.get(context, 0) != 0:
+                reasons.append(f"Context {context}: has fallback calls")
+
+        # Legacy fallback check (global).
         if fd and fd.actual_fused_positions is not None:
             if fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS:
                 reasons.append(

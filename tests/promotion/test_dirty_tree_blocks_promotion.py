@@ -60,6 +60,10 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 full_attention_fallback_calls=0,
                 fallback_reasons=[],
                 actual_fused_positions=128,
+                requested_fused_positions_per_context=128,
+                positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,

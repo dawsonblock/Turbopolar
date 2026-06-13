@@ -2,13 +2,13 @@
 
 A compressed KV cache for Llama-style models on MLX / Apple Silicon.
 
-This is **research alpha software**. ~208 test functions are present. Native Apple Silicon results require attached benchmark artifacts. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. Do not use it in production.
+This is **research alpha software**. TurboPolar has a strict compressed-page and dense-tail Metal prototype with synthetic multi-page GQA coverage. Real-model long-context, speed, memory, and comparative-value evidence remains incomplete. Promotion remains locked. Do not use it in production.
 
 ## What it does
 
 - Compresses the key cache using polar quantization (magnitude + angle codes).
 - Stores values in grouped int8.
-- Implements custom Metal kernels for QK score and attention so the compressed cache can stay on the GPU.
+- Uses one compressed-page Metal dispatch per page, one dense-tail Metal dispatch, MLX online-state merging, and MLX finalization.
 - Targets Llama-style GQA models with `head_dim == 128` and `block_size == 64`.
 
 ## Supported configuration
@@ -49,7 +49,7 @@ Requires Python ≥3.10 and MLX ≥0.31.2. Real-model benchmarks also require `m
 make test
 ```
 
-~208 test functions are present. Three execution modes are supported: `REFERENCE` (CPU/Python reference), `METAL_STRICT` (Metal required, no fallback), and `DEVELOPMENT_AUTO` (try Metal, fall back to reference on failure). Promotion benchmarks use `METAL_STRICT`.
+Three execution modes are supported: `REFERENCE` (CPU/Python reference), `METAL_STRICT` (Metal required, no fallback), and `DEVELOPMENT_AUTO` (try Metal, fall back to reference on failure). Promotion benchmarks use `METAL_STRICT`. Test count is generated from the test report; do not hardcode it.
 
 ## Run the real-model benchmarks
 
@@ -62,7 +62,7 @@ make cartesian-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 make promote MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
 ```
 
-These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. Fused autoregressive model-quality validation is incomplete. Promotion remains locked. See `benchmarks/README.md` for details.
+These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. Real-model long-context evidence remains incomplete. Promotion remains locked. See `benchmarks/README.md` for details.
 
 ## Quick example
 

@@ -103,6 +103,53 @@ def _device_side_next_token(logits: mx.array) -> mx.array:
     return mx.argmax(logits[:, -1, :], axis=-1)
 
 
+def _measure_decode_loop_forced(
+    model,
+    cache: List[Any],
+    tokens: List[int],
+    forced_continuation: List[int],
+    adapter: Any = None,
+) -> Dict[str, Any]:
+    """Prefill and forced-decode, returning detailed timing and dispatch stats.
+
+    Uses predetermined continuation tokens so dense and TurboPolar follow
+    the same history. Does NOT warm up the measured cache.
+    """
+    prompt_mx = mx.array(tokens)[None, :]
+    prefill_out = model(prompt_mx, cache=cache)
+    mx.eval(prefill_out)
+
+    per_token_ms = []
+    start = time.perf_counter()
+    for forced_token in forced_continuation:
+        token_mx = mx.array([[forced_token]])
+        t0 = time.perf_counter()
+        logits = model(token_mx, cache=cache)
+        mx.eval(logits)
+        per_token_ms.append((time.perf_counter() - t0) * 1000)
+    elapsed = time.perf_counter() - start
+
+    num_decode = len(forced_continuation)
+    stats = {}
+    if adapter is not None and hasattr(cache[0], 'execution_stats'):
+        bridge_stats = cache[0].execution_stats()
+        stats = {
+            "page_dispatches": getattr(bridge_stats, 'compressed_page_dispatches', 0),
+            "tail_dispatches": getattr(bridge_stats, 'dense_tail_dispatches', 0),
+            "fallbacks": getattr(bridge_stats, 'fallback_calls', 0),
+        }
+
+    return {
+        "prefill_seconds": 0.0,
+        "first_token_ms": per_token_ms[0] if per_token_ms else 0.0,
+        "per_token_ms": per_token_ms,
+        "throughput_tps": num_decode / elapsed if elapsed > 0 else 0.0,
+        "page_dispatches": stats.get("page_dispatches", 0),
+        "tail_dispatches": stats.get("tail_dispatches", 0),
+        "fallbacks": stats.get("fallbacks", 0),
+    }
+
+
 def _measure_decode_loop(
     model,
     cache: List[Any],
@@ -110,7 +157,11 @@ def _measure_decode_loop(
     num_decode: int,
     warm_up: int = 2,
 ) -> float:
-    """Prefill and decode, returning tok/s."""
+    """Prefill and decode, returning tok/s.
+
+    Deprecated: kept for backward compatibility. New code should use
+    _measure_decode_loop_forced with predetermined tokens.
+    """
     prompt_mx = mx.array(tokens)[None, :]
     prefill_out = model(prompt_mx, cache=cache)
     mx.eval(prefill_out)
@@ -132,6 +183,78 @@ def _measure_decode_loop(
     return num_decode / elapsed if elapsed > 0 else 0.0
 
 
+def benchmark_length_forced(
+    model,
+    tokens: List[int],
+    forced_continuation: List[int],
+    num_q_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    adapter: TurboPolarLlamaAdapter,
+    turbo_first: bool,
+    execution_mode=None,
+) -> Dict[str, Any]:
+    """Return detailed speed results for one prefill length using forced tokens.
+
+    Protocol:
+    1. Construct disposable cache, prefill, run warm-up decode, destroy.
+    2. Construct fresh measured cache, prefill, measure forced decode.
+    3. Record per-trial raw results with dispatch counts.
+
+    The ``turbo_first`` flag alternates which path is measured first.
+    """
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
+    num_layers = (
+        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+    )
+
+    methods = [
+        ("dense", lambda: _make_dense_cache(num_layers)),
+        (
+            "turbo",
+            lambda: make_turbo_caches(
+                num_layers, num_q_heads, num_kv_heads, head_dim,
+                execution_mode=execution_mode,
+            ),
+        ),
+    ]
+    if turbo_first:
+        methods = list(reversed(methods))
+
+    results: Dict[str, Any] = {}
+    for name, make_cache in methods:
+        # Step 1: disposable warm-up cache.
+        warm_cache = make_cache()
+        if name == "turbo":
+            adapter.install(model)
+            try:
+                _measure_decode_loop(model, warm_cache, tokens, num_decode=len(forced_continuation))
+            finally:
+                adapter.uninstall()
+        else:
+            _measure_decode_loop(model, warm_cache, tokens, num_decode=len(forced_continuation))
+        del warm_cache
+
+        # Step 2: fresh measured cache.
+        cache = make_cache()
+        if name == "turbo":
+            adapter.install(model)
+            try:
+                result = _measure_decode_loop_forced(
+                    model, cache, tokens, forced_continuation, adapter=adapter
+                )
+            finally:
+                adapter.uninstall()
+        else:
+            result = _measure_decode_loop_forced(
+                model, cache, tokens, forced_continuation, adapter=None
+            )
+        results[name] = result
+
+    return results
+
+
 def benchmark_length(
     model,
     tokens: List[int],
@@ -146,6 +269,8 @@ def benchmark_length(
     """Return (dense_tok_per_sec, turbo_tok_per_sec) for one prefill length.
 
     The ``turbo_first`` flag alternates which path is measured first.
+
+    Deprecated: kept for backward compatibility.
     """
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
@@ -241,17 +366,21 @@ def main():
         # Cycle through the fixture tokens to reach the required length.
         base_tokens = [base_tokens[i % len(base_tokens)] for i in range(max_length)]
 
+    # Predetermined forced continuation tokens (same for dense and turbo).
+    forced_continuation = base_tokens[:args.num_decode]
+
     records = []
+    trial_records = []
     print(f"Benchmarking lengths: {args.lengths}")
     for length in sorted(args.lengths):
         tokens = base_tokens[:length]
         dense_rates = []
         turbo_rates = []
         for trial in range(args.trials):
-            dense_tok_s, turbo_tok_s = benchmark_length(
+            result = benchmark_length_forced(
                 model,
                 tokens,
-                args.num_decode,
+                forced_continuation,
                 num_q_heads,
                 num_kv_heads,
                 head_dim,
@@ -259,22 +388,68 @@ def main():
                 turbo_first=(trial % 2 == 1),
                 execution_mode=args.execution_mode,
             )
-            dense_rates.append(dense_tok_s)
-            turbo_rates.append(turbo_tok_s)
+            dense_result = result["dense"]
+            turbo_result = result["turbo"]
+
+            # Strict validation: discard if fallback > 0.
+            if args.execution_mode == "metal_strict":
+                if turbo_result.get("fallbacks", 0) > 0:
+                    print(
+                        f"  length={length} trial={trial + 1}/{args.trials} "
+                        f"DISCARDED: {turbo_result['fallbacks']} fallback(s)"
+                    )
+                    continue
+
+            dense_rates.append(dense_result["throughput_tps"])
+            turbo_rates.append(turbo_result["throughput_tps"])
+
+            trial_records.append({
+                "context_length": length,
+                "mode": "dense",
+                "trial": trial + 1,
+                "prefill_seconds": dense_result["prefill_seconds"],
+                "first_token_ms": dense_result["first_token_ms"],
+                "per_token_ms": dense_result["per_token_ms"],
+                "throughput_tps": dense_result["throughput_tps"],
+                "page_dispatches": dense_result.get("page_dispatches", 0),
+                "tail_dispatches": dense_result.get("tail_dispatches", 0),
+                "fallbacks": dense_result.get("fallbacks", 0),
+            })
+            trial_records.append({
+                "context_length": length,
+                "mode": "turbo",
+                "trial": trial + 1,
+                "prefill_seconds": turbo_result["prefill_seconds"],
+                "first_token_ms": turbo_result["first_token_ms"],
+                "per_token_ms": turbo_result["per_token_ms"],
+                "throughput_tps": turbo_result["throughput_tps"],
+                "page_dispatches": turbo_result.get("page_dispatches", 0),
+                "tail_dispatches": turbo_result.get("tail_dispatches", 0),
+                "fallbacks": turbo_result.get("fallbacks", 0),
+            })
+
             print(
                 f"  length={length} trial={trial + 1}/{args.trials} "
-                f"dense={dense_tok_s:.2f} tok/s turbo={turbo_tok_s:.2f} tok/s"
+                f"dense={dense_result['throughput_tps']:.2f} tok/s "
+                f"turbo={turbo_result['throughput_tps']:.2f} tok/s"
+            )
+
+        if len(dense_rates) < 5:
+            print(
+                f"WARNING: length={length} has only {len(dense_rates)} valid trials; "
+                f"required minimum is 5."
             )
 
         record = {
             "length": length,
-            "dense_mean_tok_per_sec": float(np.mean(dense_rates)),
-            "dense_std_tok_per_sec": float(np.std(dense_rates)),
-            "turbo_mean_tok_per_sec": float(np.mean(turbo_rates)),
-            "turbo_std_tok_per_sec": float(np.std(turbo_rates)),
+            "valid_trials": len(dense_rates),
+            "dense_mean_tok_per_sec": float(np.mean(dense_rates)) if dense_rates else 0.0,
+            "dense_std_tok_per_sec": float(np.std(dense_rates)) if dense_rates else 0.0,
+            "turbo_mean_tok_per_sec": float(np.mean(turbo_rates)) if turbo_rates else 0.0,
+            "turbo_std_tok_per_sec": float(np.std(turbo_rates)) if turbo_rates else 0.0,
             "speedup": (
                 float(np.mean(turbo_rates) / np.mean(dense_rates))
-                if np.mean(dense_rates) > 0
+                if dense_rates and np.mean(dense_rates) > 0
                 else None
             ),
         }
@@ -296,9 +471,11 @@ def main():
         "mlx_lm_version": mlx_lm.__version__,
         "dtype": _first_param_dtype(model.parameters()),
         "seed": args.seed,
+        "execution_mode": args.execution_mode,
         "num_decode": args.num_decode,
         "trials": args.trials,
         "records": records,
+        "trial_results": trial_records,
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)

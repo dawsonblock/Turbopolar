@@ -7,6 +7,7 @@ and assert that:
 """
 
 import mlx.core as mx
+import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
@@ -66,6 +67,7 @@ def _dense_attention(q, k_hist, v_hist, scale):
     return mx.sum(weights[:, :, :, None] * v_rep, axis=-2).astype(mx.float16)
 
 
+@pytest.mark.native_metal_required
 class TestFallbackInjection:
     """Inject kernel unavailability and verify fallback behavior."""
 

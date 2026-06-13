@@ -65,3 +65,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "reference: CPU/Python reference tests only",
+    "native_metal_required: Requires Apple Silicon Metal runtime",
+    "cpu_metal_equivalence: CPU vs Metal numerical agreement tests",
+    "model_integration: End-to-end model integration tests",
+    "packaging: Wheel and packaging tests",
+]

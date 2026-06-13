@@ -11,6 +11,7 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 
 
+@pytest.mark.packaging
 class TestInstalledWheel:
     def test_import_rfsn_v11(self):
         import rfsn_v11

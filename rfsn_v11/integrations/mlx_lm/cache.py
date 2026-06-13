@@ -10,6 +10,11 @@ from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.integrations.mlx_lm.telemetry import KernelExecutionStats
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
+from rfsn_v11.evidence.execution_trace import (
+    ExecutionTraceCollector,
+    AttentionStepTrace,
+    KernelOperationTrace,
+)
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder
 from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
@@ -28,6 +33,7 @@ class TurboPolarFastCache:
         self.qjl_encoder: Optional[QJLResidualEncoder] = (
             self.runtime.qjl_encoder if config.use_qjl else None
         )
+        self._trace_collector = ExecutionTraceCollector()
 
     @property
     def offset(self) -> int:
@@ -35,12 +41,30 @@ class TurboPolarFastCache:
         return self.runtime.actual_seq_len
 
     def reset_execution_stats(self):
-        """Reset Metal kernel execution counters."""
+        """Reset process-global Metal kernel execution counters.
+
+        Because MetalKernelBridge is a singleton, this resets counters for
+        all caches in the process. Call once before an experiment.
+        """
         self.bridge.reset_execution_stats()
+        self._trace_collector.clear()
 
     def execution_stats(self) -> KernelExecutionStats:
-        """Return Metal kernel execution counters."""
+        """Return process-global Metal kernel execution counters.
+
+        These totals are identical for every cache in the process because
+        all caches share one MetalKernelBridge singleton. Do not sum stats
+        across multiple caches; read once from any cache or the bridge.
+        """
         return self.bridge.execution_stats()
+
+    def execution_traces(self) -> List[AttentionStepTrace]:
+        """Return collected operation-level execution traces."""
+        return self._trace_collector.snapshot()
+
+    def clear_execution_traces(self) -> None:
+        """Clear collected traces."""
+        self._trace_collector.clear()
 
     def _compute_qjl_signs(self, q: mx.array) -> mx.array:
         """Pack query projection signs to match the kernel's bit-packed layout.
@@ -132,6 +156,10 @@ class TurboPolarFastCache:
         v_new: mx.array,
         scale: float,
         mask: Optional[mx.array] = None,
+        *,
+        layer_index: Optional[int] = None,
+        decode_step: Optional[int] = None,
+        experiment_id: str = "",
     ) -> mx.array:
         """Decode path: append one token and run fused Metal attention.
 
@@ -141,6 +169,9 @@ class TurboPolarFastCache:
             v_new: [B, H_kv, 1, D] already RoPE'd value token.
             scale: attention scale (typically 1/sqrt(head_dim)).
             mask: must be None in the supported configuration.
+            layer_index: layer index for trace collection (optional).
+            decode_step: decode step for trace collection (optional).
+            experiment_id: experiment identifier for trace collection.
 
         Returns:
             [B, H_q, D] attention output.
@@ -176,12 +207,117 @@ class TurboPolarFastCache:
             view.total_tokens,
             mode=cfg.execution_mode,
         )
+
+        # For strict evidence, evaluate output before recording success.
+        output_evaluated = False
+        if cfg.execution_mode is ExecutionMode.METAL_STRICT:
+            try:
+                mx.eval(output)
+                output_evaluated = True
+            except Exception as _exc:
+                from rfsn_v11.kernels.turbo_polar.execution import MetalKernelDispatchError
+                raise MetalKernelDispatchError(
+                    f"Strict mode output evaluation failed: {_exc}"
+                ) from _exc
+
+        # Build and store operation-level trace if identity is provided.
+        if layer_index is not None and decode_step is not None:
+            self._record_attention_trace(
+                trace=trace,
+                view=view,
+                layer_index=layer_index,
+                decode_step=decode_step,
+                experiment_id=experiment_id,
+                execution_mode=cfg.execution_mode.value,
+                output_evaluated=output_evaluated,
+            )
+
         if trace.get("fallback_used") and cfg.execution_mode is ExecutionMode.METAL_STRICT:
             from rfsn_v11.kernels.turbo_polar.execution import MetalExecutionRequiredError
             raise MetalExecutionRequiredError(
                 f"Strict mode encountered fallback: {trace.get('fallback_reason', 'unknown')}"
             )
         return output
+
+    def _record_attention_trace(
+        self,
+        trace: dict,
+        view,
+        layer_index: int,
+        decode_step: int,
+        experiment_id: str,
+        execution_mode: str,
+        output_evaluated: bool = False,
+    ) -> None:
+        """Record an AttentionStepTrace from the bridge execution trace."""
+        page_traces = trace.get("page_traces", [])
+        expected_page_count = len(view.pages)
+
+        operations: list[KernelOperationTrace] = []
+        for page_idx, pt in enumerate(page_traces):
+            operations.append(
+                KernelOperationTrace(
+                    experiment_id=experiment_id,
+                    decode_step=decode_step,
+                    layer_index=layer_index,
+                    operation="compressed_page",
+                    page_index=page_idx,
+                    kernel_name=pt.get("kernel_name", "unknown"),
+                    execution_mode=execution_mode,
+                    metal_requested=True,
+                    metal_executed=pt.get("metal_used", False),
+                    fallback_used=pt.get("fallback_used", False),
+                    fallback_reason=pt.get("fallback_reason"),
+                    expected_tokens=pt.get("actual_seq_len", 0),
+                    processed_tokens=pt.get("actual_seq_len", 0),
+                    output_evaluated=output_evaluated,
+                )
+            )
+
+        dense_tail_metal = trace.get("dense_tail_metal", False)
+        tail_op = None
+        if view.partial_k is not None and view.partial_k.shape[2] > 0:
+            tail_op = KernelOperationTrace(
+                experiment_id=experiment_id,
+                decode_step=decode_step,
+                layer_index=layer_index,
+                operation="dense_tail",
+                page_index=None,
+                kernel_name="dense_tail_raw"
+                if dense_tail_metal
+                else "dense_tail_reference",
+                execution_mode=execution_mode,
+                metal_requested=True,
+                metal_executed=dense_tail_metal,
+                fallback_used=not dense_tail_metal and trace.get("fallback_used", False),
+                fallback_reason=trace.get("fallback_reason") if not dense_tail_metal else None,
+                expected_tokens=view.partial_k.shape[2],
+                processed_tokens=view.partial_k.shape[2],
+                output_evaluated=output_evaluated,
+            )
+
+        step_trace = AttentionStepTrace(
+            experiment_id=experiment_id,
+            decode_step=decode_step,
+            layer_index=layer_index,
+            expected_page_count=expected_page_count,
+            page_operations=operations,
+            dense_tail_operation=tail_op,
+        )
+        self._trace_collector.record(step_trace)
+
+        # Strict validation: exact page count, all Metal, zero fallback, outputs evaluated.
+        if execution_mode == "metal_strict":
+            if len(operations) != expected_page_count:
+                raise MetalExecutionRequiredError(
+                    f"Missing page dispatch: expected {expected_page_count}, got {len(operations)}"
+                )
+            if any(not op.metal_executed for op in operations):
+                raise MetalExecutionRequiredError("Non-Metal compressed page detected")
+            if step_trace.fallback_count != 0:
+                raise MetalExecutionRequiredError("Fallback occurred in strict mode")
+            if not step_trace.all_outputs_evaluated:
+                raise MetalExecutionRequiredError("Un-evaluated output in strict mode")
 
     def make_mask(
         self, N: int, return_array: bool = False, window_size: Optional[int] = None

@@ -8,12 +8,15 @@
 
 **Promotion state:** Maximum state is capped at `REVIEW_REQUIRED`. `PROMOTED_EXPERIMENTAL` is **locked** until the full evidence suite has been independently validated on native Apple Silicon.
 
-TurboPolar remains an end-to-end research alpha. Explicit `METAL_STRICT` and
-`DEVELOPMENT_AUTO` execution modes are now defined, the model runtime passes the
-mode into every attention call, and the forced-decode benchmark can run in
-strict mode. The promotion pipeline expects strict Metal evidence fields.
-However, native Apple Silicon benchmark artifacts are still required to prove
-the quantitative thresholds in `rfsn_v11/promotion/gate.py`.
+TurboPolar remains an end-to-end research alpha. It has a strict compressed-page
+and dense-tail Metal prototype with synthetic multi-page GQA coverage. Explicit
+`METAL_STRICT` and `DEVELOPMENT_AUTO` execution modes are defined, the model
+runtime passes the mode into every attention call, and the forced-decode
+benchmark can run in strict mode. The promotion pipeline expects strict Metal
+evidence fields. However, real-model long-context, speed, memory, and
+comparative-value evidence remains incomplete. Native Apple Silicon benchmark
+artifacts are still required to prove the quantitative thresholds in
+`rfsn_v11/promotion/gate.py`.
 Promotion is blocked until reproducible artifacts independently prove:
 
 1. **Correctness:** fused compressed attention produces acceptably close logits to dense attention during actual autoregressive decode.
@@ -26,7 +29,7 @@ No promotion claim may be made by any component other than the single promotion 
 
 - **Metal kernels on M2:** custom QK and attention kernels compile and run natively on Apple Silicon under MLX 0.31.2.
 - **MLX dispatch is correct:** we probe and adapt to the `grid == total_threads` semantics in this MLX version.
-- **Unit tests present:** 50 core tests pass (unit + packaging). Integration tests requiring mlx-lm model loading are present but not executed in this environment.
+- **Unit tests present:** core unit and packaging tests pass. Integration tests requiring mlx-lm model loading are present but not executed in this environment.
 - **Decompress-on-read path:** satisfies historical promotion-style gates on Llama-3.2-1B at 512-token context, but this path is not sufficient for `PROMOTED_EXPERIMENTAL`.
 - **Fused attention path:** partial-tail re-encoding is eliminated: completed blocks stay compressed in persistent storage and the dense partial tail is attended via a separate dense-tail Metal kernel. Page-state merging and finalization currently use ordinary MLX operations. Native Apple Silicon results require attached benchmark artifacts.
 - **Instance-level Llama adapter:** `TurboPolarLlamaAdapter` installs per-model, rolls back on failure, and prevents double install. Parameter-tree and state-dict preservation remain under validation.

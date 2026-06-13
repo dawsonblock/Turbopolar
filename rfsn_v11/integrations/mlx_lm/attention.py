@@ -57,7 +57,9 @@ class TurboPolarLlamaAttention(nn.Module):
             keys = attn.rope(keys, offset=cache.offset)
 
             output = cache.decode_attention(
-                queries, keys, values, attn.scale, mask=mask
+                queries, keys, values, attn.scale, mask=mask,
+                layer_index=self.layer_index,
+                decode_step=cache.offset,
             )
             # output: [B, H_q, D] -> [B, L, H_q * D]
             output = output[:, None, :, :].transpose(0, 2, 1, 3).reshape(B, L, -1)
