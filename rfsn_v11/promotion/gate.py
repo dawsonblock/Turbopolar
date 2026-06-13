@@ -143,6 +143,12 @@ class PromotionGate:
         if tf.any_nans_or_infs:
             reasons.append("Teacher-forced run contained NaNs or infinities.")
 
+        # Teacher-forced evidence integrity: raw metrics must be preserved.
+        if not tf.raw_metrics_path:
+            reasons.append("Teacher-forced raw_metrics_path missing; raw data must be preserved.")
+        if not tf.raw_metrics_hash:
+            reasons.append("Teacher-forced raw_metrics_hash missing; tamper evidence required.")
+
         # Fused decode quality
         fd = evidence.fused_decode_report
         if fd.mean_logit_cosine is None or fd.mean_logit_cosine < self.MEAN_COSINE:
@@ -226,6 +232,12 @@ class PromotionGate:
             reasons.append("Fused decode fallback_reasons missing.")
         elif fd.fallback_reasons:
             reasons.append(f"Fused decode had fallback reasons: {fd.fallback_reasons}")
+
+        # Fused decode evidence integrity: trace artifacts must be preserved.
+        if not fd.trace_artifact_path:
+            reasons.append("Fused decode trace_artifact_path missing; trace data must be preserved.")
+        if not fd.trace_artifact_hash:
+            reasons.append("Fused decode trace_artifact_hash missing; tamper evidence required.")
 
         # Speed
         sr = evidence.speed_report
@@ -354,8 +366,16 @@ class PromotionGate:
             )
         if not pv.model_repo_id or not pv.model_revision:
             reasons.append("Model provenance incomplete.")
+        if not pv.tokenizer_revision:
+            reasons.append("Tokenizer revision missing.")
         if not pv.turbopolar_config_hash:
             reasons.append("TurboPolar config hash missing.")
+        if not pv.run_id:
+            reasons.append("Provenance run_id missing; experiment identity required.")
+        if not pv.timestamp_utc:
+            reasons.append("Provenance timestamp_utc missing; temporal anchoring required.")
+        if not pv.metal_kernel_source_hash:
+            reasons.append("Metal kernel source hash missing; shader integrity unverified.")
 
         if reasons:
             return PromotionDecision(

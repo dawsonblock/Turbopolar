@@ -39,6 +39,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 argmax_agreement=0.98,
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
+                raw_metrics_path="/tmp/teacher_forced_metrics.json",
+                raw_metrics_hash="sha256:abc123",
             ),
             fused_decode_report=FusedDecodeReport(
                 mean_logit_cosine=0.999,
@@ -64,6 +66,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                trace_artifact_path="/tmp/fused_decode_traces.jsonl",
+                trace_artifact_hash="sha256:def456",
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,
@@ -88,7 +92,11 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 git_diff_hash="abcd1234" if dirty else "",
                 model_repo_id="test/model",
                 model_revision="abc123",
+                tokenizer_revision="tok456",
                 turbopolar_config_hash="def456",
+                run_id="test-run-001",
+                timestamp_utc="2026-06-13T00:00:00Z",
+                metal_kernel_source_hash="sha256:kernel789",
             ),
         )
 

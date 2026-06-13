@@ -61,15 +61,15 @@ class TestExecutionTraceCollection:
         assert t.fallback_count == 0
 
     def test_two_pages_trace(self):
-        """128 tokens = 2 pages."""
+        """1088 tokens = 17 blocks of 64 = 2 pages (16 blocks per page)."""
         mx.random.seed(7001)
         config = _make_config()
         cache = TurboPolarFastCache(config)
         cache.reset_execution_stats()
         cache.clear_execution_traces()
 
-        k = mx.random.normal((1, 4, 128, 128)).astype(mx.float16)
-        v = mx.random.normal((1, 4, 128, 128)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 1088, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 1088, 128)).astype(mx.float16)
         cache.runtime.append(k, v)
 
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
@@ -154,7 +154,8 @@ class TestExecutionTraceCollection:
         """Inject a missing page trace and verify strict validation raises."""
         mx.random.seed(7004)
         config = _make_config()
-        config = config.replace(execution_mode=ExecutionMode.METAL_STRICT)
+        from dataclasses import replace
+        config = replace(config, execution_mode=ExecutionMode.METAL_STRICT)
         cache = TurboPolarFastCache(config)
         cache.reset_execution_stats()
         cache.clear_execution_traces()
