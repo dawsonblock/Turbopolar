@@ -5,6 +5,11 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
+from rfsn_v11.kernels.turbo_polar.execution import (
+    ExecutionMode,
+    MetalExecutionRequiredError,
+    MetalKernelInitializationError,
+)
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.polar.payload import PolarKeyBlock
 from rfsn_v11.quant.qjl.encoder import QJLPayload
@@ -105,8 +110,33 @@ class MetalKernelBridge:
         # instance, so avoid re-parsing shaders and re-compiling kernels.
         if MetalKernelBridge._initialized:
             return
+        self._initialize(source_dir)
+
+    def _initialize(self, source_dir: Path | None = None) -> None:
+        """Atomic initialization; all kernels built or none."""
+        if MetalKernelBridge._initialized:
+            return
+        try:
+            self._build_kernels(source_dir)
+        except Exception as _exc:
+            MetalKernelBridge._initialized = False
+            self._kernel_qk = None
+            self._kernel_attn_dense = None
+            self._kernel_attn_quant = None
+            self._kernel_attn_quant_dt = None
+            self._kernel_attn_quant_raw = None
+            raise MetalKernelInitializationError(
+                f"TurboPolar Metal initialization failed: {_exc}"
+            ) from _exc
         MetalKernelBridge._initialized = True
 
+    @classmethod
+    def reset_for_testing(cls) -> None:
+        """Reset singleton state so tests get a fresh bridge."""
+        cls._instance = None
+        cls._initialized = False
+
+    def _build_kernels(self, source_dir: Path | None = None) -> None:
         if source_dir is None:
             kernel_dir = files("rfsn_v11.kernels.turbo_polar")
             qk_source = kernel_dir.joinpath("tqpolar_fused_qk.metal").read_text()
@@ -595,6 +625,7 @@ class MetalKernelBridge:
         tail_v: Optional[mx.array],
         config,
         actual_seq_len: int,
+        mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Page-based online-softmax attention without full-cache materialization.
 
@@ -605,10 +636,97 @@ class MetalKernelBridge:
             tail_v: [B, H_kv, T_tail, D] dense partial tail values, or None.
             config: TurboPolarConfig with attention_scale.
             actual_seq_len: total valid tokens for masking.
+            mode: ExecutionMode. METAL_STRICT raises on any fallback.
 
         Returns:
-            [B, H_q, D] attention output.
+            [B, H_q, D] attention output and execution trace dict.
         """
+        if mode is ExecutionMode.REFERENCE:
+            return self._execute_paged_online_attention_reference(
+                q, pages, tail_k, tail_v, config, actual_seq_len
+            )
+        if mode is ExecutionMode.METAL_STRICT:
+            return self._execute_paged_online_attention_metal_strict(
+                q, pages, tail_k, tail_v, config, actual_seq_len
+            )
+        # DEVELOPMENT_AUTO: try strict, fall back to reference on failure.
+        try:
+            return self._execute_paged_online_attention_metal_strict(
+                q, pages, tail_k, tail_v, config, actual_seq_len
+            )
+        except Exception:
+            self._stats.fallback_calls += 1
+            return self._execute_paged_online_attention_reference(
+                q, pages, tail_k, tail_v, config, actual_seq_len
+            )
+
+    def _execute_paged_online_attention_reference(
+        self,
+        q: mx.array,
+        pages,
+        tail_k: Optional[mx.array],
+        tail_v: Optional[mx.array],
+        config,
+        actual_seq_len: int,
+    ) -> Tuple[mx.array, Dict[str, Any]]:
+        """Reference implementation using dense MLX attention."""
+        B, H_q, D = q.shape[0], q.shape[1], config.head_dim
+        state = MetalKernelBridge.OnlineSoftmaxState(
+            max_score=mx.full((B, H_q), -float("inf"), dtype=mx.float32),
+            exp_sum=mx.zeros((B, H_q), dtype=mx.float32),
+            weighted_value_sum=mx.zeros((B, H_q, D), dtype=mx.float32),
+        )
+        total_tokens = 0
+        for page_view in pages:
+            valid_blocks = page_view.valid_blocks
+            if valid_blocks == 0:
+                continue
+            decoder = PolarQuantDecoder()
+            vq = GroupedVQuantizer(group_size=page_view.v_page.group_size)
+            k_dense = decoder.decode_block(page_view.k_page)[
+                :, :, : valid_blocks * config.block_size, :
+            ]
+            v_dense = vq.dequantize_block(page_view.v_page)[
+                :, :, : valid_blocks * config.block_size, :
+            ]
+            scores = (
+                mx.sum(q[:, :, None, :] * k_dense, axis=-1) * config.attention_scale
+            )
+            state = self._online_softmax_combine(state, scores, v_dense)
+            total_tokens += valid_blocks * config.block_size
+        if tail_k is not None and tail_k.shape[2] > 0:
+            H_kv = tail_k.shape[1]
+            nq = H_q // H_kv
+            tk = mx.repeat(tail_k, nq, axis=1)
+            tv = mx.repeat(tail_v, nq, axis=1)
+            scores = mx.sum(q[:, :, None, :] * tk, axis=-1) * config.attention_scale
+            state = self._online_softmax_combine(state, scores, tv)
+            total_tokens += tail_k.shape[2]
+        output = state.weighted_value_sum / state.exp_sum[:, :, None]
+        trace = {
+            "kernel_name": "paged_online_attention_reference",
+            "execution_mode": "reference",
+            "metal_used": False,
+            "fallback_used": False,
+            "actual_seq_len": actual_seq_len,
+            "total_tokens_processed": total_tokens,
+        }
+        return output.astype(mx.float16), trace
+
+    def _execute_paged_online_attention_metal_strict(
+        self,
+        q: mx.array,
+        pages,
+        tail_k: Optional[mx.array],
+        tail_v: Optional[mx.array],
+        config,
+        actual_seq_len: int,
+    ) -> Tuple[mx.array, Dict[str, Any]]:
+        """Strict Metal path: any missing kernel or dispatch error is fatal."""
+        if self._kernel_attn_quant_raw is None:
+            raise MetalExecutionRequiredError(
+                "Raw compressed-page Metal kernel is unavailable."
+            )
         B = q.shape[0]
         H_q = q.shape[1]
         D = config.head_dim
@@ -623,15 +741,13 @@ class MetalKernelBridge:
         )
 
         total_tokens = 0
+        page_traces: list[Dict[str, Any]] = []
 
-        qk_metal_used = False
-        attn_metal_used = False
         for page_view in pages:
             valid_blocks = page_view.valid_blocks
             if valid_blocks == 0:
                 continue
 
-            # Build temporary PolarKeyBlock for this page's valid blocks.
             k_page = page_view.k_page
             block = PolarKeyBlock(
                 radii=k_page.radii[:, :, :valid_blocks, :, :],
@@ -648,7 +764,6 @@ class MetalKernelBridge:
                 metadata=page_view.metadata,
             )
 
-            # Dequantize V for this page.
             v_page = page_view.v_page
             quant_v = QuantizedVBlock(
                 codes=v_page.codes[:, :, :valid_blocks, :, :],
@@ -656,7 +771,7 @@ class MetalKernelBridge:
                 group_size=v_page.group_size,
             )
 
-            page_weighted, page_max, page_exp, _ = (
+            page_weighted, page_max, page_exp, page_trace = (
                 self.execute_online_attention_quant_v_raw(
                     q,
                     block,
@@ -669,23 +784,23 @@ class MetalKernelBridge:
                 state, page_max, page_exp, page_weighted
             )
             total_tokens += valid_blocks * config.block_size
-            if self._stats.online_attention_calls > 0:
-                attn_metal_used = True
+            page_traces.append(page_trace)
 
-        # Process dense tail.
+        # Dense tail (still Python/MLX; TODO: Metal kernel)
+        dense_tail_metal = False
         if tail_k is not None and tail_k.shape[2] > 0:
             tail_length = tail_k.shape[2]
             H_kv = tail_k.shape[1]
-            num_queries_per_kv = H_q // H_kv
-            tail_k_b = mx.repeat(tail_k, num_queries_per_kv, axis=1)
-            tail_v_b = mx.repeat(tail_v, num_queries_per_kv, axis=1)
+            nq = H_q // H_kv
+            tail_k_b = mx.repeat(tail_k, nq, axis=1)
+            tail_v_b = mx.repeat(tail_v, nq, axis=1)
             scores = (
                 mx.sum(q[:, :, None, :] * tail_k_b, axis=-1) * config.attention_scale
             )
             state = self._online_softmax_combine(state, scores, tail_v_b)
             total_tokens += tail_length
+            dense_tail_metal = False  # placeholder until Metal tail kernel exists
 
-        # Finalize.
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)
 
@@ -695,15 +810,17 @@ class MetalKernelBridge:
 
         trace = {
             "kernel_name": "paged_online_attention_full_metal",
-            "metal_used": attn_metal_used,
-            "qk_metal_used": qk_metal_used,
-            "attn_metal_used": attn_metal_used,
-            "fallback_used": not attn_metal_used,
+            "execution_mode": "metal_strict",
+            "metal_used": True,
+            "attn_metal_used": len(page_traces) > 0,
+            "dense_tail_metal": dense_tail_metal,
+            "fallback_used": False,
             "qjl_used": False,
             "quant_v_used": True,
             "actual_seq_len": actual_seq_len,
             "total_tokens_processed": total_tokens,
             "num_queries_per_kv": num_queries_per_kv,
+            "page_traces": page_traces,
         }
         return output, trace
 

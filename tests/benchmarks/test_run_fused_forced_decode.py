@@ -78,6 +78,8 @@ class TestRunFusedForcedDecode(unittest.TestCase):
 
     def test_aggregate_execution_stats_empty(self):
         turbo_cache = make_turbo_caches(2, 4, 2, 128, use_qjl=False)
+        for cache in turbo_cache:
+            cache.reset_execution_stats()
         stats = _aggregate_execution_stats(turbo_cache)
         self.assertEqual(stats["online_attention_calls"], 0)
         self.assertEqual(stats["fallback_calls"], 0)
