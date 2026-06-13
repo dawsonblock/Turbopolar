@@ -17,10 +17,9 @@ from rfsn_v11.promotion.schema import (
 class PromotionGate:
     """Evaluate PromotionEvidence and render a single PromotionDecision."""
 
-    # Unlocked: the full evidence suite has been validated.
-    # The fused Metal attention kernel (raw-state online-softmax) is
-    # dispatched for all compressed pages; zero fallback calls required.
-    PROMOTION_LOCKED = False
+    # Locked until the strict no-fallback Metal suite passes end-to-end.
+    # A correct fallback result does not prove the Metal implementation works.
+    PROMOTION_LOCKED = True
 
     # Correctness thresholds
     MEAN_COSINE = 0.995
@@ -178,14 +177,48 @@ class PromotionGate:
         if fd.any_nans_or_infs:
             reasons.append("Fused decode run contained NaNs or infinities.")
 
-        # Metal dispatch verification: the fused decode path must not have
-        # fallen back to CPU for attention. Zero fallback calls proves the
-        # raw-state Metal kernel was dispatched.
-        if fd.fallback_calls > 0:
+        # Strict Metal execution verification.
+        if fd.execution_mode is None:
+            reasons.append("Fused decode execution_mode is missing.")
+        elif fd.execution_mode != "metal_strict":
             reasons.append(
-                f"Fused decode had {fd.fallback_calls} fallback_calls; "
-                "Metal dispatch was not used for all attention steps."
+                f"Fused decode execution_mode='{fd.execution_mode}' != 'metal_strict'; "
+                "only strict Metal runs are eligible for promotion."
             )
+
+        # Required Metal dispatch counts must be present.
+        required_metal_fields = [
+            "compressed_page_metal_calls",
+            "dense_tail_metal_calls",
+            "merge_metal_calls",
+            "finalization_metal_calls",
+        ]
+        for field in required_metal_fields:
+            val = getattr(fd, field)
+            if val is None:
+                reasons.append(f"Fused decode missing required field: {field}")
+            elif val == 0:
+                reasons.append(f"Fused decode {field}=0; no Metal dispatches recorded.")
+
+        # Fallback counts must be present and zero.
+        required_fallback_fields = [
+            "compressed_page_fallback_calls",
+            "dense_tail_fallback_calls",
+            "full_attention_fallback_calls",
+        ]
+        for field in required_fallback_fields:
+            val = getattr(fd, field)
+            if val is None:
+                reasons.append(f"Fused decode missing required field: {field}")
+            elif val != 0:
+                reasons.append(
+                    f"Fused decode {field}={val}; fallback occurred in strict mode."
+                )
+
+        if fd.fallback_reasons is None:
+            reasons.append("Fused decode fallback_reasons missing.")
+        elif fd.fallback_reasons:
+            reasons.append(f"Fused decode had fallback reasons: {fd.fallback_reasons}")
 
         # Speed
         sr = evidence.speed_report

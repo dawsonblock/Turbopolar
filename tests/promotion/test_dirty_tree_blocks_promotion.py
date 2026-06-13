@@ -50,6 +50,15 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
                 contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                execution_mode="metal_strict",
+                compressed_page_metal_calls=10,
+                dense_tail_metal_calls=10,
+                merge_metal_calls=10,
+                finalization_metal_calls=10,
+                compressed_page_fallback_calls=0,
+                dense_tail_fallback_calls=0,
+                full_attention_fallback_calls=0,
+                fallback_reasons=[],
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,
@@ -79,8 +88,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     def test_clean_tree_can_promote(self):
         evidence = self._full_passing_evidence(dirty=False)
         decision = PromotionGate().evaluate(evidence)
-        # Gate is unlocked; clean tree with all evidence promotes.
-        self.assertEqual(decision.state, PromotionState.PROMOTED_EXPERIMENTAL)
+        # Gate is locked; maximum state is REVIEW_REQUIRED.
+        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
 
     def test_dirty_tree_blocks(self):
         evidence = self._full_passing_evidence(dirty=True)

@@ -100,7 +100,17 @@ class FusedDecodeReport:
     mean_perplexity_delta: Optional[float] = None
     max_perplexity_delta: Optional[float] = None
     any_nans_or_infs: bool = True
-    fallback_calls: int = 0
+    # Strict Metal execution evidence. None means "not reported" (incomplete).
+    execution_mode: Optional[str] = None
+    compressed_page_metal_calls: Optional[int] = None
+    dense_tail_metal_calls: Optional[int] = None
+    merge_metal_calls: Optional[int] = None
+    finalization_metal_calls: Optional[int] = None
+    compressed_page_fallback_calls: Optional[int] = None
+    dense_tail_fallback_calls: Optional[int] = None
+    full_attention_fallback_calls: Optional[int] = None
+    fallback_reasons: Optional[List[str]] = None
+    fallback_calls: int = 0  # deprecated; kept for backward compat
     first_argmax_divergence_step: Optional[int] = None
     notes: List[str] = field(default_factory=list)
 
@@ -118,6 +128,15 @@ class FusedDecodeReport:
             mean_perplexity_delta=data.get("mean_perplexity_delta"),
             max_perplexity_delta=data.get("max_perplexity_delta"),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
+            execution_mode=data.get("execution_mode"),
+            compressed_page_metal_calls=data.get("compressed_page_metal_calls"),
+            dense_tail_metal_calls=data.get("dense_tail_metal_calls"),
+            merge_metal_calls=data.get("merge_metal_calls"),
+            finalization_metal_calls=data.get("finalization_metal_calls"),
+            compressed_page_fallback_calls=data.get("compressed_page_fallback_calls"),
+            dense_tail_fallback_calls=data.get("dense_tail_fallback_calls"),
+            full_attention_fallback_calls=data.get("full_attention_fallback_calls"),
+            fallback_reasons=list(data.get("fallback_reasons", [])),
             fallback_calls=int(data.get("fallback_calls", 0)),
             first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
             notes=list(data.get("notes", [])),
