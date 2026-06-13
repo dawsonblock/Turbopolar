@@ -600,6 +600,72 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
 }
 
 
+kernel void tqpolar_dense_tail_state_raw(
+    device const half* q                     [[buffer(0)]],
+    device const half* tail_k                [[buffer(1)]],
+    device const half* tail_v                [[buffer(2)]],
+    device float* out_weighted               [[buffer(3)]],
+    device float* out_max_score              [[buffer(4)]],
+    device float* out_exp_sum                [[buffer(5)]],
+    constant uint& head_dim                  [[buffer(6)]],
+    constant uint& tail_length               [[buffer(7)]],
+    constant half& attention_scale           [[buffer(8)]],
+    constant uint& num_queries_per_kv        [[buffer(9)]],
+    device const uint* strides               [[buffer(10)]],
+    uint3 tgid                               [[threadgroup_position_in_grid]],
+    uint tid                                 [[thread_index_in_threadgroup]])
+{
+    uint b = tgid.x;
+    uint q_head = tgid.y;
+    uint kv_head = q_head / num_queries_per_kv;
+    uint half_d = head_dim / 2;
+    uint num_elements_per_thread = head_dim / 32;
+
+    uint stride_q_b  = strides[0];  uint stride_q_h  = strides[1];
+    uint stride_tk_b = strides[2];  uint stride_tk_h = strides[3];  uint stride_tk_l = strides[4];  uint stride_tk_d = strides[5];
+    uint stride_tv_b = strides[6];  uint stride_tv_h = strides[7];  uint stride_tv_l = strides[8];  uint stride_tv_d = strides[9];
+    uint stride_o_b  = strides[10]; uint stride_o_h  = strides[11];
+
+    float m_stat = -INFINITY;
+    float l_stat = 0.0f;
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (uint t = 0; t < tail_length; t++) {
+        float private_sum = 0.0f;
+        for (uint j = tid; j < half_d; j += 32) {
+            float k_x = tail_k[b * stride_tk_b + kv_head * stride_tk_h + t * stride_tk_l + j * 2];
+            float k_y = tail_k[b * stride_tk_b + kv_head * stride_tk_h + t * stride_tk_l + j * 2 + 1];
+            float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+            float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+            private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+        }
+        float score = simd_sum(private_sum);
+
+        float m_new = max(m_stat, score);
+        float alpha = exp(m_stat - m_new);
+        float l_new = l_stat * alpha + exp(score - m_new);
+
+        for (uint k = 0; k < num_elements_per_thread; k++) {
+            uint d = tid + k * 32;
+            float v_val = tail_v[b * stride_tv_b + kv_head * stride_tv_h + t * stride_tv_l + d * stride_tv_d];
+            acc[k] = acc[k] * alpha + exp(score - m_new) * v_val;
+        }
+        m_stat = m_new;
+        l_stat = l_new;
+    }
+
+    if (tid == 0) {
+        uint num_q_heads = stride_o_b / stride_o_h;
+        out_max_score[b * num_q_heads + q_head] = m_stat;
+        out_exp_sum[b * num_q_heads + q_head] = l_stat;
+    }
+    for (uint k = 0; k < num_elements_per_thread; k++) {
+        uint d = tid + k * 32;
+        out_weighted[b * stride_o_b + q_head * stride_o_h + d] = acc[k];
+    }
+}
+
+
 kernel void tqpolar_online_attention_quant_v_raw(
     device const half* q                     [[buffer(0)]],
     device const half* polar_radii           [[buffer(1)]],

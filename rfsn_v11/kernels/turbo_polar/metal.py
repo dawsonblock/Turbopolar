@@ -125,6 +125,7 @@ class MetalKernelBridge:
             self._kernel_attn_quant = None
             self._kernel_attn_quant_dt = None
             self._kernel_attn_quant_raw = None
+            self._kernel_dense_tail_raw = None
             raise MetalKernelInitializationError(
                 f"TurboPolar Metal initialization failed: {_exc}"
             ) from _exc
@@ -363,6 +364,26 @@ class MetalKernelBridge:
             output_names=["output"],
             header=attn_quant_dt_header,
             source=attn_quant_dt_body,
+        )
+
+        dense_tail_raw_header, dense_tail_raw_body = self._extract_kernel_parts(
+            attn_source, "tqpolar_dense_tail_state_raw"
+        )
+        self._kernel_dense_tail_raw = mx.fast.metal_kernel(
+            name="tqpolar_dense_tail_state_raw",
+            input_names=[
+                "q",
+                "tail_k",
+                "tail_v",
+                "head_dim",
+                "tail_length",
+                "attention_scale",
+                "num_queries_per_kv",
+                "strides",
+            ],
+            output_names=["out_weighted", "out_max_score", "out_exp_sum"],
+            header=dense_tail_raw_header,
+            source=dense_tail_raw_body,
         )
 
         self.threadgroup_supported, self.grid_semantics = _probe_metal_dispatch()
@@ -786,20 +807,21 @@ class MetalKernelBridge:
             total_tokens += valid_blocks * config.block_size
             page_traces.append(page_trace)
 
-        # Dense tail (still Python/MLX; TODO: Metal kernel)
+        # Dense tail via Metal raw-state kernel.
         dense_tail_metal = False
         if tail_k is not None and tail_k.shape[2] > 0:
-            tail_length = tail_k.shape[2]
-            H_kv = tail_k.shape[1]
-            nq = H_q // H_kv
-            tail_k_b = mx.repeat(tail_k, nq, axis=1)
-            tail_v_b = mx.repeat(tail_v, nq, axis=1)
-            scores = (
-                mx.sum(q[:, :, None, :] * tail_k_b, axis=-1) * config.attention_scale
+            if self._kernel_dense_tail_raw is None:
+                raise MetalExecutionRequiredError(
+                    "Dense-tail raw-state Metal kernel is unavailable."
+                )
+            tail_weighted, tail_max, tail_exp = self._execute_dense_tail_raw(
+                q, tail_k, tail_v, config
             )
-            state = self._online_softmax_combine(state, scores, tail_v_b)
-            total_tokens += tail_length
-            dense_tail_metal = False  # placeholder until Metal tail kernel exists
+            state = self._online_softmax_combine_raw(
+                state, tail_max, tail_exp, tail_weighted
+            )
+            total_tokens += tail_k.shape[2]
+            dense_tail_metal = True
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)
@@ -823,6 +845,68 @@ class MetalKernelBridge:
             "page_traces": page_traces,
         }
         return output, trace
+
+    def _execute_dense_tail_raw(
+        self,
+        q: mx.array,
+        tail_k: mx.array,
+        tail_v: mx.array,
+        config,
+    ) -> Tuple[mx.array, mx.array, mx.array]:
+        """Dispatch dense-tail raw-state Metal kernel."""
+        B, H_q, D = q.shape[0], q.shape[1], config.head_dim
+        tail_length = tail_k.shape[2]
+        num_queries_per_kv = (
+            H_q // config.num_kv_heads if config.num_kv_heads > 0 else 1
+        )
+
+        out_shape = (B, H_q, D)
+        max_shape = (B, H_q)
+        exp_shape = (B, H_q)
+
+        strides = self._build_strides_dense_tail(q, tail_k, tail_v)
+        result = self._kernel_dense_tail_raw(
+            inputs=[
+                q,
+                tail_k,
+                tail_v,
+                mx.array(D, dtype=mx.uint32),
+                mx.array(tail_length, dtype=mx.uint32),
+                mx.array(config.attention_scale, dtype=mx.float16),
+                mx.array(num_queries_per_kv, dtype=mx.uint32),
+                strides,
+            ],
+            output_shapes=[out_shape, max_shape, exp_shape],
+            output_dtypes=[mx.float32, mx.float32, mx.float32],
+            grid=self._compute_grid(B, H_q, 1),
+            threadgroup=(self._tg_x, 1, 1),
+        )
+        return result[0], result[1], result[2]
+
+    def _build_strides_dense_tail(
+        self, q: mx.array, tail_k: mx.array, tail_v: mx.array
+    ) -> mx.array:
+        qs = self._contiguous_strides(q.shape)
+        tks = self._contiguous_strides(tail_k.shape)
+        tvs = self._contiguous_strides(tail_v.shape)
+        os = self._contiguous_strides((q.shape[0], q.shape[1], q.shape[2]))
+        return mx.array(
+            [
+                qs[0],
+                qs[1],
+                tks[0],
+                tks[1],
+                tks[2],
+                tks[3],
+                tvs[0],
+                tvs[1],
+                tvs[2],
+                tvs[3],
+                os[0],
+                os[1],
+            ],
+            dtype=mx.uint32,
+        )
 
     def _build_strides_qk(
         self, q, radii, radii_scales, angle_l1, angle_deep, out_array
