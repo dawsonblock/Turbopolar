@@ -18,6 +18,7 @@ during numerical comparison.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -606,6 +607,9 @@ def main():
             f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
+    # Ensure output directory exists before writing artifacts.
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
     # Serialize execution traces from all fixtures into a sidecar artifact.
     trace_artifact_path = ""
     trace_artifact_hash = ""
@@ -655,7 +659,6 @@ def main():
         fixtures=results,
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     write_json_report(report, args.output_dir / "report.json")
     write_markdown_report(report, args.output_dir / "report.md")
     print(f"\nWrote reports to {args.output_dir}")

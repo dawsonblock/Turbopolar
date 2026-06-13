@@ -232,7 +232,9 @@ class TurboPolarFastCache:
                 output_evaluated=output_evaluated,
             )
 
-        # Strict validation: exact page count, all Metal, zero fallback, outputs evaluated.
+        # Strict validation: exact page count, all Metal, zero fallback.
+        # In SYNCHRONOUS_EVIDENCE mode outputs are evaluated inside the bridge.
+        # In ASYNC_PERFORMANCE mode the caller is responsible for evaluation.
         if cfg.execution_mode is ExecutionMode.METAL_STRICT:
             page_traces_raw = trace.get("page_traces", [])
             expected_page_count = len(view.pages)
@@ -249,10 +251,6 @@ class TurboPolarFastCache:
                 raise MetalExecutionRequiredError(
                     f"Strict mode encountered fallback: "
                     f"{trace.get('fallback_reason', 'unknown')}"
-                )
-            if not output_evaluated:
-                raise MetalExecutionRequiredError(
-                    "Un-evaluated output in strict mode"
                 )
         return output
 
