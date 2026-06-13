@@ -24,6 +24,8 @@ class KernelExecutionStats:
     online_attention_calls: int = 0
     dense_tail_calls: int = 0
     fallback_calls: int = 0
+    compressed_page_dispatches: int = 0
+    dense_tail_dispatches: int = 0
 
 
 def _probe_metal_dispatch() -> Tuple[bool, str]:
@@ -851,6 +853,7 @@ class MetalKernelBridge:
             )
             total_tokens += valid_blocks * config.block_size
             page_traces.append(page_trace)
+            self._stats.compressed_page_dispatches += 1
 
         # Dense tail via Metal raw-state kernel.
         dense_tail_metal = False
@@ -872,6 +875,7 @@ class MetalKernelBridge:
             )
             total_tokens += tail_k.shape[2]
             dense_tail_metal = True
+            self._stats.dense_tail_dispatches += 1
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)

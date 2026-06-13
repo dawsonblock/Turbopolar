@@ -109,6 +109,51 @@ class TestSupportedConfigContract(unittest.TestCase):
                 finite_audit_interval=-1,
             )
 
+    def test_string_execution_mode_normalized_to_enum(self):
+        from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            execution_mode="metal_strict",
+        )
+        self.assertIsInstance(cfg.execution_mode, ExecutionMode)
+        self.assertIs(cfg.execution_mode, ExecutionMode.METAL_STRICT)
+
+    def test_enum_execution_mode_preserved(self):
+        from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            execution_mode=ExecutionMode.METAL_STRICT,
+        )
+        self.assertIs(cfg.execution_mode, ExecutionMode.METAL_STRICT)
+
+    def test_invalid_execution_mode_type_rejected(self):
+        with self.assertRaisesRegex(TypeError, "execution_mode must be an ExecutionMode"):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                num_q_heads=4,
+                num_kv_heads=4,
+                execution_mode=12345,
+            )
+
+    def test_invalid_execution_mode_string_rejected(self):
+        with self.assertRaisesRegex(ValueError, "'not_a_mode' is not a valid ExecutionMode"):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                num_q_heads=4,
+                num_kv_heads=4,
+                execution_mode="not_a_mode",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -258,10 +258,13 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         "2048",
         "4096",
         "8192",
+        "16384",
         "--num-decode",
         "128",
         "--trials",
         "5",
+        "--execution-mode",
+        "metal_strict",
         timeout=1800,
     )
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")

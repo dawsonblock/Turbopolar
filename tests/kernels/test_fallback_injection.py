@@ -10,6 +10,7 @@ import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
+from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 from rfsn_v11.kernels.turbo_polar.metal import (
     MetalExecutionRequiredError,
@@ -236,3 +237,39 @@ class TestFallbackInjection:
         assert trace["fallback_used"] is False
         assert trace["attn_metal_used"] is True
         assert trace["dense_tail_metal"] is True
+
+    def test_strict_cache_decode_raises_on_kernel_unavailable(self):
+        """TurboPolarFastCache.decode_attention in strict mode must raise."""
+        mx.random.seed(5005)
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_int8_radii=True,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=8,
+            storage_mode="kv_quant",
+            execution_mode=ExecutionMode.METAL_STRICT,
+        )
+        cache = TurboPolarFastCache(config)
+
+        k = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
+        q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
+
+        # Pre-warm the runtime with a few tokens so there is a page to process.
+        for _ in range(65):
+            cache.decode_attention(q, k, v, config.attention_scale)
+
+        # Inject unavailability by nulling the raw kernel on the bridge.
+        original_kernel = cache.bridge._kernel_attn_quant_raw
+        cache.bridge._kernel_attn_quant_raw = None
+        try:
+            try:
+                cache.decode_attention(q, k, v, config.attention_scale)
+                raise AssertionError("Expected MetalExecutionRequiredError")
+            except MetalExecutionRequiredError:
+                pass
+        finally:
+            cache.bridge._kernel_attn_quant_raw = original_kernel

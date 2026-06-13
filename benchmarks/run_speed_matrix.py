@@ -66,8 +66,14 @@ def _model_cache_config(model: Any) -> Tuple[int, int, int]:
 
 
 def _make_turbo_config(
-    num_q_heads: int, num_kv_heads: int, head_dim: int
+    num_q_heads: int, num_kv_heads: int, head_dim: int, execution_mode=None
 ) -> TurboPolarConfig:
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+
+    if execution_mode is None:
+        execution_mode = ExecutionMode.DEVELOPMENT_AUTO
+    elif isinstance(execution_mode, str):
+        execution_mode = ExecutionMode(execution_mode)
     return TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
@@ -79,6 +85,7 @@ def _make_turbo_config(
         use_int8_radii=True,
         k_angle_bits_deep=8,
         split_dim=0,
+        execution_mode=execution_mode,
     )
 
 
@@ -134,6 +141,7 @@ def benchmark_length(
     head_dim: int,
     adapter: TurboPolarLlamaAdapter,
     turbo_first: bool,
+    execution_mode=None,
 ) -> Tuple[float, float]:
     """Return (dense_tok_per_sec, turbo_tok_per_sec) for one prefill length.
 
@@ -147,7 +155,10 @@ def benchmark_length(
         ("dense", lambda: _make_dense_cache(num_layers)),
         (
             "turbo",
-            lambda: make_turbo_caches(num_layers, num_q_heads, num_kv_heads, head_dim),
+            lambda: make_turbo_caches(
+                num_layers, num_q_heads, num_kv_heads, head_dim,
+                execution_mode=execution_mode,
+            ),
         ),
     ]
     if turbo_first:
@@ -201,6 +212,13 @@ def main():
         default=Path(__file__).parent / "outputs" / "speed_matrix",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        default="development_auto",
+        choices=["reference", "metal_strict", "development_auto"],
+        help="Execution mode for TurboPolar attention (default: development_auto)",
+    )
     args = parser.parse_args()
 
     mx.random.seed(args.seed)
@@ -211,7 +229,7 @@ def main():
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
     adapter = TurboPolarLlamaAdapter(
-        _make_turbo_config(num_q_heads, num_kv_heads, head_dim)
+        _make_turbo_config(num_q_heads, num_kv_heads, head_dim, execution_mode=args.execution_mode)
     )
 
     normalized = normalize_prompts(tokenizer, args.token_fixtures)
@@ -239,6 +257,7 @@ def main():
                 head_dim,
                 adapter,
                 turbo_first=(trial % 2 == 1),
+                execution_mode=args.execution_mode,
             )
             dense_rates.append(dense_tok_s)
             turbo_rates.append(turbo_tok_s)

@@ -131,6 +131,16 @@ class TurboPolarConfig:
         if self.finite_audit_interval < 0:
             raise ValueError("finite_audit_interval must be non-negative")
 
+        # Normalize execution_mode to enum for type safety.
+        mode = self.execution_mode
+        if isinstance(mode, str):
+            mode = ExecutionMode(mode)
+        if not isinstance(mode, ExecutionMode):
+            raise TypeError(
+                f"execution_mode must be an ExecutionMode, got {type(mode).__name__}"
+            )
+        object.__setattr__(self, "execution_mode", mode)
+
         attention_scale = self.attention_scale
         if attention_scale == 0.0:
             attention_scale = 1.0 / math.sqrt(self.head_dim)

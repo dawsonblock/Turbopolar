@@ -189,11 +189,12 @@ class PromotionGate:
             )
 
         # Required Metal dispatch counts must be present.
+        # merge_metal_calls and finalization_metal_calls are optional because
+        # merge/finalization currently use ordinary MLX operations, not custom
+        # Metal kernels. This is a known hybrid execution policy.
         required_metal_fields = [
             "compressed_page_metal_calls",
             "dense_tail_metal_calls",
-            "merge_metal_calls",
-            "finalization_metal_calls",
         ]
         for field in required_metal_fields:
             val = getattr(fd, field)
@@ -201,6 +202,10 @@ class PromotionGate:
                 reasons.append(f"Fused decode missing required field: {field}")
             elif val == 0:
                 reasons.append(f"Fused decode {field}=0; no Metal dispatches recorded.")
+        if fd.merge_metal_calls is not None and fd.merge_metal_calls > 0:
+            reasons.append("Fused decode reported merge_metal_calls>0, but merge uses MLX operations.")
+        if fd.finalization_metal_calls is not None and fd.finalization_metal_calls > 0:
+            reasons.append("Fused decode reported finalization_metal_calls>0, but finalization uses MLX operations.")
 
         # Fallback counts must be present and zero.
         required_fallback_fields = [
@@ -296,6 +301,17 @@ class PromotionGate:
         if sr and sr.trials_per_context < self.MIN_TRIALS_PER_CONTEXT:
             reasons.append(
                 f"Speed trials per context {sr.trials_per_context} < {self.MIN_TRIALS_PER_CONTEXT}"
+            )
+        speed_contexts = set(sr.contexts_evaluated) if sr and sr.contexts_evaluated else set()
+        if speed_contexts != self.REQUIRED_CONTEXTS:
+            reasons.append(
+                f"Speed contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {speed_contexts}"
+            )
+        mr = evidence.memory_report
+        memory_contexts = set(mr.contexts_evaluated) if mr and mr.contexts_evaluated else set()
+        if memory_contexts != self.REQUIRED_CONTEXTS:
+            reasons.append(
+                f"Memory contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {memory_contexts}"
             )
 
         # Provenance

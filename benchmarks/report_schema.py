@@ -118,5 +118,6 @@ class ForcedDecodeReport:
     seed: int
     num_layers: int
     forced_decode_tokens: int
-    aggregate: ForcedDecodeAggregate
+    contexts_evaluated: List[int] = field(default_factory=list)
+    aggregate: ForcedDecodeAggregate = field(default_factory=lambda: ForcedDecodeAggregate(mean_logit_cosine=0.0, median_logit_cosine=0.0, p05_logit_cosine=0.0, p95_logit_cosine=0.0, min_logit_cosine=0.0, max_logit_cosine=0.0, mean_top1_agreement=0.0, mean_top5_overlap=0.0, mean_top10_overlap=0.0, mean_kl_divergence=0.0, mean_js_divergence=0.0, mean_perplexity_delta=0.0, min_dense_argmax_rank=0, max_dense_argmax_rank=0, mean_dense_argmax_prob_delta=0.0))
     fixtures: List[ForcedDecodeFixtureResult] = field(default_factory=list)

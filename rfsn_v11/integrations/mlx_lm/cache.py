@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.integrations.mlx_lm.telemetry import KernelExecutionStats
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
@@ -166,7 +167,7 @@ class TurboPolarFastCache:
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
         # Page-based online-softmax attention without full-cache materialization.
-        output, _ = self.bridge.execute_paged_online_attention(
+        output, trace = self.bridge.execute_paged_online_attention(
             q_squeezed,
             view.pages,
             view.partial_k,
@@ -175,6 +176,11 @@ class TurboPolarFastCache:
             view.total_tokens,
             mode=cfg.execution_mode,
         )
+        if trace.get("fallback_used") and cfg.execution_mode is ExecutionMode.METAL_STRICT:
+            from rfsn_v11.kernels.turbo_polar.execution import MetalExecutionRequiredError
+            raise MetalExecutionRequiredError(
+                f"Strict mode encountered fallback: {trace.get('fallback_reason', 'unknown')}"
+            )
         return output
 
     def make_mask(
@@ -221,15 +227,13 @@ def make_turbo_caches(
     num_kv_heads: int,
     head_dim: int,
     use_qjl: bool = False,
-    execution_mode=None,
+    execution_mode: Optional[ExecutionMode] = None,
 ) -> List[TurboPolarFastCache]:
     """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
     if head_dim != 128:
         raise ValueError(
             f"TurboPolar fused MLX path only supports head_dim=128, got {head_dim}"
         )
-    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
-
     config = TurboPolarConfig(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,

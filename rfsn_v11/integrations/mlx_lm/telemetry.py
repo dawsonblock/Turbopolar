@@ -11,3 +11,5 @@ class KernelExecutionStats:
     online_attention_calls: int = 0
     dense_tail_calls: int = 0
     fallback_calls: int = 0
+    compressed_page_dispatches: int = 0
+    dense_tail_dispatches: int = 0

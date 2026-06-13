@@ -199,6 +199,8 @@ def _aggregate_execution_stats(turbo_cache: List[Any]) -> Dict[str, int]:
         "online_attention_calls": stats.online_attention_calls,
         "dense_tail_calls": stats.dense_tail_calls,
         "fallback_calls": stats.fallback_calls,
+        "compressed_page_dispatches": getattr(stats, "compressed_page_dispatches", 0),
+        "dense_tail_dispatches": getattr(stats, "dense_tail_dispatches", 0),
     }
 
 
@@ -300,21 +302,23 @@ def benchmark_forced_decode_fixture(
 
 def _compute_aggregate(
     results: List[ForcedDecodeFixtureResult],
-    execution_mode: str = "unknown",
+    execution_mode=None,
 ) -> ForcedDecodeAggregate:
-    all_cosines = [s.logit_cosine for r in results for s in r.steps]
-    all_top1 = [float(s.top1_agreement) for r in results for s in r.steps]
-    all_top5 = [s.top5_overlap for r in results for s in r.steps]
-    all_top10 = [s.top10_overlap for r in results for s in r.steps]
-    all_kl = [s.kl_divergence for r in results for s in r.steps]
-    all_js = [s.js_divergence for r in results for s in r.steps]
-    all_prob_delta = [s.dense_argmax_prob_delta for r in results for s in r.steps]
-    all_ranks = [s.dense_argmax_rank_in_turbo for r in results for s in r.steps]
-    any_nan = any(s.any_nan_or_inf for r in results for s in r.steps)
+    # Exclude prefill (position == 0) from fused-decode aggregates.
+    fused_steps = [s for r in results for s in r.steps if s.position > 0]
+    all_cosines = [s.logit_cosine for s in fused_steps]
+    all_top1 = [float(s.top1_agreement) for s in fused_steps]
+    all_top5 = [s.top5_overlap for s in fused_steps]
+    all_top10 = [s.top10_overlap for s in fused_steps]
+    all_kl = [s.kl_divergence for s in fused_steps]
+    all_js = [s.js_divergence for s in fused_steps]
+    all_prob_delta = [s.dense_argmax_prob_delta for s in fused_steps]
+    all_ranks = [s.dense_argmax_rank_in_turbo for s in fused_steps]
+    any_nan = any(s.any_nan_or_inf for s in fused_steps)
 
-    # Real perplexity from stored per-token NLLs.
-    dense_nll_all = [n for r in results for n in r.dense_nll_per_token]
-    candidate_nll_all = [n for r in results for n in r.candidate_nll_per_token]
+    # Perplexity: exclude prefill NLL (first token in each fixture's NLL list).
+    dense_nll_all = [n for r in results for n in r.dense_nll_per_token[1:]]
+    candidate_nll_all = [n for r in results for n in r.candidate_nll_per_token[1:]]
     dense_mean_nll = float(np.mean(dense_nll_all)) if dense_nll_all else 0.0
     candidate_mean_nll = float(np.mean(candidate_nll_all)) if candidate_nll_all else 0.0
     dense_ppl = float(np.exp(dense_mean_nll))
@@ -325,6 +329,12 @@ def _compute_aggregate(
     total_online = sum(r.kernel_stats.get("online_attention_calls", 0) for r in results)
     total_dense_tail = sum(r.kernel_stats.get("dense_tail_calls", 0) for r in results)
     total_fallback = sum(r.kernel_stats.get("fallback_calls", 0) for r in results)
+    total_page_dispatches = sum(
+        r.kernel_stats.get("compressed_page_dispatches", 0) for r in results
+    )
+    total_tail_dispatches = sum(
+        r.kernel_stats.get("dense_tail_dispatches", 0) for r in results
+    )
 
     fallback_reasons = []
     for r in results:
@@ -332,13 +342,15 @@ def _compute_aggregate(
             if step.any_nan_or_inf:
                 fallback_reasons.append(f"NaN/Inf at {r.fixture_id} pos {step.position}")
 
-    worst_cosine = min(all_cosines)
-    worst_idx = all_cosines.index(worst_cosine)
+    worst_cosine = min(all_cosines) if all_cosines else 0.0
+    worst_idx = all_cosines.index(worst_cosine) if all_cosines else 0
     step_idx = 0
     worst_fixture = ""
     worst_pos = -1
     for r in results:
         for s in r.steps:
+            if s.position == 0:
+                continue
             if step_idx == worst_idx:
                 worst_fixture = r.fixture_id
                 worst_pos = s.position
@@ -348,6 +360,8 @@ def _compute_aggregate(
     step_idx = 0
     for r in results:
         for s in r.steps:
+            if s.position == 0:
+                continue
             if not s.top1_agreement:
                 first_div = step_idx
                 break
@@ -358,22 +372,23 @@ def _compute_aggregate(
     def _percentile(arr, p):
         return float(np.percentile(arr, p))
 
+    mode_name = getattr(execution_mode, "value", str(execution_mode))
     aggregate = ForcedDecodeAggregate(
-        mean_logit_cosine=float(np.mean(all_cosines)),
-        median_logit_cosine=float(np.median(all_cosines)),
-        p05_logit_cosine=_percentile(all_cosines, 5),
-        p95_logit_cosine=_percentile(all_cosines, 95),
-        min_logit_cosine=float(np.min(all_cosines)),
-        max_logit_cosine=float(np.max(all_cosines)),
-        mean_top1_agreement=float(np.mean(all_top1)),
-        mean_top5_overlap=float(np.mean(all_top5)),
-        mean_top10_overlap=float(np.mean(all_top10)),
-        mean_kl_divergence=float(np.mean(all_kl)),
-        mean_js_divergence=float(np.mean(all_js)),
+        mean_logit_cosine=float(np.mean(all_cosines)) if all_cosines else 0.0,
+        median_logit_cosine=float(np.median(all_cosines)) if all_cosines else 0.0,
+        p05_logit_cosine=_percentile(all_cosines, 5) if all_cosines else 0.0,
+        p95_logit_cosine=_percentile(all_cosines, 95) if all_cosines else 0.0,
+        min_logit_cosine=float(np.min(all_cosines)) if all_cosines else 0.0,
+        max_logit_cosine=float(np.max(all_cosines)) if all_cosines else 0.0,
+        mean_top1_agreement=float(np.mean(all_top1)) if all_top1 else 0.0,
+        mean_top5_overlap=float(np.mean(all_top5)) if all_top5 else 0.0,
+        mean_top10_overlap=float(np.mean(all_top10)) if all_top10 else 0.0,
+        mean_kl_divergence=float(np.mean(all_kl)) if all_kl else 0.0,
+        mean_js_divergence=float(np.mean(all_js)) if all_js else 0.0,
         mean_perplexity_delta=abs_ppl_delta,
-        min_dense_argmax_rank=int(np.min(all_ranks)),
-        max_dense_argmax_rank=int(np.max(all_ranks)),
-        mean_dense_argmax_prob_delta=float(np.mean(all_prob_delta)),
+        min_dense_argmax_rank=int(np.min(all_ranks)) if all_ranks else 0,
+        max_dense_argmax_rank=int(np.max(all_ranks)) if all_ranks else 0,
+        mean_dense_argmax_prob_delta=float(np.mean(all_prob_delta)) if all_prob_delta else 0.0,
         worst_fixture_id=worst_fixture,
         worst_position=worst_pos,
         first_argmax_divergence_position=first_div,
@@ -381,9 +396,9 @@ def _compute_aggregate(
         online_attention_calls=total_online,
         dense_tail_calls=total_dense_tail,
         fallback_calls=total_fallback,
-        execution_mode=execution_mode,
-        compressed_page_metal_calls=total_online,
-        dense_tail_metal_calls=total_dense_tail,
+        execution_mode=mode_name,
+        compressed_page_metal_calls=total_page_dispatches,
+        dense_tail_metal_calls=total_tail_dispatches,
         merge_metal_calls=0,
         finalization_metal_calls=0,
         compressed_page_fallback_calls=total_fallback,
@@ -395,7 +410,8 @@ def _compute_aggregate(
         relative_perplexity_delta=rel_ppl_delta,
     )
 
-    if execution_mode == "metal_strict" and total_fallback > 0:
+    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+    if execution_mode is ExecutionMode.METAL_STRICT and total_fallback > 0:
         raise RuntimeError(
             f"METAL_STRICT benchmark recorded {total_fallback} fallback call(s); "
             "strict mode prohibits any fallback."
@@ -524,7 +540,7 @@ def main():
         )
         result = benchmark_forced_decode_fixture(
             model, tokenizer, ctx, cont, adapter,
-            execution_mode=args.execution_mode,
+            execution_mode=execution_mode,
         )
         results.append(result)
         print(
@@ -533,7 +549,7 @@ def main():
             f"top1_agree={np.mean([s.top1_agreement for s in result.steps]):.4f}"
         )
 
-    aggregate = _compute_aggregate(results, execution_mode=args.execution_mode)
+    aggregate = _compute_aggregate(results, execution_mode=execution_mode)
     print(f"\nAggregate mean cosine: {aggregate.mean_logit_cosine:.4f}")
     print(f"Aggregate min cosine:  {aggregate.min_logit_cosine:.4f}")
     print(f"Aggregate p05 cosine:  {aggregate.p05_logit_cosine:.4f}")
@@ -551,6 +567,7 @@ def main():
         if hasattr(model, "layers")
         else len(model.model.layers),
         forced_decode_tokens=args.forced_decode_tokens,
+        contexts_evaluated=args.contexts,
         aggregate=aggregate,
         fixtures=results,
     )

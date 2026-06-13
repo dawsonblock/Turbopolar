@@ -176,7 +176,7 @@ class TestMetalStrictPagedAttention:
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
         self._run_strict_assertions(cache, q, expected_page_count=1)
 
-    def test_strict_single_page_plus_tail(self):
+    def test_strict_two_blocks_plus_one_tail(self):
         """129 tokens = 2 blocks + 1 tail, still within a single page."""
         mx.random.seed(4003)
         config = _make_config()
