@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Any
 
-from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
 
 
 def validate_supported_configuration(config: "TurboPolarConfig") -> None:
@@ -18,6 +18,7 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
       - Mask: None
       - Head dimension: 128
       - Block size: 64
+      - Page capacity: 16 blocks per page
       - K format: log-int8 radius + 8-bit angle
       - V format: grouped int8
       - QJL: disabled
@@ -28,6 +29,8 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
         raise ValueError("TurboPolar requires head_dim=128")
     if config.block_size != 64:
         raise ValueError("TurboPolar requires block_size=64")
+    if config.page_capacity_blocks != 16:
+        raise ValueError("TurboPolar requires page_capacity_blocks=16")
     if config.num_q_heads <= 0 or config.num_kv_heads <= 0:
         raise ValueError("Head counts must be positive")
     if config.num_q_heads % config.num_kv_heads != 0:
@@ -69,6 +72,7 @@ class TurboPolarConfig:
     v_bits: int = 8
     block_size: int = 64
     head_dim: int = 128
+    page_capacity_blocks: int = 16
     qjl_proj_dim: int = 64
     use_qjl: bool = False
     storage_mode: str = "kv_quant"
@@ -80,6 +84,7 @@ class TurboPolarConfig:
     validate_finite_inputs: bool = False
     finite_audit_interval: int = 0
     execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
+    trace_validation_mode: TraceValidationMode = TraceValidationMode.ASYNC_PERFORMANCE
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -97,6 +102,10 @@ class TurboPolarConfig:
         if self.block_size != 64:
             raise ValueError(
                 "TurboPolar fused MLX path currently requires block_size=64"
+            )
+        if self.page_capacity_blocks != 16:
+            raise ValueError(
+                "TurboPolar fused MLX path currently requires page_capacity_blocks=16"
             )
         if self.use_qjl:
             raise NotImplementedError(
@@ -140,6 +149,16 @@ class TurboPolarConfig:
                 f"execution_mode must be an ExecutionMode, got {type(mode).__name__}"
             )
         object.__setattr__(self, "execution_mode", mode)
+
+        # Normalize trace_validation_mode to enum for type safety.
+        trace_mode = self.trace_validation_mode
+        if isinstance(trace_mode, str):
+            trace_mode = TraceValidationMode(trace_mode)
+        if not isinstance(trace_mode, TraceValidationMode):
+            raise TypeError(
+                f"trace_validation_mode must be a TraceValidationMode, got {type(trace_mode).__name__}"
+            )
+        object.__setattr__(self, "trace_validation_mode", trace_mode)
 
         attention_scale = self.attention_scale
         if attention_scale == 0.0:

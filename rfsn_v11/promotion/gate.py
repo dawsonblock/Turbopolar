@@ -289,13 +289,14 @@ class PromotionGate:
             )
 
         # Experiment completeness: per-context fused decode evidence.
+        # Use required-set inclusion so reports with diagnostic contexts still pass.
         fd = evidence.fused_decode_report
         contexts_set = (
             set(fd.contexts_evaluated) if fd and fd.contexts_evaluated else set()
         )
-        if contexts_set != self.REQUIRED_CONTEXTS:
+        if not self.REQUIRED_CONTEXTS.issubset(contexts_set):
             reasons.append(
-                f"Fused decode contexts incomplete: expected {self.REQUIRED_CONTEXTS}, got {contexts_set}"
+                f"Fused decode contexts incomplete: required {self.REQUIRED_CONTEXTS} not in {contexts_set}"
             )
 
         # Per-context completeness gates.

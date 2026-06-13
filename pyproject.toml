@@ -32,11 +32,13 @@ mlx-lm = [
     "mlx-lm>=0.19.0,<0.22.0",
 ]
 dev = [
+    "build",
     "pytest>=7.0.0",
     "pytest-xdist>=3.0.0",
     "mlx-lm>=0.19.0,<0.22.0",
     "packaging>=21.0",
     "ruff>=0.1.0",
+    "mypy>=1.0.0",
 ]
 all = [
     "pytest>=7.0.0",
@@ -55,7 +57,6 @@ include = ["rfsn_v11*"]
 
 [tool.setuptools.package-data]
 "rfsn_v11.kernels.turbo_polar" = ["*.metal"]
-"rfsn_v11.kernels.cartesian_int8" = ["*.metal"]
 
 [tool.ruff.lint]
 ignore = ["E402"]

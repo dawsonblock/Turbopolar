@@ -18,8 +18,8 @@ class KernelOperationTrace:
     """Immutable record of one kernel dispatch."""
 
     experiment_id: str
-    decode_step: int
     layer_index: int
+    decode_step: int
     operation: str  # "compressed_page" | "dense_tail" | "merge" | "finalize"
     page_index: Optional[int]
     kernel_name: str
@@ -34,55 +34,50 @@ class KernelOperationTrace:
 
 
 @dataclass
-class AttentionStepTrace:
+class AttentionExecutionTrace:
     """Traces for one attention step (one decode position in one layer)."""
 
-    experiment_id: str
-    decode_step: int
     layer_index: int
+    decode_step: int
     expected_page_count: int
-    page_operations: List[KernelOperationTrace] = field(default_factory=list)
-    dense_tail_operation: Optional[KernelOperationTrace] = None
+    page_traces: List[KernelOperationTrace] = field(default_factory=list)
+    dense_tail_trace: Optional[KernelOperationTrace] = None
 
     @property
     def fallback_count(self) -> int:
-        traces = [
-            *self.page_operations,
-            self.dense_tail_operation,
-        ]
-        return sum(
-            t is not None and t.fallback_used
-            for t in traces
-        )
+        traces = list(self.page_traces)
+        if self.dense_tail_trace is not None:
+            traces.append(self.dense_tail_trace)
+        return sum(t.fallback_used for t in traces)
 
     @property
     def all_outputs_evaluated(self) -> bool:
-        traces = [
-            *self.page_operations,
-            self.dense_tail_operation,
-        ]
-        return all(
-            t is not None and t.output_evaluated
-            for t in traces
-        )
+        traces = list(self.page_traces)
+        if self.dense_tail_trace is not None:
+            traces.append(self.dense_tail_trace)
+        return all(t.output_evaluated for t in traces)
+
+
+# Backward-compatible alias
+AttentionStepTrace = AttentionExecutionTrace
 
 
 @dataclass
 class ExecutionTraceCollector:
-    """Collects AttentionStepTrace records for strict evidence validation."""
+    """Collects AttentionExecutionTrace records for strict evidence validation."""
 
-    _traces: List[AttentionStepTrace] = field(default_factory=list)
+    _traces: List[AttentionExecutionTrace] = field(default_factory=list)
 
-    def record(self, trace: AttentionStepTrace) -> None:
+    def record(self, trace: AttentionExecutionTrace) -> None:
         self._traces.append(trace)
 
     def clear(self) -> None:
         self._traces.clear()
 
-    def snapshot(self) -> List[AttentionStepTrace]:
+    def snapshot(self) -> List[AttentionExecutionTrace]:
         return list(self._traces)
 
-    def by_layer_and_step(self, layer_index: int, decode_step: int) -> Optional[AttentionStepTrace]:
+    def by_layer_and_step(self, layer_index: int, decode_step: int) -> Optional[AttentionExecutionTrace]:
         for t in self._traces:
             if t.layer_index == layer_index and t.decode_step == decode_step:
                 return t

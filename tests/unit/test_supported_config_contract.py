@@ -12,6 +12,7 @@ class TestSupportedConfigContract(unittest.TestCase):
         cfg = TurboPolarConfig(
             head_dim=128,
             block_size=64,
+            page_capacity_blocks=16,
             num_q_heads=8,
             num_kv_heads=4,
             use_qjl=False,
@@ -19,6 +20,7 @@ class TestSupportedConfigContract(unittest.TestCase):
         )
         self.assertEqual(cfg.head_dim, 128)
         self.assertEqual(cfg.block_size, 64)
+        self.assertEqual(cfg.page_capacity_blocks, 16)
         self.assertFalse(cfg.use_qjl)
         self.assertFalse(cfg.validate_finite_inputs)
         self.assertEqual(cfg.finite_audit_interval, 0)
@@ -152,6 +154,39 @@ class TestSupportedConfigContract(unittest.TestCase):
                 num_q_heads=4,
                 num_kv_heads=4,
                 execution_mode="not_a_mode",
+            )
+
+    def test_page_capacity_not_16_rejected(self):
+        with self.assertRaisesRegex(ValueError, "page_capacity_blocks=16"):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                num_q_heads=4,
+                num_kv_heads=4,
+                page_capacity_blocks=8,
+            )
+
+    def test_trace_validation_mode_string_normalized(self):
+        from rfsn_v11.kernels.turbo_polar.execution import TraceValidationMode
+
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            num_q_heads=4,
+            num_kv_heads=4,
+            trace_validation_mode="synchronous_evidence",
+        )
+        self.assertIsInstance(cfg.trace_validation_mode, TraceValidationMode)
+        self.assertIs(cfg.trace_validation_mode, TraceValidationMode.SYNCHRONOUS_EVIDENCE)
+
+    def test_invalid_trace_validation_mode_rejected(self):
+        with self.assertRaisesRegex(TypeError, "trace_validation_mode must be a TraceValidationMode"):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                num_q_heads=4,
+                num_kv_heads=4,
+                trace_validation_mode=12345,
             )
 
 

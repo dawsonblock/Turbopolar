@@ -54,22 +54,22 @@ class TestExecutionTraceCollection:
         assert t.layer_index == 0
         assert t.decode_step == 0
         assert t.expected_page_count == 1
-        assert len(t.page_operations) == 1
-        assert t.page_operations[0].operation == "compressed_page"
-        assert t.page_operations[0].page_index == 0
-        assert t.page_operations[0].metal_executed is True
+        assert len(t.page_traces) == 1
+        assert t.page_traces[0].operation == "compressed_page"
+        assert t.page_traces[0].page_index == 0
+        assert t.page_traces[0].metal_executed is True
         assert t.fallback_count == 0
 
     def test_two_pages_trace(self):
-        """128 tokens = 2 pages."""
+        """1088 tokens = 17 blocks = 2 pages (16 + 1)."""
         mx.random.seed(7001)
         config = _make_config()
         cache = TurboPolarFastCache(config)
         cache.reset_execution_stats()
         cache.clear_execution_traces()
 
-        k = mx.random.normal((1, 4, 128, 128)).astype(mx.float16)
-        v = mx.random.normal((1, 4, 128, 128)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 1088, 128)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 1088, 128)).astype(mx.float16)
         cache.runtime.append(k, v)
 
         q = mx.random.normal((1, 4, 1, 128)).astype(mx.float16)
@@ -85,9 +85,9 @@ class TestExecutionTraceCollection:
         assert t.layer_index == 1
         assert t.decode_step == 5
         assert t.expected_page_count == 2
-        assert len(t.page_operations) == 2
-        assert t.page_operations[0].page_index == 0
-        assert t.page_operations[1].page_index == 1
+        assert len(t.page_traces) == 2
+        assert t.page_traces[0].page_index == 0
+        assert t.page_traces[1].page_index == 1
         assert t.fallback_count == 0
 
     def test_pages_plus_dense_tail_trace(self):
@@ -114,9 +114,9 @@ class TestExecutionTraceCollection:
         t = traces[0]
         assert t.layer_index == 2
         assert t.decode_step == 10
-        assert len(t.page_operations) == 1
-        assert t.dense_tail_operation is not None
-        assert t.dense_tail_operation.operation == "dense_tail"
+        assert len(t.page_traces) == 1
+        assert t.dense_tail_trace is not None
+        assert t.dense_tail_trace.operation == "dense_tail"
         assert t.fallback_count == 0
 
     def test_multiple_layers_and_steps(self):
@@ -154,7 +154,8 @@ class TestExecutionTraceCollection:
         """Inject a missing page trace and verify strict validation raises."""
         mx.random.seed(7004)
         config = _make_config()
-        config = config.replace(execution_mode=ExecutionMode.METAL_STRICT)
+        import dataclasses
+        config = dataclasses.replace(config, execution_mode=ExecutionMode.METAL_STRICT)
         cache = TurboPolarFastCache(config)
         cache.reset_execution_stats()
         cache.clear_execution_traces()
@@ -164,16 +165,15 @@ class TestExecutionTraceCollection:
         cache.runtime.append(k, v)
 
         # Manually inject a trace with wrong page count to test validation.
-        from rfsn_v11.evidence.execution_trace import AttentionStepTrace, KernelOperationTrace
+        from rfsn_v11.evidence.execution_trace import AttentionExecutionTrace, KernelOperationTrace
         cache._trace_collector.record(
-            AttentionStepTrace(
-                experiment_id="exp",
-                decode_step=0,
+            AttentionExecutionTrace(
                 layer_index=0,
+                decode_step=0,
                 expected_page_count=2,
-                page_operations=[
+                page_traces=[
                     KernelOperationTrace(
-                        experiment_id="exp", decode_step=0, layer_index=0,
+                        experiment_id="exp", layer_index=0, decode_step=0,
                         operation="compressed_page", page_index=0,
                         kernel_name="test", execution_mode="metal_strict",
                         metal_requested=True, metal_executed=True,

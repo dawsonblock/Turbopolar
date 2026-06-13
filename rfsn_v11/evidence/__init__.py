@@ -2,6 +2,7 @@
 
 from rfsn_v11.evidence.baseline import BaselineContextResult, BaselineEvidence
 from rfsn_v11.evidence.execution_trace import (
+    AttentionExecutionTrace,
     AttentionStepTrace,
     ExecutionTraceCollector,
     KernelOperationTrace,
@@ -17,6 +18,7 @@ from rfsn_v11.evidence.teacher_forced import (
 )
 
 __all__ = [
+    "AttentionExecutionTrace",
     "AttentionStepTrace",
     "BaselineContextResult",
     "BaselineEvidence",

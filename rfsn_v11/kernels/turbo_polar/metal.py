@@ -128,6 +128,25 @@ class MetalKernelBridge:
             return
         self._initialize(source_dir)
 
+    def _clear_kernel_state(self) -> None:
+        """Clear every kernel handle, initialization flag, cached source, and transient dispatch state."""
+        self._kernel_qk = None
+        self._kernel_qk_qjl = None
+        self._kernel_attn_dense = None
+        self._kernel_attn_quant = None
+        self._kernel_attn_quant_dt = None
+        self._kernel_attn_quant_raw = None
+        self._kernel_attn_quant_dense_tail = None
+        self._kernel_dense_tail_raw = None
+        self.threadgroup_supported = False
+        self.grid_semantics = "unknown"
+        self._tg_x = 32
+        self._stats = KernelExecutionStats()
+        self._cached_qk_header = ""
+        self._cached_qk_body = ""
+        self._cached_attn_header = ""
+        self._cached_attn_body = ""
+
     def _initialize(self, source_dir: Path | None = None) -> None:
         """Atomic initialization; all kernels built or none."""
         if MetalKernelBridge._initialized:
@@ -136,18 +155,7 @@ class MetalKernelBridge:
             self._build_kernels(source_dir)
         except Exception as _exc:
             MetalKernelBridge._initialized = False
-            self._kernel_qk = None
-            self._kernel_qk_qjl = None
-            self._kernel_attn_dense = None
-            self._kernel_attn_quant = None
-            self._kernel_attn_quant_dt = None
-            self._kernel_attn_quant_raw = None
-            self._kernel_attn_quant_dense_tail = None
-            self._kernel_dense_tail_raw = None
-            self.threadgroup_supported = False
-            self.grid_semantics = "unknown"
-            self._tg_x = 32
-            self._stats = KernelExecutionStats()
+            self._clear_kernel_state()
             raise MetalKernelInitializationError(
                 f"TurboPolar Metal initialization failed: {_exc}"
             ) from _exc
@@ -869,12 +877,15 @@ class MetalKernelBridge:
                 raise MetalExecutionRequiredError(
                     f"Compressed-page trace reported fallback_used=True for page with {valid_blocks} blocks"
                 )
+            if not page_trace.get("metal_used"):
+                raise MetalExecutionRequiredError(
+                    f"Compressed-page trace reported metal_used=False for page with {valid_blocks} blocks"
+                )
             state = self._online_softmax_combine_raw(
                 state, page_max, page_exp, page_weighted
             )
             total_tokens += valid_blocks * config.block_size
             page_traces.append(page_trace)
-            self._stats.compressed_page_dispatches += 1
 
         # Dense tail via Metal raw-state kernel.
         dense_tail_metal = False
@@ -896,12 +907,16 @@ class MetalKernelBridge:
             )
             total_tokens += tail_k.shape[2]
             dense_tail_metal = True
-            self._stats.dense_tail_dispatches += 1
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
         output = output.astype(mx.float16)
         mx.eval(output)
 
+        # Count successful dispatches only after output evaluation.
+        for _ in page_traces:
+            self._stats.compressed_page_dispatches += 1
+        if dense_tail_metal:
+            self._stats.dense_tail_dispatches += 1
         self._stats.attention_invocations += 1
         self._stats.online_attention_calls += 1
         if pages and tail_k is not None and tail_k.shape[2] > 0:
@@ -920,6 +935,7 @@ class MetalKernelBridge:
             "total_tokens_processed": total_tokens,
             "num_queries_per_kv": num_queries_per_kv,
             "page_traces": page_traces,
+            "output_evaluated": True,
         }
         return output, trace
 

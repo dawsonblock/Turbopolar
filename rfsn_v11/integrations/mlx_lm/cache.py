@@ -12,7 +12,7 @@ from rfsn_v11.integrations.mlx_lm.telemetry import KernelExecutionStats
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.evidence.execution_trace import (
     ExecutionTraceCollector,
-    AttentionStepTrace,
+    AttentionExecutionTrace,
     KernelOperationTrace,
 )
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
@@ -58,7 +58,7 @@ class TurboPolarFastCache:
         """
         return self.bridge.execution_stats()
 
-    def execution_traces(self) -> List[AttentionStepTrace]:
+    def execution_traces(self) -> List[AttentionExecutionTrace]:
         """Return collected operation-level execution traces."""
         return self._trace_collector.snapshot()
 
@@ -249,17 +249,17 @@ class TurboPolarFastCache:
         execution_mode: str,
         output_evaluated: bool = False,
     ) -> None:
-        """Record an AttentionStepTrace from the bridge execution trace."""
-        page_traces = trace.get("page_traces", [])
+        """Record an AttentionExecutionTrace from the bridge execution trace."""
+        page_traces_raw = trace.get("page_traces", [])
         expected_page_count = len(view.pages)
 
-        operations: list[KernelOperationTrace] = []
-        for page_idx, pt in enumerate(page_traces):
-            operations.append(
+        page_traces: list[KernelOperationTrace] = []
+        for page_idx, pt in enumerate(page_traces_raw):
+            page_traces.append(
                 KernelOperationTrace(
                     experiment_id=experiment_id,
-                    decode_step=decode_step,
                     layer_index=layer_index,
+                    decode_step=decode_step,
                     operation="compressed_page",
                     page_index=page_idx,
                     kernel_name=pt.get("kernel_name", "unknown"),
@@ -275,12 +275,12 @@ class TurboPolarFastCache:
             )
 
         dense_tail_metal = trace.get("dense_tail_metal", False)
-        tail_op = None
+        dense_tail_trace = None
         if view.partial_k is not None and view.partial_k.shape[2] > 0:
-            tail_op = KernelOperationTrace(
+            dense_tail_trace = KernelOperationTrace(
                 experiment_id=experiment_id,
-                decode_step=decode_step,
                 layer_index=layer_index,
+                decode_step=decode_step,
                 operation="dense_tail",
                 page_index=None,
                 kernel_name="dense_tail_raw"
@@ -296,23 +296,22 @@ class TurboPolarFastCache:
                 output_evaluated=output_evaluated,
             )
 
-        step_trace = AttentionStepTrace(
-            experiment_id=experiment_id,
-            decode_step=decode_step,
+        step_trace = AttentionExecutionTrace(
             layer_index=layer_index,
+            decode_step=decode_step,
             expected_page_count=expected_page_count,
-            page_operations=operations,
-            dense_tail_operation=tail_op,
+            page_traces=page_traces,
+            dense_tail_trace=dense_tail_trace,
         )
         self._trace_collector.record(step_trace)
 
         # Strict validation: exact page count, all Metal, zero fallback, outputs evaluated.
         if execution_mode == "metal_strict":
-            if len(operations) != expected_page_count:
+            if len(page_traces) != expected_page_count:
                 raise MetalExecutionRequiredError(
-                    f"Missing page dispatch: expected {expected_page_count}, got {len(operations)}"
+                    f"Missing page dispatch: expected {expected_page_count}, got {len(page_traces)}"
                 )
-            if any(not op.metal_executed for op in operations):
+            if any(not op.metal_executed for op in page_traces):
                 raise MetalExecutionRequiredError("Non-Metal compressed page detected")
             if step_trace.fallback_count != 0:
                 raise MetalExecutionRequiredError("Fallback occurred in strict mode")
