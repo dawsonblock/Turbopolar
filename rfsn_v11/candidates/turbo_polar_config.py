@@ -67,7 +67,7 @@ class TurboPolarConfig:
     """
 
     k_angle_bits_level1: int = 8
-    k_angle_bits_deep: int = 8
+    k_angle_bits_deep: int = 4
     use_int8_radii: bool = True
     v_bits: int = 8
     block_size: int = 64
