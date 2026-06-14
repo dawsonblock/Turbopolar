@@ -349,6 +349,18 @@ def _recompute_speed_ratios(raw_timing: Dict[str, Any]) -> Optional[Dict[str, fl
         return None
 
 
+def _fused_fallback_total(report: "FusedDecodeReport") -> int:
+    """Calculate total fallback calls from fused decode report."""
+    from rfsn_v11.promotion.schema import FusedDecodeReport
+
+    values = (
+        report.compressed_page_fallback_calls,
+        report.dense_tail_fallback_calls,
+        report.full_attention_fallback_calls,
+    )
+    return sum(int(value or 0) for value in values)
+
+
 class PromotionGate:
     """Evaluate PromotionEvidence and render a single PromotionDecision."""
 
@@ -484,6 +496,7 @@ class PromotionGate:
             reasons.append("Teacher-forced run contained NaNs or infinities.")
         
         # Validate teacher-forced raw metrics artifact
+        recomputed: dict[str, Any] | None = None
         if not tf.raw_metrics_path:
             reasons.append("Teacher-forced raw_metrics_path is missing.")
         elif not tf.raw_metrics_hash:
@@ -546,10 +559,17 @@ class PromotionGate:
                                 f"Teacher-forced NaN/Inf mismatch: report {tf.any_nans_or_infs} "
                                 f"!= recomputed {recomputed['any_nan_or_inf']}"
                             )
-            except EvidenceValidationError as exc:
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+                EvidenceValidationError,
+                TraceArtifactError,
+                TraceTopologyError,
+            ) as exc:
                 reasons.append(f"Invalid teacher-forced raw metrics artifact: {exc}")
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                reasons.append(f"Failed to parse teacher-forced raw metrics: {exc}")
 
             # Fail if recomputation is impossible
             if recomputed is None:
@@ -686,14 +706,8 @@ class PromotionGate:
                                 )
                         
                         # Sum of fallback types should match total fallbacks
-                        total_type_fallbacks = 0
-                        if fd.compressed_page_fallbacks:
-                            total_type_fallbacks += fd.compressed_page_fallbacks
-                        if fd.dense_tail_fallbacks:
-                            total_type_fallbacks += fd.dense_tail_fallbacks
-                        if fd.full_attention_fallbacks:
-                            total_type_fallbacks += fd.full_attention_fallbacks
-                        
+                        total_type_fallbacks = _fused_fallback_total(fd)
+
                         if total_type_fallbacks != total_trace_fallback_ops:
                             reasons.append(
                                 f"Sum of typed fallbacks {total_type_fallbacks} "
@@ -701,10 +715,14 @@ class PromotionGate:
                             )
                     
                 except (
+                    OSError,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
                     EvidenceValidationError,
                     TraceArtifactError,
                     TraceTopologyError,
-                    json.JSONDecodeError,
                 ) as exc:
                     reasons.append(f"Invalid trace artifact: {exc}")
         else:
@@ -787,6 +805,7 @@ class PromotionGate:
             reasons.append("Speed evidence raw_timing_hash is missing.")
         else:
             # Validate raw timing artifact
+            recomputed_speed: dict[str, float] | None = None
             try:
                 content = validate_artifact_file(
                     sr.raw_timing_path,
@@ -881,27 +900,32 @@ class PromotionGate:
                                     )
                     
                     # P1-25: Recompute speed ratios from raw timing
-                    recomputed = _recompute_speed_ratios(raw_timing)
-                    if recomputed is not None:
-                        if abs(recomputed["min_ratio_4096_plus"] - (sr.min_ratio_at_4096_plus or 0)) > 0.01:
+                    recomputed_speed = _recompute_speed_ratios(raw_timing)
+                    if recomputed_speed is not None:
+                        if abs(recomputed_speed["min_ratio_4096_plus"] - (sr.min_ratio_at_4096_plus or 0)) > 0.01:
                             reasons.append(
                                 f"Speed min ratio 4096+ mismatch: report {sr.min_ratio_at_4096_plus} "
-                                f"!= recomputed {recomputed['min_ratio_4096_plus']}"
+                                f"!= recomputed {recomputed_speed['min_ratio_4096_plus']}"
                             )
-                        if abs(recomputed["max_ratio_4096_plus"] - (sr.max_ratio_at_4096_plus or 0)) > 0.01:
+                        if abs(recomputed_speed["max_ratio_4096_plus"] - (sr.max_ratio_at_4096_plus or 0)) > 0.01:
                             reasons.append(
                                 f"Speed max ratio 4096+ mismatch: report {sr.max_ratio_at_4096_plus} "
-                                f"!= recomputed {recomputed['max_ratio_4096_plus']}"
+                                f"!= recomputed {recomputed_speed['max_ratio_4096_plus']}"
                             )
-                        if abs(recomputed["median_ratio_8192_plus"] - (sr.median_ratio_at_8192_plus or 0)) > 0.01:
+                        if abs(recomputed_speed["median_ratio_8192_plus"] - (sr.median_ratio_at_8192_plus or 0)) > 0.01:
                             reasons.append(
                                 f"Speed median ratio 8192+ mismatch: report {sr.median_ratio_at_8192_plus} "
-                                f"!= recomputed {recomputed['median_ratio_8192_plus']}"
+                                f"!= recomputed {recomputed_speed['median_ratio_8192_plus']}"
                             )
-            except EvidenceValidationError as exc:
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+                EvidenceValidationError,
+            ) as exc:
                 reasons.append(f"Invalid speed raw timing artifact: {exc}")
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                reasons.append(f"Failed to parse speed raw timing: {exc}")
         
         # Require baseline contexts through 16K
         if 16384 not in sr.contexts_evaluated:
