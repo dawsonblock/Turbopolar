@@ -1,0 +1,49 @@
+[
+  {
+    "experiment_id": "test-exp-001",
+    "context_length": 2048,
+    "fixture_id": "fixture-001",
+    "decode_step": 0,
+    "layer_index": 0,
+    "expected_page_count": 2,
+    "page_traces": [
+      {
+        "experiment_id": "test-exp-001",
+        "context_length": 2048,
+        "fixture_id": "fixture-001",
+        "layer_index": 0,
+        "decode_step": 0,
+        "operation": "compressed_page",
+        "page_index": 0,
+        "kernel_name": "test_kernel",
+        "execution_mode": "metal_strict",
+        "metal_requested": true,
+        "metal_executed": false,
+        "fallback_used": true,
+        "fallback_reason": "injected_for_test",
+        "expected_tokens": 128,
+        "processed_tokens": 128,
+        "output_evaluated": true
+      },
+      {
+        "experiment_id": "test-exp-001",
+        "context_length": 2048,
+        "fixture_id": "fixture-001",
+        "layer_index": 0,
+        "decode_step": 0,
+        "operation": "compressed_page",
+        "page_index": 1,
+        "kernel_name": "test_kernel",
+        "execution_mode": "metal_strict",
+        "metal_requested": true,
+        "metal_executed": true,
+        "fallback_used": false,
+        "fallback_reason": null,
+        "expected_tokens": 128,
+        "processed_tokens": 128,
+        "output_evaluated": true
+      }
+    ],
+    "dense_tail_trace": null
+  }
+]

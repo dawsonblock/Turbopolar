@@ -101,6 +101,8 @@ class TeacherForcedReport:
 @dataclass
 class FusedDecodeReport:
     model: str = ""
+    # Topology expectations
+    model_layer_count: int = 0
     # Per-context completeness (primary evidence).
     contexts_evaluated: List[int] = field(default_factory=list)
     requested_fused_positions_per_context: int = 0
@@ -140,6 +142,7 @@ class FusedDecodeReport:
     def from_dict(cls, data: Dict[str, Any]) -> "FusedDecodeReport":
         return cls(
             model=data.get("model", ""),
+            model_layer_count=int(data.get("model_layer_count", 0)),
             contexts_evaluated=list(data.get("contexts_evaluated", [])),
             requested_fused_positions_per_context=int(
                 data.get("requested_fused_positions_per_context", 0)

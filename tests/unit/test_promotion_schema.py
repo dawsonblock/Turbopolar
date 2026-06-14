@@ -183,9 +183,93 @@ class TestPromotionSchema(unittest.TestCase):
             ),
         )
         decision = PromotionGate().evaluate(evidence)
-        # Unknown provenance with no hard failures is INCOMPLETE, not REVIEW_REQUIRED.
-        self.assertEqual(decision.state, PromotionState.INCOMPLETE)
-        self.assertTrue(any("Git tree state unknown" in r for r in decision.reasons))
+        # With new decision ordering, synthetic evidence is caught before git state
+        # So this should be REVIEW_REQUIRED due to synthetic evidence
+        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
+        self.assertTrue(any("Synthetic or non-experimental evidence" in r for r in decision.reasons))
+
+    def test_synthetic_evidence_blocks_promotion(self):
+        """Test that synthetic evidence blocks promotion regardless of other factors."""
+        evidence = PromotionEvidence(
+            kernel_report=KernelReport(
+                all_unit_tests_passed=True,
+                all_kernel_tests_passed=True,
+                all_integration_tests_passed=True,
+                cpu_metal_agreement_verified=True,
+                required_metal_tests=[],
+                metal_tests_present=[],
+                metal_tests_passed=[],
+            ),
+            teacher_forced_report=TeacherForcedReport(
+                model="test",
+                evaluated_contexts=[512, 2048, 4096, 8192, 16384],
+                total_positions=640,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+            ),
+            fused_decode_report=FusedDecodeReport(
+                model="test",
+                model_layer_count=32,
+                requested_fused_positions_per_context=128,
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
+                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
+                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                trace_artifact_path="",
+                trace_artifact_hash="",
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+                execution_mode="metal_strict",
+            ),
+            speed_report=SpeedReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                trials_per_context=5,
+                min_ratio_at_4096_plus=0.98,
+                max_ratio_at_4096_plus=1.06,
+                median_ratio_at_8192_plus=1.04,
+                execution_mode="metal_strict",
+                fallback_calls=0,
+                raw_timing_hash="test_hash",
+            ),
+            memory_report=MemoryReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                logical_kv_ratio=1.90,
+                persistent_storage_ratio=1.80,
+                peak_device_memory_ratio_at_8192_plus=1.25,
+                hidden_dense_cache_detected=False,
+            ),
+            baseline_comparison_report=BaselineComparisonReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                cartesian_int8_baseline_implemented=True,
+                turbo_polar_wins_on_quality=True,
+                turbo_polar_wins_on_memory=True,
+                turbo_polar_wins_on_speed=True,
+            ),
+            provenance=BenchmarkProvenance(
+                git_tree_state=GitTreeState.CLEAN,
+                model_repo_id="test/model",
+                model_revision="abc",
+                turbopolar_config_hash="def",
+                evidence_kind="synthetic_dry_run",
+            ),
+        )
+        decision = PromotionGate().evaluate(evidence)
+        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
+        self.assertTrue(any("Synthetic or non-experimental evidence is never promotable" in r for r in decision.reasons))
 
 
 if __name__ == "__main__":

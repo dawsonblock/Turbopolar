@@ -4,9 +4,18 @@ No other component may declare promotion. All required evidence must be present
 and passing; missing evidence results in INCOMPLETE/FAILED.
 """
 
+import json
 from pathlib import Path
 from typing import List
 
+from rfsn_v11.evidence.trace_validation import (
+    EvidenceValidationError,
+    TraceArtifactError,
+    TraceTopologyError,
+    parse_trace_artifact,
+    validate_artifact_file,
+    validate_trace_topology,
+)
 from rfsn_v11.promotion.schema import (
     GitTreeState,
     PromotionDecision,
@@ -190,113 +199,42 @@ class PromotionGate:
         if evidence.provenance.evidence_kind == "synthetic_dry_run":
             if fd.trace_artifact_path or fd.trace_artifact_hash:
                 reasons.append("Synthetic dry-run evidence should not have trace artifacts.")
-        else:
+        elif evidence.provenance.evidence_kind == "experimental":
+            # Experimental evidence requires trace artifacts
             if not fd.trace_artifact_path:
                 reasons.append("Fused decode trace artifact path is missing.")
-            elif not Path(fd.trace_artifact_path).exists():
-                reasons.append(f"Fused decode trace artifact file does not exist: {fd.trace_artifact_path}")
-            if not fd.trace_artifact_hash:
+            elif not fd.trace_artifact_hash:
                 reasons.append("Fused decode trace artifact hash is missing.")
-            
-            # Recompute and verify trace artifact hash
-            if fd.trace_artifact_path and fd.trace_artifact_hash and Path(fd.trace_artifact_path).exists():
-                import hashlib
-                import json
+            else:
+                # Use fail-safe artifact validation
                 try:
-                    with open(fd.trace_artifact_path, "r", encoding="utf-8") as f:
-                        trace_data = f.read()
-                    computed_hash = hashlib.sha256(trace_data.encode()).hexdigest()
-                    if computed_hash != fd.trace_artifact_hash:
-                        reasons.append(
-                            f"Trace artifact hash mismatch: computed {computed_hash[:16]} != recorded {fd.trace_artifact_hash[:16]}"
+                    content = validate_artifact_file(
+                        fd.trace_artifact_path,
+                        fd.trace_artifact_hash,
+                        artifact_name="Fused decode trace artifact",
+                    )
+                    raw_traces = json.loads(content)
+                    parsed_traces = parse_trace_artifact(raw_traces)
+                    
+                    # Validate trace topology if model_layer_count is provided
+                    if fd.model_layer_count > 0:
+                        validate_trace_topology(
+                            parsed_traces,
+                            model_layer_count=fd.model_layer_count,
+                            required_contexts=self.REQUIRED_CONTEXTS,
+                            requested_positions_per_context=fd.requested_fused_positions_per_context,
                         )
                     
-                    # Parse and validate trace topology
-                    traces = json.loads(trace_data)
-                    if not isinstance(traces, list):
-                        reasons.append("Trace artifact is not a list of traces.")
-                    else:
-                        # Validate trace structure
-                        for trace in traces:
-                            if not isinstance(trace, dict):
-                                reasons.append("Trace entry is not a dictionary.")
-                                continue
-                            
-                            # Check page traces
-                            page_traces = trace.get("page_traces", [])
-                            if not isinstance(page_traces, list):
-                                reasons.append("page_traces is not a list.")
-                                continue
-                            
-                            # Validate each page trace
-                            for page_trace in page_traces:
-                                if not isinstance(page_trace, dict):
-                                    reasons.append("Page trace is not a dictionary.")
-                                    continue
-                                
-                                # Require Metal execution
-                                if not page_trace.get("metal_executed", False):
-                                    reasons.append(
-                                        f"Page trace layer={page_trace.get('layer_index')} "
-                                        f"step={page_trace.get('decode_step')} "
-                                        f"page={page_trace.get('page_index')} "
-                                        "did not execute Metal kernel."
-                                    )
-                                
-                                # Require no fallback
-                                if page_trace.get("fallback_used", False):
-                                    reasons.append(
-                                        f"Page trace layer={page_trace.get('layer_index')} "
-                                        f"step={page_trace.get('decode_step')} "
-                                        f"page={page_trace.get('page_index')} "
-                                        f"used fallback: {page_trace.get('fallback_reason')}"
-                                    )
-                                
-                                # Require output evaluation
-                                if not page_trace.get("output_evaluated", False):
-                                    reasons.append(
-                                        f"Page trace layer={page_trace.get('layer_index')} "
-                                        f"step={page_trace.get('decode_step')} "
-                                        f"page={page_trace.get('page_index')} "
-                                        "output was not evaluated."
-                                    )
-                            
-                            # Check dense tail trace
-                            dense_tail = trace.get("dense_tail_trace")
-                            if dense_tail and isinstance(dense_tail, dict):
-                                if not dense_tail.get("metal_executed", False):
-                                    reasons.append(
-                                        f"Dense tail trace layer={dense_tail.get('layer_index')} "
-                                        f"step={dense_tail.get('decode_step')} "
-                                        "did not execute Metal kernel."
-                                    )
-                                if dense_tail.get("fallback_used", False):
-                                    reasons.append(
-                                        f"Dense tail trace layer={dense_tail.get('layer_index')} "
-                                        f"step={dense_tail.get('decode_step')} "
-                                        f"used fallback: {dense_tail.get('fallback_reason')}"
-                                    )
-                                if not dense_tail.get("output_evaluated", False):
-                                    reasons.append(
-                                        f"Dense tail trace layer={dense_tail.get('layer_index')} "
-                                        f"step={dense_tail.get('decode_step')} "
-                                        "output was not evaluated."
-                                    )
-                        
-                        # Check for empty experiment IDs
-                        for trace in traces:
-                            page_traces = trace.get("page_traces", [])
-                            for pt in page_traces:
-                                if not pt.get("experiment_id"):
-                                    reasons.append("Trace operation missing experiment_id.")
-                                    break
-                            dense_tail = trace.get("dense_tail_trace")
-                            if dense_tail and not dense_tail.get("experiment_id"):
-                                reasons.append("Dense tail trace missing experiment_id.")
-                                break
-                    
-                except (json.JSONDecodeError, IOError) as e:
-                    reasons.append(f"Failed to parse trace artifact: {e}")
+                except (
+                    EvidenceValidationError,
+                    TraceArtifactError,
+                    TraceTopologyError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    reasons.append(f"Invalid trace artifact: {exc}")
+        else:
+            # Unknown evidence kind - treat as incomplete
+            reasons.append(f"Unknown evidence kind: {evidence.provenance.evidence_kind}")
 
         # Strict Metal execution verification.
         if fd.execution_mode is None:
@@ -485,17 +423,19 @@ class PromotionGate:
 
         # Provenance
         pv = evidence.provenance
+        
+        # Check evidence kind early - synthetic evidence is never promotable
+        if pv.evidence_kind != "experimental":
+            return PromotionDecision(
+                state=PromotionState.REVIEW_REQUIRED,
+                reasons=[
+                    "Synthetic or non-experimental evidence is never promotable."
+                ],
+                evidence=evidence,
+            )
+        
         if pv.git_tree_state == GitTreeState.UNKNOWN:
             reasons.append("Git tree state unknown; cannot verify reproducibility.")
-            # Do not soften hard quantitative failures into REVIEW_REQUIRED.
-            if reasons[:-1]:
-                pass  # Already has failures; continue to FAILED below.
-            else:
-                return PromotionDecision(
-                    state=PromotionState.INCOMPLETE,
-                    reasons=reasons,
-                    evidence=evidence,
-                )
         if pv.git_tree_state == GitTreeState.DIRTY:
             reasons.append(
                 f"Source tree was dirty (diff hash {pv.git_diff_hash}); promotion requires a clean tree."
@@ -505,6 +445,8 @@ class PromotionGate:
         if not pv.turbopolar_config_hash:
             reasons.append("TurboPolar config hash missing.")
 
+        # Explicit promotion decision ordering
+        # 1. Hard quantitative/artifact failures -> FAILED
         if reasons:
             return PromotionDecision(
                 state=PromotionState.FAILED,
@@ -512,6 +454,15 @@ class PromotionGate:
                 evidence=evidence,
             )
 
+        # 2. Evidence missing or provenance unknown -> INCOMPLETE
+        if pv.git_tree_state == GitTreeState.UNKNOWN:
+            return PromotionDecision(
+                state=PromotionState.INCOMPLETE,
+                reasons=["Git tree state unknown; cannot verify reproducibility."],
+                evidence=evidence,
+            )
+
+        # 3. Promotion locked -> REVIEW_REQUIRED
         if self.PROMOTION_LOCKED:
             return PromotionDecision(
                 state=PromotionState.REVIEW_REQUIRED,
@@ -523,6 +474,7 @@ class PromotionGate:
                 evidence=evidence,
             )
 
+        # 4. All checks pass -> PROMOTED_EXPERIMENTAL
         return PromotionDecision(
             state=PromotionState.PROMOTED_EXPERIMENTAL,
             reasons=["All required evidence present and passing."],
