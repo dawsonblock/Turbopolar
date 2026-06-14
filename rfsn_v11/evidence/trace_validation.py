@@ -6,6 +6,7 @@ All fields are validated explicitly - no .get() defaults that hide missing data.
 
 import hashlib
 import hmac
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,86 @@ class EvidenceValidationError(TraceArtifactError):
     """Raised when evidence artifact validation fails."""
 
     pass
+
+
+def generate_deterministic_experiment_id(
+    run_id: str,
+    fixture_id: str,
+    context_length: int,
+    context_hash: str,
+    continuation_hash: str,
+    model_revision: str,
+    config_hash: str,
+) -> str:
+    """Generate a deterministic experiment ID from immutable inputs.
+
+    Args:
+        run_id: Unique identifier for this benchmark run
+        fixture_id: Identifier for the fixture used
+        context_length: Length of the context in tokens
+        context_hash: SHA-256 hash of the context tokens
+        continuation_hash: SHA-256 hash of the continuation tokens
+        model_revision: Git revision of the model
+        config_hash: Hash of the TurboPolar configuration
+
+    Returns:
+        Deterministic SHA-256 hex digest as experiment ID
+    """
+    # Create canonical JSON representation of inputs
+    canonical = json.dumps({
+        "run_id": run_id,
+        "fixture_id": fixture_id,
+        "context_length": context_length,
+        "context_hash": context_hash,
+        "continuation_hash": continuation_hash,
+        "model_revision": model_revision,
+        "config_hash": config_hash,
+    }, sort_keys=True, separators=(',', ':'))
+    
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class FixtureEntry:
+    """Exact fixture entry with all required metadata."""
+    fixture_id: str
+    category: str
+    context_tokens_path: str
+    continuation_tokens_path: str
+    context_sha256: str
+    continuation_sha256: str
+
+
+@dataclass(frozen=True)
+class ExactFixtureManifest:
+    """Exact fixture manifest for all required contexts."""
+    model_id: str
+    model_revision: str
+    tokenizer_revision: str
+    contexts: dict[int, list[FixtureEntry]]
+
+    def get_fixture_for_context(
+        self,
+        context_length: int,
+        category: str | None = None,
+    ) -> FixtureEntry | None:
+        """Get a specific fixture for a context length and optional category.
+
+        Args:
+            context_length: Required context length
+            category: Optional category filter
+
+        Returns:
+            Fixture entry or None if not found
+        """
+        if context_length not in self.contexts:
+            return None
+        
+        fixtures = self.contexts[context_length]
+        if category:
+            fixtures = [f for f in fixtures if f.category == category]
+        
+        return fixtures[0] if fixtures else None
 
 
 def validate_artifact_file(

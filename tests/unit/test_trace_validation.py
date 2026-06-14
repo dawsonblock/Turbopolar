@@ -12,6 +12,9 @@ from rfsn_v11.evidence.trace_validation import (
     parse_trace_artifact,
     validate_trace_topology,
     validate_artifact_file,
+    generate_deterministic_experiment_id,
+    FixtureEntry,
+    ExactFixtureManifest,
     ParsedOperationTrace,
     ParsedAttentionTrace,
 )
@@ -1091,3 +1094,482 @@ class TestArtifactFileValidation:
             assert result == content
         finally:
             Path(temp_path).unlink()
+
+
+class TestDeterministicExperimentId:
+    """Test deterministic experiment ID generation."""
+
+    def test_same_inputs_same_id(self):
+        """Same inputs should produce the same experiment ID."""
+        exp_id1 = generate_deterministic_experiment_id(
+            run_id="run-001",
+            fixture_id="fixture-001",
+            context_length=2048,
+            context_hash="abc123",
+            continuation_hash="def456",
+            model_revision="rev-001",
+            config_hash="cfg-001",
+        )
+        exp_id2 = generate_deterministic_experiment_id(
+            run_id="run-001",
+            fixture_id="fixture-001",
+            context_length=2048,
+            context_hash="abc123",
+            continuation_hash="def456",
+            model_revision="rev-001",
+            config_hash="cfg-001",
+        )
+        assert exp_id1 == exp_id2
+
+    def test_different_inputs_different_id(self):
+        """Different inputs should produce different experiment IDs."""
+        exp_id1 = generate_deterministic_experiment_id(
+            run_id="run-001",
+            fixture_id="fixture-001",
+            context_length=2048,
+            context_hash="abc123",
+            continuation_hash="def456",
+            model_revision="rev-001",
+            config_hash="cfg-001",
+        )
+        exp_id2 = generate_deterministic_experiment_id(
+            run_id="run-002",  # Different run_id
+            fixture_id="fixture-001",
+            context_length=2048,
+            context_hash="abc123",
+            continuation_hash="def456",
+            model_revision="rev-001",
+            config_hash="cfg-001",
+        )
+        assert exp_id1 != exp_id2
+
+    def test_output_is_sha256_hex(self):
+        """Output should be a 64-character hex string."""
+        exp_id = generate_deterministic_experiment_id(
+            run_id="run-001",
+            fixture_id="fixture-001",
+            context_length=2048,
+            context_hash="abc123",
+            continuation_hash="def456",
+            model_revision="rev-001",
+            config_hash="cfg-001",
+        )
+        assert len(exp_id) == 64
+        assert all(c in "0123456789abcdef" for c in exp_id)
+
+
+class TestExactFixtureManifest:
+    """Test exact fixture manifest structure."""
+
+    def test_fixture_entry_creation(self):
+        """Fixture entry should store all required metadata."""
+        entry = FixtureEntry(
+            fixture_id="prose-512-01",
+            category="natural_prose",
+            context_tokens_path="/data/contexts/512/prose-01.npy",
+            continuation_tokens_path="/data/continuations/512/prose-01.npy",
+            context_sha256="abc123",
+            continuation_sha256="def456",
+        )
+        assert entry.fixture_id == "prose-512-01"
+        assert entry.category == "natural_prose"
+        assert entry.context_sha256 == "abc123"
+
+    def test_manifest_creation(self):
+        """Manifest should organize fixtures by context length."""
+        manifest = ExactFixtureManifest(
+            model_id="test/model",
+            model_revision="abc123",
+            tokenizer_revision="def456",
+            contexts={
+                512: [
+                    FixtureEntry(
+                        fixture_id="prose-512-01",
+                        category="natural_prose",
+                        context_tokens_path="/data/contexts/512/prose-01.npy",
+                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
+                        context_sha256="abc123",
+                        continuation_sha256="def456",
+                    )
+                ],
+                2048: [],
+            },
+        )
+        assert manifest.model_id == "test/model"
+        assert len(manifest.contexts[512]) == 1
+        assert len(manifest.contexts[2048]) == 0
+
+    def test_get_fixture_for_context(self):
+        """Should retrieve correct fixture for context length."""
+        manifest = ExactFixtureManifest(
+            model_id="test/model",
+            model_revision="abc123",
+            tokenizer_revision="def456",
+            contexts={
+                512: [
+                    FixtureEntry(
+                        fixture_id="prose-512-01",
+                        category="natural_prose",
+                        context_tokens_path="/data/contexts/512/prose-01.npy",
+                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
+                        context_sha256="abc123",
+                        continuation_sha256="def456",
+                    )
+                ],
+            },
+        )
+        fixture = manifest.get_fixture_for_context(512)
+        assert fixture is not None
+        assert fixture.fixture_id == "prose-512-01"
+
+    def test_get_fixture_with_category_filter(self):
+        """Should filter fixtures by category."""
+        manifest = ExactFixtureManifest(
+            model_id="test/model",
+            model_revision="abc123",
+            tokenizer_revision="def456",
+            contexts={
+                512: [
+                    FixtureEntry(
+                        fixture_id="prose-512-01",
+                        category="natural_prose",
+                        context_tokens_path="/data/contexts/512/prose-01.npy",
+                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
+                        context_sha256="abc123",
+                        continuation_sha256="def456",
+                    ),
+                    FixtureEntry(
+                        fixture_id="code-512-01",
+                        category="code",
+                        context_tokens_path="/data/contexts/512/code-01.npy",
+                        continuation_tokens_path="/data/continuations/512/code-01.npy",
+                        context_sha256="ghi789",
+                        continuation_sha256="jkl012",
+                    ),
+                ],
+            },
+        )
+        prose_fixture = manifest.get_fixture_for_context(512, category="natural_prose")
+        assert prose_fixture is not None
+        assert prose_fixture.fixture_id == "prose-512-01"
+
+    def test_get_fixture_returns_none_for_missing_context(self):
+        """Should return None for missing context length."""
+        manifest = ExactFixtureManifest(
+            model_id="test/model",
+            model_revision="abc123",
+            tokenizer_revision="def456",
+            contexts={},
+        )
+        fixture = manifest.get_fixture_for_context(2048)
+        assert fixture is None
+
+
+class TestGateSafetyWithMalformedEvidence:
+    """Test that the promotion gate handles malformed evidence safely."""
+
+    def test_empty_trace_artifact_fails(self):
+        """Empty trace artifact should cause gate to fail."""
+        from rfsn_v11.promotion import PromotionGate, PromotionEvidence
+        from rfsn_v11.promotion.schema import (
+            KernelReport,
+            TeacherForcedReport,
+            FusedDecodeReport,
+            SpeedReport,
+            MemoryReport,
+            BaselineComparisonReport,
+            BenchmarkProvenance,
+            GitTreeState,
+        )
+
+        # Create minimal evidence with empty trace artifact
+        evidence = PromotionEvidence(
+            kernel_report=KernelReport(
+                all_unit_tests_passed=True,
+                all_kernel_tests_passed=True,
+                all_integration_tests_passed=True,
+                cpu_metal_agreement_verified=True,
+                required_metal_tests=[],
+                metal_tests_present=[],
+                metal_tests_passed=[],
+            ),
+            teacher_forced_report=TeacherForcedReport(
+                model="test",
+                evaluated_contexts=[512, 2048, 4096, 8192, 16384],
+                total_positions=640,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+            ),
+            fused_decode_report=FusedDecodeReport(
+                model="test",
+                model_layer_count=32,
+                requested_fused_positions_per_context=128,
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
+                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
+                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                trace_artifact_path="tests/fixtures/evidence/empty_trace.json",
+                trace_artifact_hash="abc123",  # Wrong hash for empty file
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+                execution_mode="metal_strict",
+            ),
+            speed_report=SpeedReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                trials_per_context=5,
+                min_ratio_at_4096_plus=0.98,
+                max_ratio_at_4096_plus=1.06,
+                median_ratio_at_8192_plus=1.04,
+                execution_mode="metal_strict",
+                fallback_calls=0,
+                raw_timing_hash="test_hash",
+            ),
+            memory_report=MemoryReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                logical_kv_ratio=1.90,
+                persistent_storage_ratio=1.80,
+                peak_device_memory_ratio_at_8192_plus=1.25,
+                hidden_dense_cache_detected=False,
+            ),
+            baseline_comparison_report=BaselineComparisonReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                cartesian_int8_baseline_implemented=True,
+                turbo_polar_wins_on_quality=True,
+                turbo_polar_wins_on_memory=True,
+                turbo_polar_wins_on_speed=True,
+            ),
+            provenance=BenchmarkProvenance(
+                git_tree_state=GitTreeState.CLEAN,
+                model_repo_id="test/model",
+                model_revision="abc",
+                turbopolar_config_hash="def",
+                evidence_kind="experimental",
+            ),
+        )
+
+        gate = PromotionGate()
+        decision = gate.evaluate(evidence)
+        # Should fail due to empty trace artifact
+        assert decision.state.value in ["FAILED", "INCOMPLETE"]
+        assert any("trace artifact" in r.lower() for r in decision.reasons)
+
+    def test_null_trace_entry_fails(self):
+        """Null trace entry should cause gate to fail."""
+        from rfsn_v11.promotion import PromotionGate, PromotionEvidence
+        from rfsn_v11.promotion.schema import (
+            KernelReport,
+            TeacherForcedReport,
+            FusedDecodeReport,
+            SpeedReport,
+            MemoryReport,
+            BaselineComparisonReport,
+            BenchmarkProvenance,
+            GitTreeState,
+        )
+
+        # Calculate correct hash for null trace file
+        import hashlib
+        with open("tests/fixtures/evidence/null_trace.json", "rb") as f:
+            content = f.read()
+        correct_hash = hashlib.sha256(content).hexdigest()
+
+        evidence = PromotionEvidence(
+            kernel_report=KernelReport(
+                all_unit_tests_passed=True,
+                all_kernel_tests_passed=True,
+                all_integration_tests_passed=True,
+                cpu_metal_agreement_verified=True,
+                required_metal_tests=[],
+                metal_tests_present=[],
+                metal_tests_passed=[],
+            ),
+            teacher_forced_report=TeacherForcedReport(
+                model="test",
+                evaluated_contexts=[512, 2048, 4096, 8192, 16384],
+                total_positions=640,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+            ),
+            fused_decode_report=FusedDecodeReport(
+                model="test",
+                model_layer_count=32,
+                requested_fused_positions_per_context=128,
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
+                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
+                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                trace_artifact_path="tests/fixtures/evidence/null_trace.json",
+                trace_artifact_hash=correct_hash,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+                execution_mode="metal_strict",
+            ),
+            speed_report=SpeedReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                trials_per_context=5,
+                min_ratio_at_4096_plus=0.98,
+                max_ratio_at_4096_plus=1.06,
+                median_ratio_at_8192_plus=1.04,
+                execution_mode="metal_strict",
+                fallback_calls=0,
+                raw_timing_hash="test_hash",
+            ),
+            memory_report=MemoryReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                logical_kv_ratio=1.90,
+                persistent_storage_ratio=1.80,
+                peak_device_memory_ratio_at_8192_plus=1.25,
+                hidden_dense_cache_detected=False,
+            ),
+            baseline_comparison_report=BaselineComparisonReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                cartesian_int8_baseline_implemented=True,
+                turbo_polar_wins_on_quality=True,
+                turbo_polar_wins_on_memory=True,
+                turbo_polar_wins_on_speed=True,
+            ),
+            provenance=BenchmarkProvenance(
+                git_tree_state=GitTreeState.CLEAN,
+                model_repo_id="test/model",
+                model_revision="abc",
+                turbopolar_config_hash="def",
+                evidence_kind="experimental",
+            ),
+        )
+
+        gate = PromotionGate()
+        decision = gate.evaluate(evidence)
+        # Should fail due to null trace entry
+        assert decision.state.value in ["FAILED", "INCOMPLETE"]
+        assert any("trace artifact" in r.lower() for r in decision.reasons)
+
+    def test_fallback_trace_fails(self):
+        """Fallback trace should cause gate to fail."""
+        from rfsn_v11.promotion import PromotionGate, PromotionEvidence
+        from rfsn_v11.promotion.schema import (
+            KernelReport,
+            TeacherForcedReport,
+            FusedDecodeReport,
+            SpeedReport,
+            MemoryReport,
+            BaselineComparisonReport,
+            BenchmarkProvenance,
+            GitTreeState,
+        )
+
+        # Calculate correct hash for fallback trace file
+        with open("tests/fixtures/evidence/fallback_trace.json", "rb") as f:
+            content = f.read()
+        correct_hash = hashlib.sha256(content).hexdigest()
+
+        evidence = PromotionEvidence(
+            kernel_report=KernelReport(
+                all_unit_tests_passed=True,
+                all_kernel_tests_passed=True,
+                all_integration_tests_passed=True,
+                cpu_metal_agreement_verified=True,
+                required_metal_tests=[],
+                metal_tests_present=[],
+                metal_tests_passed=[],
+            ),
+            teacher_forced_report=TeacherForcedReport(
+                model="test",
+                evaluated_contexts=[512, 2048, 4096, 8192, 16384],
+                total_positions=640,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+            ),
+            fused_decode_report=FusedDecodeReport(
+                model="test",
+                model_layer_count=32,
+                requested_fused_positions_per_context=128,
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
+                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
+                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                trace_artifact_path="tests/fixtures/evidence/fallback_trace.json",
+                trace_artifact_hash=correct_hash,
+                mean_logit_cosine=0.996,
+                p05_logit_cosine=0.991,
+                min_logit_cosine=0.976,
+                mean_top5_overlap=0.96,
+                mean_top10_overlap=0.98,
+                argmax_agreement=0.98,
+                mean_perplexity_delta=0.01,
+                any_nans_or_infs=False,
+                execution_mode="metal_strict",
+            ),
+            speed_report=SpeedReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                trials_per_context=5,
+                min_ratio_at_4096_plus=0.98,
+                max_ratio_at_4096_plus=1.06,
+                median_ratio_at_8192_plus=1.04,
+                execution_mode="metal_strict",
+                fallback_calls=0,
+                raw_timing_hash="test_hash",
+            ),
+            memory_report=MemoryReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                logical_kv_ratio=1.90,
+                persistent_storage_ratio=1.80,
+                peak_device_memory_ratio_at_8192_plus=1.25,
+                hidden_dense_cache_detected=False,
+            ),
+            baseline_comparison_report=BaselineComparisonReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
+                cartesian_int8_baseline_implemented=True,
+                turbo_polar_wins_on_quality=True,
+                turbo_polar_wins_on_memory=True,
+                turbo_polar_wins_on_speed=True,
+            ),
+            provenance=BenchmarkProvenance(
+                git_tree_state=GitTreeState.CLEAN,
+                model_repo_id="test/model",
+                model_revision="abc",
+                turbopolar_config_hash="def",
+                evidence_kind="experimental",
+            ),
+        )
+
+        gate = PromotionGate()
+        decision = gate.evaluate(evidence)
+        # Should fail due to fallback in trace
+        assert decision.state.value in ["FAILED", "INCOMPLETE"]
+        assert any("fallback" in r.lower() for r in decision.reasons)

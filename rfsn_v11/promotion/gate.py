@@ -157,6 +157,21 @@ class PromotionGate:
             )
         if tf.any_nans_or_infs:
             reasons.append("Teacher-forced run contained NaNs or infinities.")
+        
+        # Validate teacher-forced raw metrics artifact
+        if not tf.raw_metrics_path:
+            reasons.append("Teacher-forced raw_metrics_path is missing.")
+        elif not tf.raw_metrics_hash:
+            reasons.append("Teacher-forced raw_metrics_hash is missing.")
+        else:
+            try:
+                validate_artifact_file(
+                    tf.raw_metrics_path,
+                    tf.raw_metrics_hash,
+                    artifact_name="Teacher-forced raw metrics artifact",
+                )
+            except EvidenceValidationError as exc:
+                reasons.append(f"Invalid teacher-forced raw metrics artifact: {exc}")
 
         # Fused decode quality
         fd = evidence.fused_decode_report
@@ -306,8 +321,20 @@ class PromotionGate:
             reasons.append(
                 f"Speed evidence fallback_calls={sr.fallback_calls}; fallback occurred in strict mode."
             )
-        if not sr.raw_timing_hash:
+        if not sr.raw_timing_path:
+            reasons.append("Speed evidence raw_timing_path is missing.")
+        elif not sr.raw_timing_hash:
             reasons.append("Speed evidence raw_timing_hash is missing.")
+        else:
+            # Validate raw timing artifact
+            try:
+                validate_artifact_file(
+                    sr.raw_timing_path,
+                    sr.raw_timing_hash,
+                    artifact_name="Speed raw timing artifact",
+                )
+            except EvidenceValidationError as exc:
+                reasons.append(f"Invalid speed raw timing artifact: {exc}")
         
         # Require baseline contexts through 16K
         if 16384 not in sr.contexts_evaluated:

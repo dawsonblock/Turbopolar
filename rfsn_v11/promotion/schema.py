@@ -199,6 +199,7 @@ class SpeedReport:
     median_ratio_at_8192_plus: Optional[float] = None
     execution_mode: Optional[str] = None
     fallback_calls: int = 0
+    raw_timing_path: str = ""
     raw_timing_hash: str = ""
     notes: List[str] = field(default_factory=list)
 
@@ -218,6 +219,7 @@ class SpeedReport:
             median_ratio_at_8192_plus=data.get("median_ratio_at_8192_plus"),
             execution_mode=data.get("execution_mode"),
             fallback_calls=int(data.get("fallback_calls", 0)),
+            raw_timing_path=data.get("raw_timing_path", ""),
             raw_timing_hash=data.get("raw_timing_hash", ""),
             notes=list(data.get("notes", [])),
         )
