@@ -138,7 +138,7 @@ class TestRunFusedForcedDecode(unittest.TestCase):
             self.assertEqual(len(fx["tokens"]), fx["length"])
             self.assertIn(
                 fx["category"],
-                ("short", "boundary", "medium", "long", "stress"),
+                ("short", "boundary", "medium", "long", "stress", "fused_512"),
             )
 
     def test_fallback_extraction_with_dict_traces(self):
