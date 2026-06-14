@@ -2,7 +2,7 @@
 
 import unittest
 
-from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig, validate_supported_configuration
 
 
 class TestSupportedConfigContract(unittest.TestCase):
@@ -188,6 +188,95 @@ class TestSupportedConfigContract(unittest.TestCase):
                 num_kv_heads=4,
                 trace_validation_mode=12345,
             )
+
+    def test_default_config_has_8bit_angles(self):
+        """Default configuration must use 8/8-bit angles for supported mode."""
+        cfg = TurboPolarConfig()
+        self.assertEqual(cfg.k_angle_bits_level1, 8)
+        self.assertEqual(cfg.k_angle_bits_deep, 8)
+
+    def test_validate_supported_configuration_accepts_8bit_angles(self):
+        """Supported configuration validator must accept 8/8-bit angles."""
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            page_capacity_blocks=16,
+            num_q_heads=8,
+            num_kv_heads=4,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=8,
+            use_qjl=False,
+            storage_mode="kv_quant",
+        )
+        # Should not raise
+        validate_supported_configuration(cfg)
+
+    def test_validate_supported_configuration_rejects_4bit_deep_angles(self):
+        """Supported configuration validator must reject 4-bit deep angles."""
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            page_capacity_blocks=16,
+            num_q_heads=8,
+            num_kv_heads=4,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=4,  # Not supported for promotion
+            use_qjl=False,
+            storage_mode="kv_quant",
+        )
+        with self.assertRaisesRegex(ValueError, "Supported configuration requires 8-bit deep angles"):
+            validate_supported_configuration(cfg)
+
+    def test_validate_supported_configuration_rejects_2bit_deep_angles(self):
+        """Supported configuration validator must reject 2-bit deep angles."""
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            page_capacity_blocks=16,
+            num_q_heads=8,
+            num_kv_heads=4,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=2,  # Not supported for promotion
+            use_qjl=False,
+            storage_mode="kv_quant",
+        )
+        with self.assertRaisesRegex(ValueError, "Supported configuration requires 8-bit deep angles"):
+            validate_supported_configuration(cfg)
+
+    def test_validate_supported_configuration_rejects_4bit_level1_angles(self):
+        """Supported configuration validator must reject 4-bit level-1 angles."""
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            page_capacity_blocks=16,
+            num_q_heads=8,
+            num_kv_heads=4,
+            k_angle_bits_level1=4,  # Not supported for promotion
+            k_angle_bits_deep=8,
+            use_qjl=False,
+            storage_mode="kv_quant",
+        )
+        with self.assertRaisesRegex(ValueError, "Supported configuration requires 8-bit level-1 angles"):
+            validate_supported_configuration(cfg)
+
+    def test_experimental_4bit_mode_constructs_but_fails_validation(self):
+        """Experimental 4-bit mode can construct but fails supported config validation."""
+        cfg = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            page_capacity_blocks=16,
+            num_q_heads=8,
+            num_kv_heads=4,
+            k_angle_bits_level1=8,
+            k_angle_bits_deep=4,
+            use_qjl=False,
+            storage_mode="kv_quant",
+        )
+        # Construction should succeed (experimental mode)
+        self.assertEqual(cfg.k_angle_bits_deep, 4)
+        # But validation should fail
+        with self.assertRaisesRegex(ValueError, "Supported configuration requires 8-bit deep angles"):
+            validate_supported_configuration(cfg)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ Any deviation from this contract is unsupported and will raise an error.
 
 ## Quantization formats
 
-- **Key (K):** log-int8 radius + 8-bit angle codes
+- **Key (K):** log-int8 radius + 8-bit angle codes (both level-1 and deep angles must be 8-bit for supported configuration)
 - **Value (V):** grouped int8 (`storage_mode="kv_quant"`)
 - **QJL:** disabled
 

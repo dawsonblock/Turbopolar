@@ -19,7 +19,7 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
       - Head dimension: 128
       - Block size: 64
       - Page capacity: 16 blocks per page
-      - K format: log-int8 radius + 8-bit angle
+      - K format: log-int8 radius + 8-bit angle (both level1 and deep)
       - V format: grouped int8
       - QJL: disabled
       - Sliding window: unsupported
@@ -41,6 +41,10 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
         raise NotImplementedError("Only kv_quant storage is supported")
     if config.attention_scale <= 0:
         raise ValueError("attention_scale must be positive")
+    if config.k_angle_bits_level1 != 8:
+        raise ValueError("Supported configuration requires 8-bit level-1 angles")
+    if config.k_angle_bits_deep != 8:
+        raise ValueError("Supported configuration requires 8-bit deep angles")
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class TurboPolarConfig:
     """
 
     k_angle_bits_level1: int = 8
-    k_angle_bits_deep: int = 4
+    k_angle_bits_deep: int = 8
     use_int8_radii: bool = True
     v_bits: int = 8
     block_size: int = 64

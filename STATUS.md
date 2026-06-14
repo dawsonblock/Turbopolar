@@ -81,6 +81,8 @@ See `docs/SUPPORTED_CONFIGURATION.md`. The narrow supported scope is:
 - `head_dim == 128`
 - `block_size == 64`
 - `storage_mode == "kv_quant"`
+- `k_angle_bits_level1 == 8` (8-bit level-1 angles)
+- `k_angle_bits_deep == 8` (8-bit deep angles)
 - single-batch autoregressive decode
 - full causal attention
 - QJL disabled
