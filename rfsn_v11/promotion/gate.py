@@ -6,7 +6,7 @@ and passing; missing evidence results in INCOMPLETE/FAILED.
 
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any, Optional
 
 from rfsn_v11.evidence.trace_validation import (
     EvidenceValidationError,
@@ -22,6 +22,120 @@ from rfsn_v11.promotion.schema import (
     PromotionEvidence,
     PromotionState,
 )
+
+
+def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Recompute teacher-forced summary from position-level metrics."""
+    try:
+        positions = raw_metrics.get("positions", [])
+        if not positions:
+            return None
+        
+        cosines = []
+        top5_overlaps = []
+        top10_overlaps = []
+        argmax_agreements = []
+        ppl_deltas = []
+        any_nan_or_inf = False
+        
+        for pos in positions:
+            cos = pos.get("logit_cosine")
+            if cos is not None:
+                cosines.append(cos)
+            
+            top5 = pos.get("top5_overlap")
+            if top5 is not None:
+                top5_overlaps.append(top5)
+            
+            top10 = pos.get("top10_overlap")
+            if top10 is not None:
+                top10_overlaps.append(top10)
+            
+            argmax = pos.get("argmax_agreement")
+            if argmax is not None:
+                argmax_agreements.append(1 if argmax else 0)
+            
+            ppl = pos.get("perplexity_delta")
+            if ppl is not None:
+                ppl_deltas.append(abs(ppl))
+            
+            if pos.get("any_nan_or_inf", False):
+                any_nan_or_inf = True
+        
+        if not cosines:
+            return None
+        
+        cosines.sort()
+        mean_cosine = sum(cosines) / len(cosines)
+        p05_cosine = cosines[int(len(cosines) * 0.05)] if len(cosines) > 0 else 0
+        min_cosine = cosines[0] if cosines else 0
+        
+        mean_top5 = sum(top5_overlaps) / len(top5_overlaps) if top5_overlaps else 0
+        mean_top10 = sum(top10_overlaps) / len(top10_overlaps) if top10_overlaps else 0
+        argmax_agreement = sum(argmax_agreements) / len(argmax_agreements) if argmax_agreements else 0
+        mean_ppl_delta = sum(ppl_deltas) / len(ppl_deltas) if ppl_deltas else 0
+        
+        return {
+            "mean_cosine": mean_cosine,
+            "p05_cosine": p05_cosine,
+            "min_cosine": min_cosine,
+            "mean_top5": mean_top5,
+            "mean_top10": mean_top10,
+            "argmax_agreement": argmax_agreement,
+            "mean_ppl_delta": mean_ppl_delta,
+            "any_nan_or_inf": any_nan_or_inf,
+        }
+    except (KeyError, TypeError, ZeroDivisionError):
+        return None
+
+
+def _recompute_speed_ratios(raw_timing: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Recompute speed ratios from raw timing trials."""
+    try:
+        trials = raw_timing.get("trials", {})
+        if not trials:
+            return None
+        
+        context_ratios_4096_plus = []
+        context_ratios_8192_plus = []
+        
+        for context, context_trials in trials.items():
+            if not isinstance(context_trials, list):
+                continue
+            
+            for trial in context_trials:
+                if not isinstance(trial, dict):
+                    continue
+                
+                turbo_time = trial.get("turbo_time_ms")
+                baseline_time = trial.get("baseline_time_ms")
+                
+                if turbo_time is not None and baseline_time is not None and baseline_time > 0:
+                    ratio = baseline_time / turbo_time
+                    
+                    if context >= 4096:
+                        context_ratios_4096_plus.append(ratio)
+                    if context >= 8192:
+                        context_ratios_8192_plus.append(ratio)
+        
+        if not context_ratios_4096_plus:
+            return None
+        
+        min_ratio_4096_plus = min(context_ratios_4096_plus)
+        max_ratio_4096_plus = max(context_ratios_4096_plus)
+        
+        if context_ratios_8192_plus:
+            median_ratio_8192_plus = sorted(context_ratios_8192_plus)[len(context_ratios_8192_plus) // 2]
+        else:
+            median_ratio_8192_plus = 0
+        
+        return {
+            "min_ratio_4096_plus": min_ratio_4096_plus,
+            "max_ratio_4096_plus": max_ratio_4096_plus,
+            "median_ratio_8192_plus": median_ratio_8192_plus,
+        }
+    except (KeyError, TypeError, ZeroDivisionError):
+        return None
 
 
 class PromotionGate:
@@ -165,13 +279,64 @@ class PromotionGate:
             reasons.append("Teacher-forced raw_metrics_hash is missing.")
         else:
             try:
-                validate_artifact_file(
+                content = validate_artifact_file(
                     tf.raw_metrics_path,
                     tf.raw_metrics_hash,
                     artifact_name="Teacher-forced raw metrics artifact",
                 )
+                # P1-24: Parse position records and recompute summaries
+                raw_metrics = json.loads(content)
+                if not isinstance(raw_metrics, dict):
+                    reasons.append("Teacher-forced raw metrics must be a JSON object")
+                else:
+                    # Recompute summary from position records
+                    recomputed = _recompute_teacher_forced_summary(raw_metrics)
+                    if recomputed is not None:
+                        # Compare with report values
+                        if abs(recomputed["mean_cosine"] - (tf.mean_logit_cosine or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced mean cosine mismatch: report {tf.mean_logit_cosine} "
+                                f"!= recomputed {recomputed['mean_cosine']}"
+                            )
+                        if abs(recomputed["p05_cosine"] - (tf.p05_logit_cosine or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced p05 cosine mismatch: report {tf.p05_logit_cosine} "
+                                f"!= recomputed {recomputed['p05_cosine']}"
+                            )
+                        if abs(recomputed["min_cosine"] - (tf.min_logit_cosine or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced min cosine mismatch: report {tf.min_logit_cosine} "
+                                f"!= recomputed {recomputed['min_cosine']}"
+                            )
+                        if abs(recomputed["argmax_agreement"] - (tf.argmax_agreement or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced argmax agreement mismatch: report {tf.argmax_agreement} "
+                                f"!= recomputed {recomputed['argmax_agreement']}"
+                            )
+                        if abs(recomputed["mean_top5"] - (tf.mean_top5_overlap or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced top-5 overlap mismatch: report {tf.mean_top5_overlap} "
+                                f"!= recomputed {recomputed['mean_top5']}"
+                            )
+                        if abs(recomputed["mean_top10"] - (tf.mean_top10_overlap or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced top-10 overlap mismatch: report {tf.mean_top10_overlap} "
+                                f"!= recomputed {recomputed['mean_top10']}"
+                            )
+                        if abs(recomputed["mean_ppl_delta"] - (tf.mean_perplexity_delta or 0)) > 0.001:
+                            reasons.append(
+                                f"Teacher-forced perplexity delta mismatch: report {tf.mean_perplexity_delta} "
+                                f"!= recomputed {recomputed['mean_ppl_delta']}"
+                            )
+                        if recomputed["any_nan_or_inf"] != tf.any_nans_or_infs:
+                            reasons.append(
+                                f"Teacher-forced NaN/Inf mismatch: report {tf.any_nans_or_infs} "
+                                f"!= recomputed {recomputed['any_nan_or_inf']}"
+                            )
             except EvidenceValidationError as exc:
                 reasons.append(f"Invalid teacher-forced raw metrics artifact: {exc}")
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                reasons.append(f"Failed to parse teacher-forced raw metrics: {exc}")
 
         # Fused decode quality
         fd = evidence.fused_decode_report
@@ -279,6 +444,40 @@ class PromotionGate:
                                     f"Context {context}: report fallback_calls {report_fallback_ops} "
                                     f"!= trace-computed {trace_fallback_ops}"
                                 )
+                        
+                        # Reconcile trace totals with global bridge totals (P1-27)
+                        total_trace_page_ops = sum(topology_result.get("trace_computed_page_ops", {}).values())
+                        total_trace_tail_ops = sum(topology_result.get("trace_computed_tail_ops", {}).values())
+                        total_trace_fallback_ops = sum(topology_result.get("trace_computed_fallback_ops", {}).values())
+                        
+                        if fd.compressed_page_metal_calls is not None:
+                            if fd.compressed_page_metal_calls != total_trace_page_ops:
+                                reasons.append(
+                                    f"Global compressed_page_metal_calls {fd.compressed_page_metal_calls} "
+                                    f"!= trace-computed total {total_trace_page_ops}"
+                                )
+                        
+                        if fd.dense_tail_metal_calls is not None:
+                            if fd.dense_tail_metal_calls != total_trace_tail_ops:
+                                reasons.append(
+                                    f"Global dense_tail_metal_calls {fd.dense_tail_metal_calls} "
+                                    f"!= trace-computed total {total_trace_tail_ops}"
+                                )
+                        
+                        # Sum of fallback types should match total fallbacks
+                        total_type_fallbacks = 0
+                        if fd.compressed_page_fallbacks:
+                            total_type_fallbacks += fd.compressed_page_fallbacks
+                        if fd.dense_tail_fallbacks:
+                            total_type_fallbacks += fd.dense_tail_fallbacks
+                        if fd.full_attention_fallbacks:
+                            total_type_fallbacks += fd.full_attention_fallbacks
+                        
+                        if total_type_fallbacks != total_trace_fallback_ops:
+                            reasons.append(
+                                f"Sum of typed fallbacks {total_type_fallbacks} "
+                                f"!= trace-computed total {total_trace_fallback_ops}"
+                            )
                     
                 except (
                     EvidenceValidationError,
@@ -368,13 +567,61 @@ class PromotionGate:
         else:
             # Validate raw timing artifact
             try:
-                validate_artifact_file(
+                content = validate_artifact_file(
                     sr.raw_timing_path,
                     sr.raw_timing_hash,
                     artifact_name="Speed raw timing artifact",
                 )
+                # P1-25: Parse speed trials and recompute ratios
+                raw_timing = json.loads(content)
+                if not isinstance(raw_timing, dict):
+                    reasons.append("Speed raw timing must be a JSON object")
+                else:
+                    # P1-26: Require five trials and 128 latency values per context
+                    trials = raw_timing.get("trials", {})
+                    for context in self.REQUIRED_CONTEXTS:
+                        if context not in trials:
+                            reasons.append(f"Speed raw timing missing context {context}")
+                            continue
+                        context_trials = trials[context]
+                        if not isinstance(context_trials, list) or len(context_trials) < self.MIN_TRIALS_PER_CONTEXT:
+                            reasons.append(
+                                f"Context {context}: has {len(context_trials) if isinstance(context_trials, list) else 0} trials "
+                                f"< required {self.MIN_TRIALS_PER_CONTEXT}"
+                            )
+                        for trial_idx, trial in enumerate(context_trials):
+                            if not isinstance(trial, dict):
+                                reasons.append(f"Context {context} trial {trial_idx}: not a dict")
+                                continue
+                            latencies = trial.get("latencies", [])
+                            if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
+                                reasons.append(
+                                    f"Context {context} trial {trial_idx}: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
+                                    f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                                )
+                    
+                    # P1-25: Recompute speed ratios from raw timing
+                    recomputed = _recompute_speed_ratios(raw_timing)
+                    if recomputed is not None:
+                        if abs(recomputed["min_ratio_4096_plus"] - (sr.min_ratio_at_4096_plus or 0)) > 0.01:
+                            reasons.append(
+                                f"Speed min ratio 4096+ mismatch: report {sr.min_ratio_at_4096_plus} "
+                                f"!= recomputed {recomputed['min_ratio_4096_plus']}"
+                            )
+                        if abs(recomputed["max_ratio_4096_plus"] - (sr.max_ratio_at_4096_plus or 0)) > 0.01:
+                            reasons.append(
+                                f"Speed max ratio 4096+ mismatch: report {sr.max_ratio_at_4096_plus} "
+                                f"!= recomputed {recomputed['max_ratio_4096_plus']}"
+                            )
+                        if abs(recomputed["median_ratio_8192_plus"] - (sr.median_ratio_at_8192_plus or 0)) > 0.01:
+                            reasons.append(
+                                f"Speed median ratio 8192+ mismatch: report {sr.median_ratio_at_8192_plus} "
+                                f"!= recomputed {recomputed['median_ratio_8192_plus']}"
+                            )
             except EvidenceValidationError as exc:
                 reasons.append(f"Invalid speed raw timing artifact: {exc}")
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                reasons.append(f"Failed to parse speed raw timing: {exc}")
         
         # Require baseline contexts through 16K
         if 16384 not in sr.contexts_evaluated:
