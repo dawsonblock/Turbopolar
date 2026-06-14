@@ -203,7 +203,7 @@ class PromotionGate:
                 import hashlib
                 import json
                 try:
-                    with open(fd.trace_artifact_path, "r") as f:
+                    with open(fd.trace_artifact_path, "r", encoding="utf-8") as f:
                         trace_data = f.read()
                     computed_hash = hashlib.sha256(trace_data.encode()).hexdigest()
                     if computed_hash != fd.trace_artifact_hash:
