@@ -47,20 +47,22 @@ def _measure_mode(
         raise RuntimeError(
             f"memory_worker failed for length={length} mode={mode}: {result.stderr}"
         )
-    # The worker prints the JSON result to stdout; try full output first.
-    stdout = result.stdout.strip()
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
-        pass
-    # Fallback: find the first line that looks like JSON object start.
-    for ln in stdout.splitlines():
-        stripped = ln.strip()
-        if stripped.startswith("{"):
+    # The worker prints the JSON result to stdout, but HF progress bars
+    # and load messages may precede it. Extract the first complete JSON
+    # object by scanning from each '{' to the matching '}'.
+    stdout = result.stdout
+    brace_idx = stdout.find("{")
+    while brace_idx != -1:
+        # Try to parse an object starting at this brace.
+        for end in range(brace_idx + 2, len(stdout) + 1):
             try:
-                return json.loads(stripped)
+                candidate = stdout[brace_idx:end]
+                # Only accept objects that end with '}' (possibly followed by whitespace).
+                if candidate.rstrip().endswith("}"):
+                    return json.loads(candidate)
             except json.JSONDecodeError:
                 continue
+        brace_idx = stdout.find("{", brace_idx + 1)
     raise RuntimeError(
         f"memory_worker produced no valid JSON for length={length} mode={mode}"
     )
