@@ -1,8 +1,8 @@
 # TurboPolar Development Status
 
-**Branch:** `repair/r8-strict-evidence`  
+**Branch:** `repair/r5-7-runtime-and-evidence`  
 **Version:** `0.3.0.dev0`  
-**Last updated:** 2026-06-13
+**Last updated:** 2026-06-13 (Phase 8 complete)
 
 ## Status summary
 
@@ -18,32 +18,29 @@ comparative-value evidence remains incomplete. Native Apple Silicon benchmark
 artifacts are still required to prove the quantitative thresholds in
 `rfsn_v11/promotion/gate.py`.
 
-**Recent improvements (repair-r8-strict-evidence):**
+**Recent improvements (repair/r5-7-runtime-and-evidence):**
 
-- Memory worker now correctly measures baseline, model-load, prefill, and decode peak memory separately
-- Dense-history audit properly checks runtime partial buffers instead of non-existent storage attributes  
-- Fallback statistics are read from singleton bridge statistics once
-- Cartesian cache has MLX-LM-compatible `update_and_fetch()` interface with comprehensive tests
-- Cartesian baseline correctly compares both candidates against dense (not Turbo-vs-Cartesian)
-- Fused perplexity delta now uses absolute value to prevent bypass via negative differences
-- Experiment IDs are propagated through adapter → attention → cache → trace collector
-- Fallback reasons are extracted from execution traces and included in reports
-- Promotion gate validates trace artifact path and file existence
-- Provenance hash includes execution mode, trace mode, page capacity, Python bindings, and storage-layout code
-- Evidence kind field distinguishes "experimental" from "synthetic_dry_run"
-- SpeedReport includes execution_mode, fallback_calls, and raw_timing_hash fields
-- Promotion gate requires strict execution and zero fallbacks in speed evidence
-- Promotion gate requires 16K context coverage for speed and baseline evidence
-- Native test validation includes skipped test tracking and exact test ID verification
-- **P0 repairs completed:**
-  - Fixed dictionary access in fused fallback-reason extraction (handles both dataclass and dict formats)
-  - Added unit test for _compute_aggregate with serialized traces
-  - Speed evidence now populates execution_mode, fallback_calls, and raw_timing_hash
-  - Speed benchmark hashes raw trial records and includes hash in SpeedReport
-  - Fused benchmark assigns unique experiment IDs per fixture (run_id + context + fixture_hash)
-  - Promotion gate recomputes trace SHA-256 and validates trace topology (metal_executed, fallback_used, output_evaluated, experiment_id)
-  - Cartesian logical tail accounting now counts only valid tail tokens (not full allocated capacity)
-  - Synthetic dry-run evidence is explicitly handled (no trace artifacts required)
+Phase 0-8 completed:
+- Phase 0: Created repair branch and restored PROMOTION_LOCKED=True
+- Phase 1: Restored one supported 8/8-bit configuration
+- Phase 2: Fixed promotion gate crashes (fallback fields, initialization, fail-safe)
+- Phase 3: Repaired decision-state ordering
+- Phase 4: Created one real end-to-end gate test
+- Phase 5: Finished the speed pipeline (schema, checks, tests)
+- Phase 6: Finished teacher-forced evidence (recomputation)
+- Phase 7: Made exact fixtures reproducible and authoritative
+- Phase 8: Completed trace invariants
+
+**Key infrastructure improvements:**
+- Canonical speed schema with RawSpeedTrial and RawSpeedArtifact
+- Comprehensive speed validation with all required checks
+- Teacher-forced evidence recomputation with total_positions validation
+- ExactTokenFixture canonical schema with deterministic IDs and content hashes
+- Trace invariant validation for experiment ID consistency, monotonic ordinals, cache offsets
+- All new features have comprehensive test coverage
+- Promotion gate is locked and robust with proper error handling
+- Configuration is standardized to 8/8-bit angles
+- Decision state ordering is explicit and correct
 
 Promotion is blocked until reproducible artifacts independently prove:
 
