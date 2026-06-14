@@ -328,14 +328,26 @@ def _parse_operation_trace(
     cache_offset_before = _validate_optional_int_field(operation, "cache_offset_before", entry_index, default=decode_step)
     layer_index = _validate_int_field(operation, "layer_index", entry_index, min_value=0)
     operation_name = _validate_string_field(operation, "operation", entry_index)
-    page_index = _validate_optional_int_field(operation, "page_index", entry_index)
-    kernel_name = _validate_string_field(operation, "kernel_name", entry_index)
     
     # For compressed_page, page_index is required (not optional)
-    if operation_name == "compressed_page" and page_index is None:
-        raise TraceArtifactError(
-            f"Trace entry {entry_index}: compressed_page operation must have page_index"
-        )
+    if operation_name == "compressed_page":
+        if "page_index" not in operation:
+            raise TraceArtifactError(
+                f"Trace entry {entry_index}: compressed_page operation must have page_index"
+            )
+        page_index = _validate_int_field(operation, "page_index", entry_index, min_value=0)
+    elif operation_name == "dense_tail":
+        # dense_tail must have page_index = null
+        page_index = _validate_optional_int_field(operation, "page_index", entry_index)
+        if page_index is not None:
+            raise TraceArtifactError(
+                f"Trace entry {entry_index}: dense_tail operation must have page_index=null, got {page_index}"
+            )
+    else:
+        # Other operations (merge, finalize) have optional page_index
+        page_index = _validate_optional_int_field(operation, "page_index", entry_index)
+    
+    kernel_name = _validate_string_field(operation, "kernel_name", entry_index)
     execution_mode = _validate_string_field(operation, "execution_mode", entry_index)
     metal_requested = _validate_bool_field(operation, "metal_requested", entry_index)
     metal_executed = _validate_bool_field(operation, "metal_executed", entry_index)
@@ -351,10 +363,6 @@ def _parse_operation_trace(
         raise TraceArtifactError(
             f"Trace entry {entry_index}: invalid operation '{operation_name}', "
             f"must be one of {valid_operations}"
-        )
-    if operation_name == "compressed_page" and page_index < 0:
-        raise TraceArtifactError(
-            f"Trace entry {entry_index}: page_index cannot be negative, got {page_index}"
         )
 
     if fallback_used and not fallback_reason:
@@ -633,12 +641,15 @@ def validate_trace_topology(
             
             # Derive expected page count from cache state, not artifact claim
             BLOCK_SIZE = 64
-            expected_pages_from_cache = trace.cache_tokens_before // BLOCK_SIZE
+            PAGE_CAPACITY_BLOCKS = 16  # 16 blocks per storage page = 1024 tokens
+            # Use cache_tokens_after (post-append) since attention executes after append
+            completed_blocks = trace.cache_tokens_after // BLOCK_SIZE
+            expected_pages_from_cache = (completed_blocks + PAGE_CAPACITY_BLOCKS - 1) // PAGE_CAPACITY_BLOCKS
             if len(page_indices) != expected_pages_from_cache:
                 failures.append(
                     f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"page count {len(page_indices)} != expected from cache state {expected_pages_from_cache} "
-                    f"(cache_tokens_before={trace.cache_tokens_before}, artifact claimed {trace.expected_page_count})"
+                    f"(cache_tokens_after={trace.cache_tokens_after}, completed_blocks={completed_blocks}, artifact claimed {trace.expected_page_count})"
                 )
 
             # Check for duplicate page indices

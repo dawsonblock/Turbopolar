@@ -10,6 +10,11 @@ import mlx.core as mx
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
+from rfsn_v11.evidence.execution_trace import (
+    AttentionExecutionTrace,
+    KernelOperationTrace,
+    ExecutionTraceCollector,
+)
 
 
 def _make_config():
@@ -206,3 +211,73 @@ class TestExecutionTraceCollection:
         traces = cache.execution_traces()
         assert len(traces) == 1
         assert traces[0].fallback_count == 0
+
+    def test_commit_provisional_preserves_all_fields(self):
+        """Test that commit_provisional preserves all trace identity and topology fields."""
+        collector = ExecutionTraceCollector(experiment_id="test_exp")
+        
+        # Create a provisional trace with all new fields
+        provisional_trace = AttentionExecutionTrace(
+            experiment_id="test_exp",
+            context_length=512,
+            fixture_id="fixture-001",
+            layer_index=0,
+            decode_step=512,
+            decode_ordinal=0,
+            cache_offset_before=512,
+            cache_tokens_before=512,
+            cache_tokens_after=513,
+            partial_tail_length=1,
+            expected_page_count=1,
+            page_traces=[
+                KernelOperationTrace(
+                    experiment_id="test_exp",
+                    context_length=512,
+                    fixture_id="fixture-001",
+                    layer_index=0,
+                    decode_step=512,
+                    decode_ordinal=0,
+                    cache_offset_before=512,
+                    operation="compressed_page",
+                    page_index=0,
+                    kernel_name="test_kernel",
+                    execution_mode="metal_strict",
+                    metal_requested=True,
+                    metal_executed=True,
+                    fallback_used=False,
+                    fallback_reason=None,
+                    expected_tokens=64,
+                    processed_tokens=64,
+                    output_evaluated=False,  # Will be updated on commit
+                )
+            ],
+            dense_tail_trace=None,
+        )
+        
+        collector.record_provisional(provisional_trace)
+        assert len(collector._provisional) == 1
+        assert len(collector._traces) == 0
+        
+        # Commit with output_evaluated=True
+        collector.commit_provisional(output_evaluated=True)
+        
+        assert len(collector._provisional) == 0
+        assert len(collector._traces) == 1
+        
+        committed = collector._traces[0]
+        
+        # Verify all identity fields are preserved
+        assert committed.experiment_id == "test_exp"
+        assert committed.context_length == 512
+        assert committed.fixture_id == "fixture-001"
+        assert committed.layer_index == 0
+        assert committed.decode_step == 512
+        assert committed.decode_ordinal == 0
+        assert committed.cache_offset_before == 512
+        assert committed.cache_tokens_before == 512
+        assert committed.cache_tokens_after == 513
+        assert committed.partial_tail_length == 1
+        assert committed.expected_page_count == 1
+        
+        # Verify output_evaluated was updated
+        assert committed.page_traces[0].output_evaluated == True

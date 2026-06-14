@@ -163,6 +163,9 @@ class TurboPolarFastCache:
         *,
         layer_index: Optional[int] = None,
         decode_step: Optional[int] = None,
+        decode_ordinal: Optional[int] = None,
+        initial_context_length: Optional[int] = None,
+        fixture_id: Optional[str] = None,
         experiment_id: str = "",
     ) -> mx.array:
         """Decode path: append one token and run fused Metal attention.
@@ -175,6 +178,9 @@ class TurboPolarFastCache:
             mask: must be None in the supported configuration.
             layer_index: layer index for trace collection (optional).
             decode_step: decode step for trace collection (optional).
+            decode_ordinal: fixture-local decode ordinal (optional).
+            initial_context_length: initial context length for this fixture (optional).
+            fixture_id: fixture identifier for trace collection (optional).
             experiment_id: experiment identifier for trace collection.
 
         Returns:
@@ -220,11 +226,11 @@ class TurboPolarFastCache:
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
-            # Calculate trace identity fields
-            # Use actual cache size as context_length (initial context length)
-            context_length = view.total_tokens - 1  # Before this append
-            fixture_id = experiment_id  # For now, use experiment_id as fixture_id
-            decode_ordinal = decode_step - context_length  # Fixture-local ordinal
+            # Use passed parameters for trace identity fields
+            # If not provided, fall back to derived values (for backward compatibility)
+            context_length = initial_context_length if initial_context_length is not None else (view.total_tokens - 1)
+            fixture_id = fixture_id if fixture_id is not None else experiment_id
+            decode_ordinal = decode_ordinal if decode_ordinal is not None else 0
             cache_offset_before = decode_step
             cache_tokens_before = view.total_tokens - 1  # Before this append
             cache_tokens_after = view.total_tokens  # After this append

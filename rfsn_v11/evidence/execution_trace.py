@@ -116,11 +116,10 @@ class ExecutionTraceCollector:
                 new_dense_tail = replace(
                     step_trace.dense_tail_trace, output_evaluated=output_evaluated
                 )
+            # Use dataclasses.replace to preserve all identity and topology fields
             committed.append(
-                AttentionExecutionTrace(
-                    layer_index=step_trace.layer_index,
-                    decode_step=step_trace.decode_step,
-                    expected_page_count=step_trace.expected_page_count,
+                replace(
+                    step_trace,
                     page_traces=new_page_traces,
                     dense_tail_trace=new_dense_tail,
                 )

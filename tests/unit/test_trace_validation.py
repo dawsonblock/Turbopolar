@@ -293,7 +293,6 @@ class TestTraceArtifactParsing:
                 "dense_tail_trace": None,
             }])
 
-    @pytest.mark.skip("page_index is now optional with default 0 for backward compatibility")
     def test_compressed_page_missing_page_index_fails(self):
         """compressed_page operation must have page_index."""
         msg = "compressed_page operation must have page_index"
@@ -666,7 +665,6 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 decode_ordinal=0,
                 cache_offset_before=0,
-                cache_tokens_before=0,
                 cache_tokens_after=0,
                 partial_tail_length=0,
                 layer_index=0,
@@ -722,7 +720,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
-                cache_tokens_before=128,  # Should expect 2 pages (128 / 64 = 2)
+                cache_tokens_after=2048,  # 2048/64=32 blocks, (32+15)//16=2 pages
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -1015,7 +1013,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
-                cache_tokens_before=128,  # 128 / 64 = 2 pages
+                cache_tokens_after=2048,  # 2048/64=32 blocks, (32+15)//16=2 pages
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
