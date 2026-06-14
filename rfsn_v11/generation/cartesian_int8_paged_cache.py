@@ -248,7 +248,7 @@ class PagedCartesianInt8KVCache:
 
     @property
     def nbytes(self) -> int:
-        """Logical occupied bytes (valid blocks only)."""
+        """Logical occupied bytes (valid blocks and valid tail tokens only)."""
         total = 0
         for page in self.storage.pages:
             valid = page.valid_blocks
@@ -259,10 +259,14 @@ class PagedCartesianInt8KVCache:
                 + page.v_scales[:, :, :valid, :, :].size * page.v_scales.itemsize
             )
         if self.partial_k_buffer is not None:
-            total += int(
-                self.partial_k_buffer.size * self.partial_k_buffer.itemsize
-                + self.partial_v_buffer.size * self.partial_v_buffer.itemsize
-            )
+            # Count only valid tail tokens for logical bytes
+            # If sequence length is divisible by block_size, partial buffer is empty
+            tail_valid = self.actual_seq_len % self.block_size
+            if tail_valid > 0:
+                total += int(
+                    self.partial_k_buffer[:, :, :tail_valid, :].size * self.partial_k_buffer.itemsize
+                    + self.partial_v_buffer[:, :, :tail_valid, :].size * self.partial_v_buffer.itemsize
+                )
         return total
 
     @property

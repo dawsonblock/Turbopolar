@@ -102,6 +102,7 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
 
     metal_present: Set[str] = set()
     metal_passed: Set[str] = set()
+    metal_skipped: Set[str] = set()
     testcases: List[Dict[str, Any]] = []
     for testcase in testsuite.findall("testcase"):
         cls = testcase.get("classname", "")
@@ -124,6 +125,8 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
             metal_present.add(module_prefix)
             if not failed and not skipped_tc:
                 metal_passed.add(module_prefix)
+            if skipped_tc:
+                metal_skipped.add(module_prefix)
 
     return {
         "collected": collected,
@@ -134,6 +137,7 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
         "metal_tests_required": sorted(REQUIRED_METAL_TESTS),
         "metal_tests_present": sorted(metal_present),
         "metal_tests_passed": sorted(metal_passed),
+        "metal_tests_skipped": sorted(metal_skipped),
     }
 
 
@@ -181,6 +185,7 @@ def _run_pytest(artifact_dir: Path) -> KernelReport:
         required_metal_tests=junit.get("metal_tests_required", []),
         metal_tests_present=junit.get("metal_tests_present", []),
         metal_tests_passed=junit.get("metal_tests_passed", []),
+        metal_tests_skipped=junit.get("metal_tests_skipped", []),
     )
 
 
@@ -436,6 +441,20 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         (r.get("valid_trials", 0) for r in records),
         default=0,
     )
+    
+    # Calculate total fallback count from trial records
+    trial_results = report.get("trial_results", [])
+    total_fallbacks = sum(
+        tr.get("fallbacks", 0) 
+        for tr in trial_results 
+        if tr.get("mode") == "turbo"
+    )
+    
+    # Hash raw trial records for timing artifact hash
+    import hashlib
+    import json
+    trial_results_str = json.dumps(trial_results, sort_keys=True)
+    raw_timing_hash = hashlib.sha256(trial_results_str.encode()).hexdigest()[:16]
 
     return SpeedReport(
         model=model,
@@ -445,6 +464,9 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         min_ratio_at_4096_plus=min_4096,
         max_ratio_at_4096_plus=max_4096,
         median_ratio_at_8192_plus=median_8192,
+        execution_mode=report.get("execution_mode"),
+        fallback_calls=total_fallbacks,
+        raw_timing_hash=raw_timing_hash,
     )
 
 
@@ -490,6 +512,20 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
         (r.get("valid_trials", 0) for r in records),
         default=0,
     )
+    
+    # Calculate total fallback count from trial records
+    trial_results = report.get("trial_results", [])
+    total_fallbacks = sum(
+        tr.get("fallbacks", 0) 
+        for tr in trial_results 
+        if tr.get("mode") == "turbo"
+    )
+    
+    # Hash raw trial records for timing artifact hash
+    import hashlib
+    import json
+    trial_results_str = json.dumps(trial_results, sort_keys=True)
+    raw_timing_hash = hashlib.sha256(trial_results_str.encode()).hexdigest()[:16]
 
     return SpeedReport(
         model=model,
@@ -499,6 +535,9 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
         min_ratio_at_4096_plus=min_4096,
         max_ratio_at_4096_plus=max_4096,
         median_ratio_at_8192_plus=median_8192,
+        execution_mode=report.get("execution_mode"),
+        fallback_calls=total_fallbacks,
+        raw_timing_hash=raw_timing_hash,
     )
 
 
@@ -737,8 +776,8 @@ def _synthetic_evidence() -> PromotionEvidence:
             full_attention_fallback_calls=0,
             fallback_reasons=[],
             actual_fused_positions=128,
-            trace_artifact_path="dry_run_trace.json",
-            trace_artifact_hash="dry_run_hash",
+            trace_artifact_path="",
+            trace_artifact_hash="",
         ),
         speed_report=SpeedReport(
             model="dry-run/model",

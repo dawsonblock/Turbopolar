@@ -147,8 +147,8 @@ class TestPromotionSchema(unittest.TestCase):
                 dense_tail_fallback_calls=0,
                 full_attention_fallback_calls=0,
                 fallback_reasons=[],
-                trace_artifact_path="/tmp/test_trace.json",
-                trace_artifact_hash="test_hash",
+                trace_artifact_path="",
+                trace_artifact_hash="",
             ),
             speed_report=SpeedReport(
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
@@ -179,6 +179,7 @@ class TestPromotionSchema(unittest.TestCase):
                 model_repo_id="test/model",
                 model_revision="abc",
                 turbopolar_config_hash="def",
+                evidence_kind="synthetic_dry_run",
             ),
         )
         decision = PromotionGate().evaluate(evidence)

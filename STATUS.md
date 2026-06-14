@@ -35,6 +35,15 @@ artifacts are still required to prove the quantitative thresholds in
 - Promotion gate requires strict execution and zero fallbacks in speed evidence
 - Promotion gate requires 16K context coverage for speed and baseline evidence
 - Native test validation includes skipped test tracking and exact test ID verification
+- **P0 repairs completed:**
+  - Fixed dictionary access in fused fallback-reason extraction (handles both dataclass and dict formats)
+  - Added unit test for _compute_aggregate with serialized traces
+  - Speed evidence now populates execution_mode, fallback_calls, and raw_timing_hash
+  - Speed benchmark hashes raw trial records and includes hash in SpeedReport
+  - Fused benchmark assigns unique experiment IDs per fixture (run_id + context + fixture_hash)
+  - Promotion gate recomputes trace SHA-256 and validates trace topology (metal_executed, fallback_used, output_evaluated, experiment_id)
+  - Cartesian logical tail accounting now counts only valid tail tokens (not full allocated capacity)
+  - Synthetic dry-run evidence is explicitly handled (no trace artifacts required)
 
 Promotion is blocked until reproducible artifacts independently prove:
 

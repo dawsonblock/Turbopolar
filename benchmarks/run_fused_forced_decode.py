@@ -365,27 +365,64 @@ def _compute_aggregate(
     fallback_reasons = []
     for r in results:
         for trace in r.execution_traces:
-            for page_trace in trace.page_traces:
-                if page_trace.fallback_used and page_trace.fallback_reason:
+            # Handle both dataclass and dict formats
+            page_traces = getattr(trace, "page_traces", None)
+            if page_traces is None:
+                page_traces = trace.get("page_traces", []) if isinstance(trace, dict) else []
+            
+            for page_trace in page_traces:
+                # Handle both dataclass and dict formats
+                if isinstance(page_trace, dict):
+                    fallback_used = page_trace.get("fallback_used", False)
+                    fallback_reason = page_trace.get("fallback_reason")
+                    layer = page_trace.get("layer_index", None)
+                    decode_step = page_trace.get("decode_step", None)
+                    operation = page_trace.get("operation", None)
+                    page_index = page_trace.get("page_index", None)
+                else:
+                    fallback_used = getattr(page_trace, "fallback_used", False)
+                    fallback_reason = getattr(page_trace, "fallback_reason", None)
+                    layer = getattr(page_trace, "layer_index", None)
+                    decode_step = getattr(page_trace, "decode_step", None)
+                    operation = getattr(page_trace, "operation", None)
+                    page_index = getattr(page_trace, "page_index", None)
+                
+                if fallback_used and fallback_reason:
                     fallback_reasons.append({
-                        "layer": page_trace.layer_index,
-                        "decode_step": page_trace.decode_step,
-                        "operation": page_trace.operation,
-                        "page_index": page_trace.page_index,
-                        "reason": page_trace.fallback_reason,
+                        "layer": layer,
+                        "decode_step": decode_step,
+                        "operation": operation,
+                        "page_index": page_index,
+                        "reason": fallback_reason,
                     })
-            if trace.dense_tail_trace and trace.dense_tail_trace.fallback_used:
-                if trace.dense_tail_trace.fallback_reason:
+            
+            # Handle dense tail trace
+            dense_tail_trace = getattr(trace, "dense_tail_trace", None)
+            if dense_tail_trace is None:
+                dense_tail_trace = trace.get("dense_tail_trace") if isinstance(trace, dict) else None
+            
+            if dense_tail_trace:
+                if isinstance(dense_tail_trace, dict):
+                    fallback_used = dense_tail_trace.get("fallback_used", False)
+                    fallback_reason = dense_tail_trace.get("fallback_reason")
+                    layer = dense_tail_trace.get("layer_index", None)
+                    decode_step = dense_tail_trace.get("decode_step", None)
+                    operation = dense_tail_trace.get("operation", None)
+                else:
+                    fallback_used = getattr(dense_tail_trace, "fallback_used", False)
+                    fallback_reason = getattr(dense_tail_trace, "fallback_reason", None)
+                    layer = getattr(dense_tail_trace, "layer_index", None)
+                    decode_step = getattr(dense_tail_trace, "decode_step", None)
+                    operation = getattr(dense_tail_trace, "operation", None)
+                
+                if fallback_used and fallback_reason:
                     fallback_reasons.append({
-                        "layer": trace.dense_tail_trace.layer_index,
-                        "decode_step": trace.dense_tail_trace.decode_step,
-                        "operation": trace.dense_tail_trace.operation,
+                        "layer": layer,
+                        "decode_step": decode_step,
+                        "operation": operation,
                         "page_index": None,
-                        "reason": trace.dense_tail_trace.fallback_reason,
+                        "reason": fallback_reason,
                     })
-    total_full_fallbacks = sum(
-        r.kernel_stats.get("full_attention_fallbacks", 0) for r in results
-    )
 
     # Separate numerical failures from actual fallback reasons.
     numerical_failures = []
@@ -613,14 +650,28 @@ def main():
         raise ValueError("No fixtures could be constructed.")
 
     results: List[ForcedDecodeFixtureResult] = []
+    import uuid
+    run_id = str(uuid.uuid4())[:8]
+    
     for i, fixture in enumerate(fixtures):
         ctx = fixture["tokens"][: fixture["context_length"]]
         cont = fixture["tokens"][
             fixture["context_length"] : fixture["context_length"]
             + fixture["continuation_length"]
         ]
+        
+        # Create unique experiment ID per fixture
+        import hashlib
+        fixture_hash = hashlib.sha256(
+            json.dumps(fixture, sort_keys=True).encode()
+        ).hexdigest()[:8]
+        experiment_id = f"{run_id}_ctx{len(ctx)}_fx{i}_{fixture_hash}"
+        
+        # Update adapter with unique experiment ID for this fixture
+        adapter.experiment_id = experiment_id
+        
         print(
-            f"Fixture {i + 1}/{len(fixtures)}: context={len(ctx)} continuation={len(cont)}"
+            f"Fixture {i + 1}/{len(fixtures)}: context={len(ctx)} continuation={len(cont)} experiment_id={experiment_id}"
         )
         result = benchmark_forced_decode_fixture(
             model, tokenizer, ctx, cont, adapter,

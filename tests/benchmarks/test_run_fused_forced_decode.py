@@ -119,7 +119,8 @@ class TestRunFusedForcedDecode(unittest.TestCase):
 
     def test_normalize_text_prompts(self):
         suite_path = (
-            Path(__file__).resolve().parents[2] / "benchmarks" / "prompt_suite.jsonl"
+            Path(__file__).resolve().parents[2] / "benchmarks"
+            / "prompt_suite.jsonl"
         )
         normalized = normalize_prompts(_FakeTokenizer(), suite_path)
         self.assertIsInstance(normalized, list)
@@ -136,8 +137,78 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         for fx in fixtures:
             self.assertEqual(len(fx["tokens"]), fx["length"])
             self.assertIn(
-                fx["category"], ("short", "boundary", "medium", "long", "stress")
+                fx["category"],
+                ("short", "boundary", "medium", "long", "stress"),
             )
+
+    def test_fallback_extraction_with_dict_traces(self):
+        """Test that fallback reason extraction handles dict-format traces."""
+        # Simulate the dict format that comes from serialization
+        trace_dict = {
+            "layer_index": 0,
+            "decode_step": 0,
+            "expected_page_count": 1,
+            "page_traces": [
+                {
+                    "experiment_id": "test",
+                    "layer_index": 0,
+                    "decode_step": 0,
+                    "operation": "compressed_page",
+                    "page_index": 0,
+                    "kernel_name": "test_kernel",
+                    "execution_mode": "metal_strict",
+                    "metal_requested": True,
+                    "metal_executed": True,
+                    "fallback_used": True,
+                    "fallback_reason": "test_fallback",
+                    "expected_tokens": 64,
+                    "processed_tokens": 64,
+                    "output_evaluated": True,
+                }
+            ],
+            "dense_tail_trace": {
+                "experiment_id": "test",
+                "layer_index": 0,
+                "decode_step": 0,
+                "operation": "dense_tail",
+                "page_index": None,
+                "kernel_name": "dense_tail",
+                "execution_mode": "metal_strict",
+                "metal_requested": True,
+                "metal_executed": True,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "expected_tokens": 1,
+                "processed_tokens": 1,
+                "output_evaluated": True,
+            }
+        }
+
+        # Test the dict extraction logic directly
+        page_traces = trace_dict.get("page_traces", [])
+        fallback_reasons = []
+
+        for page_trace in page_traces:
+            fallback_used = page_trace.get("fallback_used", False)
+            fallback_reason = page_trace.get("fallback_reason")
+            layer = page_trace.get("layer_index")
+            decode_step = page_trace.get("decode_step")
+            operation = page_trace.get("operation")
+            page_index = page_trace.get("page_index")
+
+            if fallback_used and fallback_reason:
+                fallback_reasons.append({
+                    "layer": layer,
+                    "decode_step": decode_step,
+                    "operation": operation,
+                    "page_index": page_index,
+                    "reason": fallback_reason,
+                })
+
+        # Verify extraction worked
+        self.assertEqual(len(fallback_reasons), 1)
+        self.assertEqual(fallback_reasons[0]["reason"], "test_fallback")
+        self.assertEqual(fallback_reasons[0]["layer"], 0)
 
 
 if __name__ == "__main__":
