@@ -1,6 +1,10 @@
 """Tests that a dirty git tree blocks promotion."""
 
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from rfsn_v11.promotion import (
     BaselineComparisonReport,
@@ -19,6 +23,42 @@ from rfsn_v11.promotion import (
 
 class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     """A dirty source tree must result in FAILED, not PROMOTED_EXPERIMENTAL."""
+
+    def setUp(self):
+        """Create temporary files for artifact validation."""
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Create teacher-forced metrics file
+        self.teacher_forced_path = Path(self.temp_dir) / "teacher_forced.json"
+        teacher_forced_data = {
+            "prompts": [
+                {
+                    "position_metrics": [
+                        {"logit_cosine": 0.999, "top5_overlap": 0.96, "top10_overlap": 0.98, "argmax_agreement": True, "any_nan_or_inf": False}
+                        for _ in range(128)
+                    ]
+                }
+            ]
+        }
+        self.teacher_forced_path.write_text(json.dumps(teacher_forced_data))
+        self.teacher_forced_hash = hashlib.sha256(json.dumps(teacher_forced_data).encode()).hexdigest()
+        
+        # Create fused decode trace file
+        self.fused_trace_path = Path(self.temp_dir) / "fused_decode_trace.json"
+        trace_data = {"experiments": []}
+        self.fused_trace_path.write_text(json.dumps(trace_data))
+        self.fused_trace_hash = hashlib.sha256(json.dumps(trace_data).encode()).hexdigest()
+        
+        # Create speed timing file
+        self.speed_timing_path = Path(self.temp_dir) / "speed_timing.json"
+        speed_data = {"schema_version": 1, "speed_evidence": {"trial_results": []}}
+        self.speed_timing_path.write_text(json.dumps(speed_data))
+        self.speed_timing_hash = hashlib.sha256(json.dumps(speed_data).encode()).hexdigest()
+
+    def tearDown(self):
+        """Clean up temporary files."""
+        import shutil
+        shutil.rmtree(self.temp_dir)
 
     def _full_passing_evidence(self, dirty: bool) -> PromotionEvidence:
         return PromotionEvidence(
@@ -39,8 +79,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 argmax_agreement=0.98,
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
-                raw_metrics_path="/tmp/teacher_forced.json",
-                raw_metrics_hash="a" * 64,
+                raw_metrics_path=str(self.teacher_forced_path),
+                raw_metrics_hash=self.teacher_forced_hash,
             ),
             fused_decode_report=FusedDecodeReport(
                 mean_logit_cosine=0.999,
@@ -66,8 +106,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
-                trace_artifact_path="/tmp/fused_decode_trace.json",
-                trace_artifact_hash="a" * 64,
+                trace_artifact_path=str(self.fused_trace_path),
+                trace_artifact_hash=self.fused_trace_hash,
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,
@@ -76,8 +116,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 trials_per_context=5,
                 contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
                 execution_mode="metal_strict",
-                raw_timing_path="/tmp/speed_timing.json",
-                raw_timing_hash="a" * 64,
+                raw_timing_path=str(self.speed_timing_path),
+                raw_timing_hash=self.speed_timing_hash,
             ),
             memory_report=MemoryReport(
                 logical_kv_ratio=1.90,
