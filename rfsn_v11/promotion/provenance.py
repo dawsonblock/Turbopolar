@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.promotion.schema import BenchmarkProvenance, GitTreeState
