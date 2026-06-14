@@ -22,6 +22,12 @@ CATEGORY_LENGTHS: List[Tuple[str, int]] = [
     ("stress", 4096),
     ("stress", 8192),  # P0: Add for 8K context + 129 tokens
     ("stress", 16384),  # P0: Add for 16K context + 129 tokens
+    # Fused-decode specific fixtures (context + 129 continuation tokens)
+    ("fused_512", 641),      # 512 context + 129 continuation
+    ("fused_2048", 2177),    # 2048 context + 129 continuation
+    ("fused_4096", 4225),    # 4096 context + 129 continuation
+    ("fused_8192", 8321),    # 8192 context + 129 continuation
+    ("fused_16384", 16513),  # 16384 context + 129 continuation
 ]
 
 

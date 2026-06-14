@@ -4,7 +4,7 @@
 For each requested sequence length the script:
   1. Prefills the cache with that many tokens.
   2. Runs ``num_decode`` greedy decode steps.
-  3. Selects the next token on-device to avoid CPU/GPU synchronization overhead.
+  3. Selects the next token on-device to avoid CPU/GPU sync overhead.
 
 Trials alternate which method runs first so that thermal throttling or
 background scheduler noise are not systematically biased toward one path.
@@ -23,13 +23,22 @@ import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
+# Set up project path before importing project modules
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
-from benchmarks.prompt_fixtures import normalize_prompts
-from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
+from benchmarks.prompt_fixtures import normalize_prompts  # noqa: E402
+from rfsn_v11.candidates.turbo_polar_config import (  # noqa: E402
+    TurboPolarConfig,
+)
+from rfsn_v11.integrations.mlx_lm.adapter import (  # noqa: E402
+    TurboPolarLlamaAdapter,
+)
+from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches  # noqa: E402
+from rfsn_v11.kernels.turbo_polar.execution import (  # noqa: E402
+    ExecutionMode,
+    TraceValidationMode,
+)
 
 
 def _first_param_dtype(params: Dict[str, Any]) -> str:
@@ -69,8 +78,6 @@ def _make_turbo_config(
     num_q_heads: int, num_kv_heads: int, head_dim: int, execution_mode=None,
     trace_validation_mode=None,
 ) -> TurboPolarConfig:
-    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
-
     if execution_mode is None:
         execution_mode = ExecutionMode.DEVELOPMENT_AUTO
     elif isinstance(execution_mode, str):
@@ -102,8 +109,8 @@ def _make_dense_cache(num_layers: int) -> List[KVCache]:
 def _device_side_next_token(logits: mx.array) -> mx.array:
     """Return the greedy next-token id on the device.
 
-    logits shape: (B, T, V).  We take the last position and keep the result on
-    the device so the following forward pass does not wait for a CPU round-trip.
+    logits shape: (B, T, V). We take the last position and keep the result on
+    the device so following forward pass does not wait for a CPU round-trip.
     """
     # logits[:, -1, :] -> (B, V); argmax -> (B,)
     return mx.argmax(logits[:, -1, :], axis=-1)
@@ -116,7 +123,7 @@ def _measure_decode_loop_forced(
     forced_continuation: List[int],
     adapter: Any = None,
 ) -> Dict[str, Any]:
-    """Prefill and forced-decode, returning detailed timing and dispatch stats.
+    """Prefill and forced-decode, returning detailed timing and dispatch.
 
     Uses predetermined continuation tokens so dense and TurboPolar follow
     the same history. Does NOT warm up the measured cache.
@@ -148,8 +155,12 @@ def _measure_decode_loop_forced(
     if adapter is not None and hasattr(cache[0], 'execution_stats'):
         bridge_stats = cache[0].execution_stats()
         stats = {
-            "page_dispatches": getattr(bridge_stats, 'compressed_page_dispatches', 0),
-            "tail_dispatches": getattr(bridge_stats, 'dense_tail_dispatches', 0),
+            "page_dispatches": getattr(
+                bridge_stats, 'compressed_page_dispatches', 0
+            ),
+            "tail_dispatches": getattr(
+                bridge_stats, 'dense_tail_dispatches', 0
+            ),
             "fallbacks": getattr(bridge_stats, 'fallback_calls', 0),
         }
 
@@ -208,12 +219,15 @@ def benchmark_length_forced(
     turbo_first: bool,
     execution_mode=None,
 ) -> Dict[str, Any]:
-    """Return detailed speed results for one prefill length using forced tokens.
+    """Return detailed speed results for one prefill length using forced.
 
     Protocol:
-    1. Construct disposable cache, prefill, run 16-token warm-up decode, destroy.
-    2. Construct fresh measured cache, reset telemetry, prefill, measure forced decode.
-    3. TurboPolar uses ASYNC_PERFORMANCE to avoid per-page synchronous overhead.
+    1. Construct disposable cache, prefill, run 16-token warm-up decode,
+       destroy.
+    2. Construct fresh measured cache, reset telemetry, prefill, measure
+       forced decode.
+    3. TurboPolar uses ASYNC_PERFORMANCE to avoid per-page synchronous
+       overhead.
     4. Record per-trial raw results with dispatch counts.
 
     The ``turbo_first`` flag alternates which path is measured first.
@@ -221,7 +235,9 @@ def benchmark_length_forced(
     from rfsn_v11.kernels.turbo_polar.execution import TraceValidationMode
 
     num_layers = (
-        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+        len(model.layers)
+        if hasattr(model, "layers")
+        else len(model.model.layers)
     )
 
     methods = [
@@ -249,17 +265,24 @@ def benchmark_length_forced(
         if name == "turbo":
             adapter.install(model)
             try:
-                _measure_decode_loop(model, warm_cache, tokens, num_decode=len(warm_up_tokens))
+                _measure_decode_loop(
+                    model, warm_cache, tokens,
+                    num_decode=len(warm_up_tokens)
+                )
             finally:
                 adapter.uninstall()
         else:
-            _measure_decode_loop(model, warm_cache, tokens, num_decode=len(warm_up_tokens))
+            _measure_decode_loop(
+                model, warm_cache, tokens,
+                num_decode=len(warm_up_tokens)
+            )
         del warm_cache
 
         # Step 2: fresh measured cache.
         cache = make_cache()
         if name == "turbo":
-            # Reset global bridge counters and shared trace collector before measurement.
+            # Reset global bridge counters and shared trace collector
+            # before measurement.
             if hasattr(cache[0], 'reset_execution_stats'):
                 cache[0].reset_execution_stats()
             adapter.install(model)
@@ -296,7 +319,9 @@ def benchmark_length(
     Deprecated: kept for backward compatibility.
     """
     num_layers = (
-        len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
+        len(model.layers)
+        if hasattr(model, "layers")
+        else len(model.model.layers)
     )
 
     methods = [
@@ -339,7 +364,7 @@ def main():
         "--token-fixtures",
         type=Path,
         default=Path(__file__).parent / "exact_token_fixtures.jsonl",
-        help="Exact-token fixture file used for deterministic prefill sequences",
+        help="Exact-token fixture file for deterministic prefill sequences",
     )
     parser.add_argument(
         "--lengths",
@@ -349,10 +374,16 @@ def main():
         help="Prefill lengths to benchmark",
     )
     parser.add_argument(
-        "--num-decode", type=int, default=128, help="Decode steps per measurement"
+        "--num-decode",
+        type=int,
+        default=128,
+        help="Decode steps per measurement"
     )
     parser.add_argument(
-        "--trials", type=int, default=3, help="Number of alternating trials per length"
+        "--trials",
+        type=int,
+        default=3,
+        help="Number of alternating trials per length"
     )
     parser.add_argument(
         "--output-dir",
@@ -365,7 +396,7 @@ def main():
         type=str,
         default="metal_strict",
         choices=["reference", "metal_strict", "development_auto"],
-        help="Execution mode for TurboPolar attention (default: metal_strict)",
+        help="Execution mode for TurboPolar attention (default: metal_strict)",  # noqa: E501
     )
     args = parser.parse_args()
 
@@ -377,7 +408,10 @@ def main():
 
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
     adapter = TurboPolarLlamaAdapter(
-        _make_turbo_config(num_q_heads, num_kv_heads, head_dim, execution_mode=args.execution_mode)
+        _make_turbo_config(
+            num_q_heads, num_kv_heads, head_dim,
+            execution_mode=args.execution_mode
+        )
     )
 
     normalized = normalize_prompts(tokenizer, args.token_fixtures)
@@ -387,7 +421,9 @@ def main():
     max_length = max(args.lengths)
     if len(base_tokens) < max_length:
         # Cycle through the fixture tokens to reach the required length.
-        base_tokens = [base_tokens[i % len(base_tokens)] for i in range(max_length)]
+        base_tokens = [
+            base_tokens[i % len(base_tokens)] for i in range(max_length)
+        ]
 
     # Predetermined forced continuation tokens (same for dense and turbo).
     forced_continuation = base_tokens[:args.num_decode]
@@ -458,19 +494,28 @@ def main():
             )
 
         min_required = max(1, args.trials)
-        if args.execution_mode == "metal_strict" and len(dense_rates) < min_required:
+        if (args.execution_mode == "metal_strict" and
+                len(dense_rates) < min_required):
             raise RuntimeError(
-                f"length={length} has only {len(dense_rates)} valid trials; "
+                f"length={length} has only {len(dense_rates)} valid trials; "  # noqa: E501
                 f"required minimum is {min_required} for strict evidence."
             )
 
         record = {
             "length": length,
             "valid_trials": len(dense_rates),
-            "dense_mean_tok_per_sec": float(np.mean(dense_rates)) if dense_rates else 0.0,
-            "dense_std_tok_per_sec": float(np.std(dense_rates)) if dense_rates else 0.0,
-            "turbo_mean_tok_per_sec": float(np.mean(turbo_rates)) if turbo_rates else 0.0,
-            "turbo_std_tok_per_sec": float(np.std(turbo_rates)) if turbo_rates else 0.0,
+            "dense_mean_tok_per_sec": (
+                float(np.mean(dense_rates)) if dense_rates else 0.0
+            ),
+            "dense_std_tok_per_sec": (
+                float(np.std(dense_rates)) if dense_rates else 0.0
+            ),
+            "turbo_mean_tok_per_sec": (
+                float(np.mean(turbo_rates)) if turbo_rates else 0.0
+            ),
+            "turbo_std_tok_per_sec": (
+                float(np.std(turbo_rates)) if turbo_rates else 0.0
+            ),
             "speedup": (
                 float(np.mean(turbo_rates) / np.mean(dense_rates))
                 if dense_rates and np.mean(dense_rates) > 0
@@ -480,16 +525,71 @@ def main():
         records.append(record)
 
     print("\n=== Speed Matrix ===")
-    print(f"{'Length':>8} {'Dense tok/s':>14} {'Turbo tok/s':>14} {'Speedup':>10}")
+    print(f"{'Length':>8} {'Dense tok/s':>14} "  # noqa: E501
+          f"{'Turbo tok/s':>14} {'Speedup':>10}")
     for r in records:
         print(
             f"{r['length']:>8} "
-            f"{r['dense_mean_tok_per_sec']:>8.2f} ±{r['dense_std_tok_per_sec']:>4.2f} "
-            f"{r['turbo_mean_tok_per_sec']:>8.2f} ±{r['turbo_std_tok_per_sec']:>4.2f} "
+            f"{r['dense_mean_tok_per_sec']:>8.2f} ±"  # noqa: E501
+            f"{r['dense_std_tok_per_sec']:>4.2f} "
+            f"{r['turbo_mean_tok_per_sec']:>8.2f} ±"  # noqa: E501
+            f"{r['turbo_std_tok_per_sec']:>4.2f} "
             f"{r['speedup'] if r['speedup'] is not None else 'n/a':>10}"
         )
 
+    # Convert to the unified SpeedEvidence schema format
+    from rfsn_v11.evidence.speed import SpeedEvidence, SpeedTrialResult
+
+    # Group trial results by context for the schema
+    dense_decode_tok_s = {}
+    turbo_decode_tok_s = {}
+
+    for record in records:
+        context = record["length"]
+        if context not in dense_decode_tok_s:
+            dense_decode_tok_s[context] = []
+            turbo_decode_tok_s[context] = []
+        # Add throughput values from valid trials
+        for _ in range(record["valid_trials"]):
+            if record["dense_mean_tok_per_sec"] > 0:
+                dense_decode_tok_s[context].append(  # noqa: E501
+                    record["dense_mean_tok_per_sec"]
+                )
+            if record["turbo_mean_tok_per_sec"] > 0:
+                turbo_decode_tok_s[context].append(  # noqa: E501
+                    record["turbo_mean_tok_per_sec"]
+                )
+
+    # Convert trial records to SpeedTrialResult format
+    speed_trial_results = []
+    for trial in trial_records:
+        speed_trial_results.append(SpeedTrialResult(
+            context_length=trial["context_length"],
+            mode=trial["mode"],
+            trial=trial["trial"],
+            prefill_seconds=trial["prefill_seconds"],
+            first_token_ms=trial["first_token_ms"],
+            per_token_ms=trial["per_token_ms"],
+            throughput_tps=trial["throughput_tps"],
+            page_dispatches=trial["page_dispatches"],
+            tail_dispatches=trial["tail_dispatches"],
+            fallbacks=trial["fallbacks"],
+        ))
+
+    speed_evidence = SpeedEvidence(
+        model_id=str(args.model),
+        execution_mode=args.execution_mode,
+        evaluated_contexts=[r["length"] for r in records],
+        trials_per_context=args.trials,
+        trial_results=speed_trial_results,
+        dense_decode_tok_s=dense_decode_tok_s,
+        turbo_decode_tok_s=turbo_decode_tok_s,
+    )
+
     report = {
+        "schema_version": 1,
+        "speed_evidence": speed_evidence,
+        # Keep legacy fields for backward compatibility
         "model": str(args.model),
         "mlx_version": mx.__version__,
         "mlx_lm_version": mlx_lm.__version__,
@@ -504,7 +604,7 @@ def main():
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     json_path = args.output_dir / "speed_matrix.json"
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     print(f"\nReport written to {json_path}")
 

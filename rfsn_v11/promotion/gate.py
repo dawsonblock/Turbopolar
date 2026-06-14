@@ -26,18 +26,40 @@ from rfsn_v11.promotion.schema import (
 
 def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[Dict[str, float]]:
     """Recompute teacher-forced summary from position-level metrics.
-    
-    Handles two formats:
-    1. Legacy format: {"positions": [...]}
-    2. TeacherForcedEvidence format: {"context_results": {context: {"positions": [...]}}}
+
+    Handles three formats:
+    1. BenchmarkReport format: {"prompts": [{"position_metrics": [...], ...}], "aggregate": {...}}
+    2. Legacy format: {"positions": [...]}
+    3. TeacherForcedEvidence format: {"context_results": {context: {"positions": [...]}}}
     """
     try:
-        # Try TeacherForcedEvidence format first
-        if "context_results" in raw_metrics:
+        # Try BenchmarkReport format first (actual run_dense_vs_turbopolar.py output)
+        if "prompts" in raw_metrics:
+            prompts = raw_metrics.get("prompts", [])
+            if not prompts:
+                return None
+
+            positions = []
+            total_positions = 0
+            for prompt in prompts:
+                if not isinstance(prompt, dict):
+                    continue
+                prompt_positions = prompt.get("position_metrics", [])
+                if isinstance(prompt_positions, list):
+                    positions.extend(prompt_positions)
+                    total_positions += len(prompt_positions)
+
+            if not positions:
+                return None
+
+            # Store total position count for validation
+            raw_metrics["_computed_total_positions"] = total_positions
+        # Try TeacherForcedEvidence format
+        elif "context_results" in raw_metrics:
             context_results = raw_metrics.get("context_results", {})
             if not context_results:
                 return None
-            
+
             positions = []
             for context, result in context_results.items():
                 if not isinstance(result, dict):
@@ -45,7 +67,7 @@ def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[D
                 context_positions = result.get("positions", [])
                 if isinstance(context_positions, list):
                     positions.extend(context_positions)
-            
+
             if not positions:
                 return None
         else:
@@ -114,13 +136,82 @@ def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[D
 
 def _recompute_speed_ratios(raw_timing: Dict[str, Any]) -> Optional[Dict[str, float]]:
     """Recompute speed ratios from raw timing trials.
-    
-    Handles two formats:
-    1. Legacy format: {"trials": {"context": [{"latencies": [], "turbo_time_ms": ..., "baseline_time_ms": ...}]}}
-    2. Benchmark format: {"trial_results": [{"context_length": ..., "mode": "dense/turbo", "per_token_ms": [...], ...}]}
+
+    Handles three formats:
+    1. Unified schema format: {"schema_version": 1, "speed_evidence": {...}}
+    2. Legacy format: {"trials": {"context": [{"latencies": [], "turbo_time_ms": ..., "baseline_time_ms": ...}]}}
+    3. Benchmark format: {"trial_results": [{"context_length": ..., "mode": "dense/turbo", "per_token_ms": [...], ...}]}
     """
     try:
-        # Try benchmark format first (run_speed_matrix.py output)
+        # Try unified schema format first (new SpeedEvidence format)
+        if "schema_version" in raw_timing and "speed_evidence" in raw_timing:
+            speed_evidence = raw_timing.get("speed_evidence", {})
+            trial_results = speed_evidence.get("trial_results", [])
+            if not trial_results:
+                return None
+
+            context_ratios_4096_plus = []
+            context_ratios_8192_plus = []
+
+            # Group trials by context and mode
+            context_trials: Dict[int, Dict[str, List[Dict]]] = {}
+            for trial in trial_results:
+                if not isinstance(trial, dict):
+                    continue
+                context = trial.get("context_length")
+                mode = trial.get("mode")
+                if context is None or mode is None:
+                    continue
+
+                if context not in context_trials:
+                    context_trials[context] = {"dense": [], "turbo": []}
+                context_trials[context][mode].append(trial)
+
+            # Compute ratios for each context
+            for context, modes in context_trials.items():
+                dense_trials = modes.get("dense", [])
+                turbo_trials = modes.get("turbo", [])
+
+                if not dense_trials or not turbo_trials:
+                    continue
+
+                # Average latencies across trials
+                dense_avg = sum(
+                    sum(t.get("per_token_ms", [])) / len(t.get("per_token_ms", []))
+                    for t in dense_trials if t.get("per_token_ms")
+                ) / len(dense_trials)
+
+                turbo_avg = sum(
+                    sum(t.get("per_token_ms", [])) / len(t.get("per_token_ms", []))
+                    for t in turbo_trials if t.get("per_token_ms")
+                ) / len(turbo_trials)
+
+                if turbo_avg > 0:
+                    ratio = dense_avg / turbo_avg
+
+                    if context >= 4096:
+                        context_ratios_4096_plus.append(ratio)
+                    if context >= 8192:
+                        context_ratios_8192_plus.append(ratio)
+
+            if not context_ratios_4096_plus:
+                return None
+
+            min_ratio_4096_plus = min(context_ratios_4096_plus)
+            max_ratio_4096_plus = max(context_ratios_4096_plus)
+
+            if context_ratios_8192_plus:
+                median_ratio_8192_plus = sorted(context_ratios_8192_plus)[len(context_ratios_8192_plus) // 2]
+            else:
+                median_ratio_8192_plus = 0
+
+            return {
+                "min_ratio_4096_plus": min_ratio_4096_plus,
+                "max_ratio_4096_plus": max_ratio_4096_plus,
+                "median_ratio_8192_plus": median_ratio_8192_plus,
+            }
+
+        # Try benchmark format (run_speed_matrix.py output)
         if "trial_results" in raw_timing:
             trial_results = raw_timing.get("trial_results", [])
             if not trial_results:
@@ -438,6 +529,14 @@ class PromotionGate:
                 reasons.append(f"Invalid teacher-forced raw metrics artifact: {exc}")
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 reasons.append(f"Failed to parse teacher-forced raw metrics: {exc}")
+
+            # Fail if recomputation is impossible
+            if recomputed is None:
+                reasons.append("Teacher-forced raw metrics recomputation failed - cannot verify summary fields.")
+
+            # Require nonzero total position count
+            if tf.total_positions == 0:
+                reasons.append("Teacher-forced total_positions is zero - no positions were evaluated.")
 
         # Fused decode quality
         fd = evidence.fused_decode_report

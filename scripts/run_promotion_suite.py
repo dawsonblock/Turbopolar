@@ -9,7 +9,7 @@ This script is the single entry point for producing ``PromotionEvidence``. It:
   4. Calls ``PromotionGate.evaluate()`` and writes ``evidence.json`` and
      ``decision.json``.
 
-Use ``--dry-run`` to synthesise evidence without a model (for CI smoke testing).
+Use ``--dry-run`` to synthesise evidence without a model (for CI smoke).
 """
 
 import argparse
@@ -28,8 +28,10 @@ import mlx.core as mx
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.promotion import (
+from rfsn_v11.candidates.turbo_polar_config import (  # noqa: E402
+    TurboPolarConfig,
+)
+from rfsn_v11.promotion import (  # noqa: E402
     BaselineComparisonReport,
     BenchmarkProvenance,
     FusedDecodeReport,
@@ -41,7 +43,10 @@ from rfsn_v11.promotion import (
     SpeedReport,
     TeacherForcedReport,
 )
-from rfsn_v11.promotion.provenance import capture_provenance, _hash_jsonable
+from rfsn_v11.promotion.provenance import (  # noqa: E402
+    capture_provenance,
+    _hash_jsonable,
+)
 
 
 BENCHMARKS_DIR = project_root / "benchmarks"
@@ -231,6 +236,13 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     import hashlib
     with open(raw_metrics_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
+
+    # Also write a dedicated raw_metrics.json file for the gate to parse
+    raw_metrics_dedicated_path = output_dir / "teacher_forced" / "raw_metrics.json"
+    with open(raw_metrics_dedicated_path, "w") as f:
+        json.dump(report, f, sort_keys=True, indent=2)
+    with open(raw_metrics_dedicated_path, "rb") as f:
+        raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
     
     return TeacherForcedReport(
         model=model,
@@ -244,7 +256,7 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         mean_top10_overlap=agg.get("mean_top10_overlap"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
         any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
-        raw_metrics_path=str(raw_metrics_path),
+        raw_metrics_path=str(raw_metrics_dedicated_path),
         raw_metrics_hash=raw_metrics_hash,
         notes=list(report.get("notes", [])),
     )
@@ -277,6 +289,13 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     import hashlib
     with open(raw_metrics_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
+
+    # Also write a dedicated raw_metrics.json file for the gate to parse
+    raw_metrics_dedicated_path = output_dir / "teacher_forced" / "raw_metrics.json"
+    with open(raw_metrics_dedicated_path, "w") as f:
+        json.dump(report, f, sort_keys=True, indent=2)
+    with open(raw_metrics_dedicated_path, "rb") as f:
+        raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
     
     return TeacherForcedReport(
         model=model,
@@ -290,7 +309,7 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         mean_top10_overlap=agg.get("mean_top10_overlap"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
         any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
-        raw_metrics_path=str(raw_metrics_path),
+        raw_metrics_path=str(raw_metrics_dedicated_path),
         raw_metrics_hash=raw_metrics_hash,
         notes=list(report.get("notes", [])) + ["Quick mode: 512-4096 contexts only, 32 decode tokens."],
     )
@@ -465,11 +484,30 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     )
     
     # Write raw timing data to dedicated file and calculate full SHA-256
+    # Use the unified schema format for the raw timing file
     import hashlib
     import json
+    from dataclasses import asdict
+
     raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
+
+    # Extract the speed_evidence if available, otherwise use trial_results
+    if "speed_evidence" in report:
+        # Convert SpeedEvidence dataclass to dict for JSON serialization
+        speed_evidence_dict = asdict(report["speed_evidence"])
+        raw_timing_data = {
+            "schema_version": 1,
+            "speed_evidence": speed_evidence_dict,
+        }
+    else:
+        # Fallback to legacy format
+        raw_timing_data = {
+            "schema_version": 1,
+            "trial_results": trial_results,
+        }
+
     with open(raw_timing_path, "w") as f:
-        json.dump(trial_results, f, sort_keys=True)
+        json.dump(raw_timing_data, f, sort_keys=True, indent=2)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -540,11 +578,30 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
     )
     
     # Write raw timing data to dedicated file and calculate full SHA-256
+    # Use the unified schema format for the raw timing file
     import hashlib
     import json
+    from dataclasses import asdict
+
     raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
+
+    # Extract the speed_evidence if available, otherwise use trial_results
+    if "speed_evidence" in report:
+        # Convert SpeedEvidence dataclass to dict for JSON serialization
+        speed_evidence_dict = asdict(report["speed_evidence"])
+        raw_timing_data = {
+            "schema_version": 1,
+            "speed_evidence": speed_evidence_dict,
+        }
+    else:
+        # Fallback to legacy format
+        raw_timing_data = {
+            "schema_version": 1,
+            "trial_results": trial_results,
+        }
+
     with open(raw_timing_path, "w") as f:
-        json.dump(trial_results, f, sort_keys=True)
+        json.dump(raw_timing_data, f, sort_keys=True, indent=2)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -719,6 +776,45 @@ def _placeholder_baseline_report() -> BaselineComparisonReport:
     )
 
 
+def _extract_model_revision(model_path: str) -> str:
+    """Extract immutable revision from model path.
+
+    Handles:
+    - HuggingFace repo IDs (e.g., "mlx-community/phi-3")
+    - Local git repositories
+    - Local file paths
+
+    Returns commit SHA if available, empty string otherwise.
+    """
+    from pathlib import Path
+
+    model_path = Path(model_path)
+
+    # Try to get git revision if it's a git repository
+    if model_path.is_dir():
+        # Check if it's a git repository
+        try:
+            git_dir = model_path / ".git"
+            if git_dir.exists() or (model_path / ".." / ".git").exists():
+                # It's a git repository, get the commit SHA
+                import subprocess
+                result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=model_path if git_dir.exists() else model_path.parent,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+        except Exception:
+            pass
+
+    # For HuggingFace IDs, we can't easily get the commit SHA without huggingface_hub
+    # Return empty string to indicate it should be provided manually
+    return ""
+
+
 def _build_provenance(
     model: str,
     output_dir: Path,
@@ -728,18 +824,17 @@ def _build_provenance(
     tokenizer_revision: Optional[str] = None,
 ) -> BenchmarkProvenance:
     prompt_suite = BENCHMARKS_DIR / "exact_token_fixtures.jsonl"
-    
-    # P0: Use provided revisions or default to unknown
-    # For promotion, these must be provided via command-line arguments
-    model_rev = model_revision if model_revision else "unknown"
-    tokenizer_rev = tokenizer_revision if tokenizer_revision else "unknown"
-    
-    # TODO: Implement automatic revision extraction:
-    # - If model is HF repo ID: use huggingface_hub to get commit SHA
-    # - If model is local path: use git to get commit SHA
-    # - Same for tokenizer
-    # This requires external dependencies and should be added as a separate task
-    
+
+    # P0: Use provided revisions or try to extract automatically
+    model_rev = model_revision if model_revision else _extract_model_revision(model)
+    tokenizer_rev = tokenizer_revision if tokenizer_revision else model_rev  # Usually same as model
+
+    # If still empty, this will be caught by the gate as a failure
+    if not model_rev:
+        model_rev = ""  # Empty string triggers gate failure
+    if not tokenizer_rev:
+        tokenizer_rev = ""  # Empty string triggers gate failure
+
     return capture_provenance(
         model_repo_id=model,
         model_revision=model_rev,
@@ -848,8 +943,8 @@ def _synthetic_evidence() -> PromotionEvidence:
         provenance=BenchmarkProvenance(
             git_tree_state=GitTreeState.CLEAN,
             model_repo_id="dry-run/model",
-            model_revision="dry-run",
-            tokenizer_revision="dry-run",
+            model_revision="",  # Empty string triggers gate failure for dry-run
+            tokenizer_revision="",  # Empty string triggers gate failure for dry-run
             turbopolar_config_hash="dry-run",
             evidence_kind="synthetic_dry_run",
         ),
@@ -898,12 +993,12 @@ def main():
     parser.add_argument(
         "--model-revision",
         default=None,
-        help="Immutable model revision (git commit SHA or HF commit SHA) - required for promotion",
+        help="Immutable model revision (git commit SHA or HF commit SHA) - required for promotion. If not provided, will attempt to extract from git repository.",
     )
     parser.add_argument(
         "--tokenizer-revision",
         default=None,
-        help="Immutable tokenizer revision (git commit SHA or HF commit SHA) - required for promotion",
+        help="Immutable tokenizer revision (git commit SHA or HF commit SHA) - required for promotion. If not provided, defaults to model-revision.",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()

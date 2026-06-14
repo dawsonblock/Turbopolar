@@ -638,17 +638,38 @@ def main():
     else:
         fixtures = []
         for ctx_len in args.contexts:
+            required_length = ctx_len + args.forced_decode_tokens
+            # Look for exact category match first (fused_512, fused_2048, etc.)
+            category_name = f"fused_{ctx_len}"
+            exact_match = None
             for entry in normalized:
-                tokens = entry["tokens"]
-                if len(tokens) >= ctx_len + args.forced_decode_tokens:
-                    fixtures.append(
-                        {
-                            "tokens": tokens,
-                            "context_length": ctx_len,
-                            "continuation_length": args.forced_decode_tokens,
-                        }
-                    )
+                if entry.get("category") == category_name and len(entry["tokens"]) == required_length:
+                    exact_match = entry
                     break
+
+            if exact_match:
+                fixtures.append(
+                    {
+                        "tokens": exact_match["tokens"],
+                        "context_length": ctx_len,
+                        "continuation_length": args.forced_decode_tokens,
+                        "category": exact_match.get("category", "unknown"),
+                    }
+                )
+            else:
+                # Fallback to first-fit if exact category not found
+                for entry in normalized:
+                    tokens = entry["tokens"]
+                    if len(tokens) >= required_length:
+                        fixtures.append(
+                            {
+                                "tokens": tokens,
+                                "context_length": ctx_len,
+                                "continuation_length": args.forced_decode_tokens,
+                                "category": entry.get("category", "unknown"),
+                            }
+                        )
+                        break
 
     if not fixtures:
         raise ValueError("No fixtures could be constructed.")
