@@ -12,8 +12,8 @@ from rfsn_v11.promotion.gate import PromotionGate
 
 class TestDocsConsistency:
     def test_promotion_lock_value_matches_status(self):
-        """PROMOTION_LOCKED in gate.py must be False after achieving compression target."""
-        assert PromotionGate.PROMOTION_LOCKED is False
+        """PROMOTION_LOCKED in gate.py must be True during repair and until independent validation."""
+        assert PromotionGate.PROMOTION_LOCKED is True
 
     def test_supported_configuration_matches_config_validation(self):
         """validate_supported_configuration must reject the same scope docs claim."""
