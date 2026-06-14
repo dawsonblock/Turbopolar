@@ -595,7 +595,7 @@ class TestRegressionFixtures:
     def test_empty_trace_fixture_fails(self):
         """Empty trace fixture should fail."""
         path = "tests/fixtures/evidence/empty_trace.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         msg = "Trace artifact contains no traces"
         with pytest.raises(TraceArtifactError, match=msg):
@@ -604,7 +604,7 @@ class TestRegressionFixtures:
     def test_null_trace_fixture_fails(self):
         """Null trace fixture should fail."""
         path = "tests/fixtures/evidence/null_trace.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         msg = "Trace entry 0 must be an object"
         with pytest.raises(TraceArtifactError, match=msg):
@@ -613,7 +613,7 @@ class TestRegressionFixtures:
     def test_missing_page_fixture_fails(self):
         """Missing page fixture should fail topology validation."""
         path = "tests/fixtures/evidence/missing_page.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         # Parser should succeed, topology validation should fail later
         result = parse_trace_artifact(raw)
@@ -639,7 +639,8 @@ class TestRegressionFixtures:
         result = parse_trace_artifact(raw)
         assert len(result) == 1
         assert result[0].page_operations[0].fallback_used is True
-        assert result[0].page_operations[0].fallback_reason == "injected_for_test"
+        reason = result[0].page_operations[0].fallback_reason
+        assert reason == "injected_for_test"
 
     def test_unevaluated_trace_fixture_succeeds_parsing(self):
         """Unevaluated trace should parse successfully."""
