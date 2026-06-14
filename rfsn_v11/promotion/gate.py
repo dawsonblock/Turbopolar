@@ -737,6 +737,27 @@ class PromotionGate:
 
         # Provenance
         pv = evidence.provenance
+
+        # P1-30: Require immutable model and tokenizer revisions
+        if not pv.model_revision:
+            reasons.append("Model revision is empty; immutable git commit hash required.")
+        elif pv.model_revision == "unknown":
+            reasons.append("Model revision is 'unknown'; immutable git commit hash required.")
+        elif len(pv.model_revision) < 7:  # At least short git hash
+            reasons.append(
+                f"Model revision '{pv.model_revision}' is too short; "
+                "immutable git commit hash required (at least 7 characters)."
+            )
+        
+        if not pv.tokenizer_revision:
+            reasons.append("Tokenizer revision is empty; immutable git commit hash required.")
+        elif pv.tokenizer_revision == "unknown":
+            reasons.append("Tokenizer revision is 'unknown'; immutable git commit hash required.")
+        elif len(pv.tokenizer_revision) < 7:
+            reasons.append(
+                f"Tokenizer revision '{pv.tokenizer_revision}' is too short; "
+                "immutable git commit hash required (at least 7 characters)."
+            )
         
         # Check evidence kind early - synthetic evidence is never promotable
         if pv.evidence_kind != "experimental":
