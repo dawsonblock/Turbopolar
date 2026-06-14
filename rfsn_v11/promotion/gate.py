@@ -355,7 +355,7 @@ class PromotionGate:
     # Locked until the strict no-fallback Metal suite passes end-to-end.
     # A correct fallback result does not prove the Metal implementation works.
     # This must remain True until all evidence systems are scientifically trustworthy.
-    PROMOTION_LOCKED = False
+    PROMOTION_LOCKED = True
 
     # Correctness thresholds
     MEAN_COSINE = 0.995
