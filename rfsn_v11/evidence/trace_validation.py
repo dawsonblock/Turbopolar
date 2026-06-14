@@ -765,6 +765,34 @@ def validate_trace_topology(
                         f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
                         f"operation cache_offset_before {op.cache_offset_before} != parent {trace.cache_offset_before}"
                     )
+                
+                # P1: Require operation-level strict mode
+                if op.execution_mode != "metal_strict":
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation execution_mode must be 'metal_strict', got '{op.execution_mode}'"
+                    )
+                
+                # P1: Require metal_requested=True for all operations
+                if not op.metal_requested:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation metal_requested must be True, got {op.metal_requested}"
+                    )
+                
+                # P1: Require processed tokens equal expected tokens
+                if op.processed_tokens != op.expected_tokens:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation processed_tokens {op.processed_tokens} != expected_tokens {op.expected_tokens}"
+                    )
+                
+                # P1: Require complete parent/nested identity equality
+                if op.experiment_id != trace.experiment_id:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation experiment_id {op.experiment_id} != parent {trace.experiment_id}"
+                    )
 
             # Cross-check dense tail operation if present
             if trace.dense_tail_operation:
@@ -799,11 +827,37 @@ def validate_trace_topology(
                         f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
                         f"operation cache_offset_before {op.cache_offset_before} != parent {trace.cache_offset_before}"
                     )
+                
+                # P1: Require operation-level strict mode for dense_tail
+                if op.execution_mode != "metal_strict":
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation execution_mode must be 'metal_strict', got '{op.execution_mode}'"
+                    )
+                
+                # P1: Require metal_requested=True for dense_tail
+                if not op.metal_requested:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation metal_requested must be True, got {op.metal_requested}"
+                    )
+                
+                # P1: Require processed tokens equal expected tokens for dense_tail
+                if op.processed_tokens != op.expected_tokens:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation processed_tokens {op.processed_tokens} != expected_tokens {op.expected_tokens}"
+                    )
+                
+                # P1: Require complete parent/nested identity equality for dense_tail
+                if op.experiment_id != trace.experiment_id:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation experiment_id {op.experiment_id} != parent {trace.experiment_id}"
+                    )
 
             # Cache state consistency validation
-            # Note: cache_tokens_after may not equal cache_tokens_before + 1 in all cases
-            # because the trace records the state after attention, not immediately after append
-            # For now, only validate the relationship between offset and tokens
+            # P1: Validate cache before/after equations
             if trace.cache_offset_before != trace.cache_tokens_before:
                 failures.append(
                     f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
@@ -822,6 +876,16 @@ def validate_trace_topology(
                     f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"partial_tail_length {trace.partial_tail_length} != expected {expected_tail_length} "
                     f"(cache_tokens_after % 64)"
+                )
+            
+            # P1: Validate processed totals against cache size
+            total_processed = sum(op.processed_tokens for op in trace.page_operations)
+            if trace.dense_tail_operation:
+                total_processed += trace.dense_tail_operation.processed_tokens
+            if total_processed != trace.cache_tokens_after:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"sum(processed_tokens) {total_processed} != cache_tokens_after {trace.cache_tokens_after}"
                 )
 
             if trace.dense_tail_operation and trace.dense_tail_operation.fallback_used:
