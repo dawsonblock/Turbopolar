@@ -12,17 +12,24 @@ class QuantizedVBlock:
 class GroupedVQuantizer:
     def __init__(self, group_size: int = 32):
         self.group_size = group_size
+        # OPTIMIZATION: Precompute constants
+        self._int8_max = 127.0
+        self._int8_min = -128
+        self._min_scale = 1e-4
 
     def quantize_block(self, v_block: mx.array) -> QuantizedVBlock:
         B, H, S, L, D = v_block.shape
         assert D % self.group_size == 0
         num_groups = D // self.group_size
         reshaped = v_block.reshape(B, H, S, L, num_groups, self.group_size)
+        
+        # OPTIMIZATION: Use precomputed constant
         max_abs = mx.max(mx.abs(reshaped), axis=-1, keepdims=True)
-        scales = (max_abs / 127.0).astype(mx.float16)
-        scales = mx.where(scales == 0, mx.array(1e-4, dtype=mx.float16), scales)
+        scales = (max_abs / self._int8_max).astype(mx.float16)
+        scales = mx.where(scales == 0, mx.array(self._min_scale, dtype=mx.float16), scales)
+        
         quantized = mx.round(reshaped / scales)
-        codes = mx.clip(quantized, -128, 127).astype(mx.int8)
+        codes = mx.clip(quantized, self._int8_min, self._int8_max).astype(mx.int8)
         return QuantizedVBlock(
             codes=codes.reshape(B, H, S, L, D),
             scales=scales.squeeze(-1),
@@ -42,11 +49,14 @@ class GroupedVQuantizer:
         assert D % self.group_size == 0
         num_groups = D // self.group_size
         reshaped = v_blocks.reshape(B, H, N, L, num_groups, self.group_size)
+        
+        # OPTIMIZATION: Use precomputed constant
         max_abs = mx.max(mx.abs(reshaped), axis=-1, keepdims=True)
-        scales = (max_abs / 127.0).astype(mx.float16)
-        scales = mx.where(scales == 0, mx.array(1e-4, dtype=mx.float16), scales)
+        scales = (max_abs / self._int8_max).astype(mx.float16)
+        scales = mx.where(scales == 0, mx.array(self._min_scale, dtype=mx.float16), scales)
+        
         quantized = mx.round(reshaped / scales)
-        codes = mx.clip(quantized, -128, 127).astype(mx.int8)
+        codes = mx.clip(quantized, self._int8_min, self._int8_max).astype(mx.int8)
         return QuantizedVBlock(
             codes=codes.reshape(B, H, N, L, D),
             scales=scales.squeeze(-1),

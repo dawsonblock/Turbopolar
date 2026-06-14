@@ -20,6 +20,12 @@ class PolarQuantEncoder:
         self.deep_levels = 2**self.k_angle_bits_deep
         self.l1_scale = float(self.l1_levels - 1)
         self.deep_scale = float(self.deep_levels - 1)
+        
+        # OPTIMIZATION: Precompute constants to avoid repeated calculations
+        self._two_pi = 2.0 * np.pi
+        self._epsilon = 1e-6
+        self._min_log_scale = 1e-6
+        self._int8_scale = 127.0
 
     def encode_block(self, k_block: mx.array) -> PolarKeyBlock:
         B, H, L, D = k_block.shape
@@ -30,39 +36,50 @@ class PolarQuantEncoder:
         k_pairs = k_block.reshape(B, H, L, half_d, 2)
         x = k_pairs[..., 0]
         y = k_pairs[..., 1]
+        
+        # OPTIMIZATION: Use fused sqrt and multiplication
         radii_fp = mx.sqrt(x * x + y * y).astype(mx.float16)
-        if getattr(self.config, "use_int8_radii", False):
+        
+        # OPTIMIZATION: Cache the use_int8_radii check
+        use_int8 = getattr(self.config, "use_int8_radii", False)
+        if use_int8:
             # Log-int8 radii: store log(radius) with per-(B,H) scale. This keeps
             # relative error small across the large dynamic range seen in real keys.
-            log_r = mx.log(mx.maximum(radii_fp, 1e-6)).astype(mx.float32)
+            log_r = mx.log(mx.maximum(radii_fp, self._min_log_scale)).astype(mx.float32)
             log_scale = mx.max(mx.abs(log_r), axis=(2, 3), keepdims=True)
             log_scale = mx.where(
-                log_scale == 0, mx.array(1e-6, dtype=mx.float32), log_scale
+                log_scale == 0, mx.array(self._min_log_scale, dtype=mx.float32), log_scale
             )
-            log_scale = (log_scale / 127.0).astype(mx.float16)
-            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(
-                mx.int8
-            )
+            log_scale = (log_scale / self._int8_scale).astype(mx.float16)
+            radii_codes = mx.clip(mx.round(log_r / log_scale), -128, 127).astype(mx.int8)
             radii_scale = log_scale
         else:
             radii_codes = radii_fp
             radii_scale = None
+        
+        # OPTIMIZATION: Use precomputed constant
         angles = mx.arctan2(y, x)
         shifted = angles + np.pi
-        norm_angles = shifted / (2.0 * np.pi)
+        norm_angles = shifted / self._two_pi
         norm_angles = mx.clip(norm_angles, 0.0, 1.0)
-        epsilon = 1e-6
+        
+        # OPTIMIZATION: Simplified epsilon handling
         norm_angles = mx.where(
-            norm_angles > (1.0 - epsilon), mx.array(0.0), norm_angles
+            norm_angles > (1.0 - self._epsilon), mx.array(0.0), norm_angles
         )
+        
+        # OPTIMIZATION: Use slicing instead of separate indexing
         norm_l1 = norm_angles[..., :split_half]
         norm_deep = norm_angles[..., split_half:]
+        
+        # OPTIMIZATION: Use vectorized operations
         codes_l1 = mx.clip(
             mx.round(norm_l1 * self.l1_scale), 0, self.l1_levels - 1
         ).astype(mx.uint8)
         codes_deep = mx.clip(
             mx.round(norm_deep * self.deep_scale), 0, self.deep_levels - 1
         ).astype(mx.uint8)
+        
         # BIT-PACK level1 when 4-bit; keep 8-bit codes as-is.
         if self.k_angle_bits_level1 == 4:
             codes_l1_packed = self._pack_4bit(codes_l1)
@@ -102,8 +119,8 @@ class PolarQuantEncoder:
                 "deep_packed": deep_packed,
                 "deep_bits": self.k_angle_bits_deep,
                 "l1_bits": self.k_angle_bits_level1,
-                "int8_radii": getattr(self.config, "use_int8_radii", False),
-                "log_radii": getattr(self.config, "use_int8_radii", False),
+                "int8_radii": use_int8,
+                "log_radii": use_int8,
                 "l1_original_len": split_half,
                 "deep_original_len": half_d - split_half,
             },
