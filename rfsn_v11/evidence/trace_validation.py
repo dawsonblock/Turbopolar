@@ -695,6 +695,10 @@ def validate_trace_topology(
                     if context not in topology_stats["fallback_operations_by_context"]:
                         topology_stats["fallback_operations_by_context"][context] = 0
                     topology_stats["fallback_operations_by_context"][context] += 1
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"fallback used: {op.fallback_reason}"
+                    )
 
                 # Cross-check: operation context_length matches parent
                 if op.context_length != trace.context_length:
@@ -771,10 +775,43 @@ def validate_trace_topology(
                         f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
                         f"operation cache_offset_before {op.cache_offset_before} != parent {trace.cache_offset_before}"
                     )
-                    failures.append(
-                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, "
-                        f"page={op.page_index}: fallback used: {op.fallback_reason}"
-                    )
+
+            # Cache state consistency validation
+            if trace.cache_tokens_after != trace.cache_tokens_before + 1:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"cache_tokens_after {trace.cache_tokens_after} != cache_tokens_before + 1 ({trace.cache_tokens_before})"
+                )
+            
+            if trace.cache_offset_before != trace.cache_tokens_before:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"cache_offset_before {trace.cache_offset_before} != cache_tokens_before {trace.cache_tokens_before}"
+                )
+            
+            if trace.decode_step != trace.cache_offset_before:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"decode_step {trace.decode_step} != cache_offset_before {trace.cache_offset_before}"
+                )
+            
+            expected_tail_length = trace.cache_tokens_after % 64
+            if trace.partial_tail_length != expected_tail_length:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"partial_tail_length {trace.partial_tail_length} != expected {expected_tail_length} "
+                    f"(cache_tokens_after % 64)"
+                )
+            
+            # Verify processed tokens sum matches cache state
+            total_processed = sum(op.processed_tokens for op in trace.page_operations)
+            if trace.dense_tail_operation:
+                total_processed += trace.dense_tail_operation.processed_tokens
+            if total_processed != trace.cache_tokens_after:
+                failures.append(
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"sum(processed_tokens) {total_processed} != cache_tokens_after {trace.cache_tokens_after}"
+                )
 
             if trace.dense_tail_operation and trace.dense_tail_operation.fallback_used:
                 if context not in topology_stats["fallback_operations_by_context"]:
