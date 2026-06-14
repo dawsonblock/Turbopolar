@@ -25,17 +25,20 @@ class TestTraceArtifactParsing:
 
     def test_empty_list_fails(self):
         """Empty trace artifact list must fail."""
-        with pytest.raises(TraceArtifactError, match="Trace artifact contains no traces"):
+        msg = "Trace artifact contains no traces"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([])
 
     def test_null_entry_fails(self):
         """Null trace entry must fail without crashing."""
-        with pytest.raises(TraceArtifactError, match="Trace entry 0 must be an object"):
+        msg = "Trace entry 0 must be an object"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([None])
 
     def test_non_list_fails(self):
         """Non-list trace artifact must fail."""
-        with pytest.raises(TraceArtifactError, match="Trace artifact must contain a JSON array"):
+        msg = "Trace artifact must contain a JSON array"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact({})
 
     def test_empty_object_fails(self):
@@ -45,7 +48,8 @@ class TestTraceArtifactParsing:
 
     def test_missing_page_traces_fails(self):
         """Missing page_traces field must fail."""
-        with pytest.raises(TraceArtifactError, match="missing required field 'page_traces'"):
+        msg = "missing required field 'page_traces'"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -57,7 +61,8 @@ class TestTraceArtifactParsing:
 
     def test_page_traces_not_list_fails(self):
         """page_traces must be a list."""
-        with pytest.raises(TraceArtifactError, match="page_traces must be a list"):
+        msg = "page_traces must be a list"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -70,7 +75,8 @@ class TestTraceArtifactParsing:
 
     def test_missing_dense_tail_trace_fails(self):
         """Missing dense_tail_trace field must fail."""
-        with pytest.raises(TraceArtifactError, match="missing required field 'dense_tail_trace'"):
+        msg = "missing required field 'dense_tail_trace'"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -83,7 +89,8 @@ class TestTraceArtifactParsing:
 
     def test_page_trace_not_dict_fails(self):
         """Page trace entry must be a dict."""
-        with pytest.raises(TraceArtifactError, match="page_traces\\[0\\] must be an object"):
+        msg = r"page_traces\[0\] must be an object"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -97,7 +104,8 @@ class TestTraceArtifactParsing:
 
     def test_missing_required_string_field_fails(self):
         """Missing required string field must fail."""
-        with pytest.raises(TraceArtifactError, match="missing required field 'experiment_id'"):
+        msg = "missing required field 'experiment_id'"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "context_length": 2048,
                 "fixture_id": "fixture-001",
@@ -138,7 +146,8 @@ class TestTraceArtifactParsing:
 
     def test_missing_required_int_field_fails(self):
         """Missing required int field must fail."""
-        with pytest.raises(TraceArtifactError, match="missing required field 'context_length'"):
+        msg = "missing required field 'context_length'"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "fixture_id": "fixture-001",
@@ -193,7 +202,8 @@ class TestTraceArtifactParsing:
 
     def test_missing_required_bool_field_fails(self):
         """Missing required bool field must fail."""
-        with pytest.raises(TraceArtifactError, match="missing required field 'metal_requested'"):
+        msg = "missing required field 'metal_requested'"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -285,7 +295,8 @@ class TestTraceArtifactParsing:
 
     def test_compressed_page_missing_page_index_fails(self):
         """compressed_page operation must have page_index."""
-        with pytest.raises(TraceArtifactError, match="compressed_page operation must have page_index"):
+        msg = "compressed_page operation must have page_index"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -315,7 +326,8 @@ class TestTraceArtifactParsing:
 
     def test_negative_page_index_fails(self):
         """Negative page_index must fail."""
-        with pytest.raises(TraceArtifactError, match="page_index cannot be negative"):
+        msg = "page_index cannot be negative"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -346,7 +358,8 @@ class TestTraceArtifactParsing:
 
     def test_fallback_used_without_reason_fails(self):
         """fallback_used=True requires fallback_reason."""
-        with pytest.raises(TraceArtifactError, match="fallback_used=True requires fallback_reason"):
+        msg = "fallback_used=True requires fallback_reason"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -377,7 +390,8 @@ class TestTraceArtifactParsing:
 
     def test_context_length_mismatch_fails(self):
         """Operation context_length must match trace context_length."""
-        with pytest.raises(TraceArtifactError, match="does not match trace context_length"):
+        msg = "does not match trace context_length"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -408,7 +422,8 @@ class TestTraceArtifactParsing:
 
     def test_fixture_id_mismatch_fails(self):
         """Operation fixture_id must match trace fixture_id."""
-        with pytest.raises(TraceArtifactError, match="does not match trace fixture_id"):
+        msg = "does not match trace fixture_id"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -439,7 +454,8 @@ class TestTraceArtifactParsing:
 
     def test_dense_tail_not_dict_or_null_fails(self):
         """dense_tail_trace must be dict or null."""
-        with pytest.raises(TraceArtifactError, match="dense_tail_trace must be an object or null"):
+        msg = "dense_tail_trace must be an object or null"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
                 "context_length": 2048,
@@ -581,7 +597,8 @@ class TestRegressionFixtures:
         path = "tests/fixtures/evidence/empty_trace.json"
         with open(path, "r") as f:
             raw = json.load(f)
-        with pytest.raises(TraceArtifactError, match="Trace artifact contains no traces"):
+        msg = "Trace artifact contains no traces"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact(raw)
 
     def test_null_trace_fixture_fails(self):
@@ -589,11 +606,12 @@ class TestRegressionFixtures:
         path = "tests/fixtures/evidence/null_trace.json"
         with open(path, "r") as f:
             raw = json.load(f)
-        with pytest.raises(TraceArtifactError, match="Trace entry 0 must be an object"):
+        msg = "Trace entry 0 must be an object"
+        with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact(raw)
 
     def test_missing_page_fixture_fails(self):
-        """Missing page fixture should fail topology validation (not parser)."""
+        """Missing page fixture should fail topology validation."""
         path = "tests/fixtures/evidence/missing_page.json"
         with open(path, "r") as f:
             raw = json.load(f)
@@ -614,7 +632,7 @@ class TestRegressionFixtures:
         # Both have page_index=0, topology validation should catch this
 
     def test_fallback_trace_fixture_succeeds_parsing(self):
-        """Fallback trace should parse successfully (validation happens later)."""
+        """Fallback trace should parse successfully."""
         path = "tests/fixtures/evidence/fallback_trace.json"
         with open(path, "r") as f:
             raw = json.load(f)
@@ -624,7 +642,7 @@ class TestRegressionFixtures:
         assert result[0].page_operations[0].fallback_reason == "injected_for_test"
 
     def test_unevaluated_trace_fixture_succeeds_parsing(self):
-        """Unevaluated trace should parse successfully (validation happens later)."""
+        """Unevaluated trace should parse successfully."""
         path = "tests/fixtures/evidence/unevaluated_trace.json"
         with open(path, "r") as f:
             raw = json.load(f)
@@ -650,7 +668,8 @@ class TestTraceTopologyValidation:
                 dense_tail_operation=None,
             )
         ]
-        with pytest.raises(TraceTopologyError, match="Missing required contexts"):
+        msg = "Missing required contexts"
+        with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
                 model_layer_count=1,
@@ -672,7 +691,8 @@ class TestTraceTopologyValidation:
                 dense_tail_operation=None,
             )
         ]
-        with pytest.raises(TraceTopologyError, match="missing trace for decode_step"):
+        msg = "missing trace for decode_step"
+        with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
                 model_layer_count=2,  # Missing layer 1
@@ -713,7 +733,8 @@ class TestTraceTopologyValidation:
                 dense_tail_operation=None,
             )
         ]
-        with pytest.raises(TraceTopologyError, match="page count 1 != expected 2"):
+        msg = "page count 1 != expected 2"
+        with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
                 model_layer_count=1,
@@ -831,7 +852,8 @@ class TestTraceTopologyValidation:
                 dense_tail_operation=None,
             )
         ]
-        with pytest.raises(TraceTopologyError, match="page indices.*!= expected"):
+        msg = r"page indices.*!= expected"
+        with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
                 model_layer_count=1,
@@ -1049,7 +1071,8 @@ class TestArtifactFileValidation:
             temp_path = f.name
         
         try:
-            with pytest.raises(EvidenceValidationError, match="must be 64 characters"):
+            msg = "must be 64 characters"
+            with pytest.raises(EvidenceValidationError, match=msg):
                 validate_artifact_file(
                     temp_path,
                     "abc123",  # Too short
@@ -1201,22 +1224,19 @@ class TestExactFixtureManifest:
 
     def test_get_fixture_for_context(self):
         """Should retrieve correct fixture for context length."""
+        entry = FixtureEntry(
+            fixture_id="prose-512-01",
+            category="natural_prose",
+            context_tokens_path="/data/contexts/512/prose-01.npy",
+            continuation_tokens_path="/data/continuations/512/prose-01.npy",
+            context_sha256="abc123",
+            continuation_sha256="def456",
+        )
         manifest = ExactFixtureManifest(
             model_id="test/model",
             model_revision="abc123",
             tokenizer_revision="def456",
-            contexts={
-                512: [
-                    FixtureEntry(
-                        fixture_id="prose-512-01",
-                        category="natural_prose",
-                        context_tokens_path="/data/contexts/512/prose-01.npy",
-                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
-                        context_sha256="abc123",
-                        continuation_sha256="def456",
-                    )
-                ],
-            },
+            contexts={512: [entry]},
         )
         fixture = manifest.get_fixture_for_context(512)
         assert fixture is not None
@@ -1224,30 +1244,27 @@ class TestExactFixtureManifest:
 
     def test_get_fixture_with_category_filter(self):
         """Should filter fixtures by category."""
+        prose_entry = FixtureEntry(
+            fixture_id="prose-512-01",
+            category="natural_prose",
+            context_tokens_path="/data/contexts/512/prose-01.npy",
+            continuation_tokens_path="/data/continuations/512/prose-01.npy",
+            context_sha256="abc123",
+            continuation_sha256="def456",
+        )
+        code_entry = FixtureEntry(
+            fixture_id="code-512-01",
+            category="code",
+            context_tokens_path="/data/contexts/512/code-01.npy",
+            continuation_tokens_path="/data/continuations/512/code-01.npy",
+            context_sha256="ghi789",
+            continuation_sha256="jkl012",
+        )
         manifest = ExactFixtureManifest(
             model_id="test/model",
             model_revision="abc123",
             tokenizer_revision="def456",
-            contexts={
-                512: [
-                    FixtureEntry(
-                        fixture_id="prose-512-01",
-                        category="natural_prose",
-                        context_tokens_path="/data/contexts/512/prose-01.npy",
-                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
-                        context_sha256="abc123",
-                        continuation_sha256="def456",
-                    ),
-                    FixtureEntry(
-                        fixture_id="code-512-01",
-                        category="code",
-                        context_tokens_path="/data/contexts/512/code-01.npy",
-                        continuation_tokens_path="/data/continuations/512/code-01.npy",
-                        context_sha256="ghi789",
-                        continuation_sha256="jkl012",
-                    ),
-                ],
-            },
+            contexts={512: [prose_entry, code_entry]},
         )
         prose_fixture = manifest.get_fixture_for_context(512, category="natural_prose")
         assert prose_fixture is not None
@@ -1317,7 +1334,7 @@ class TestGateSafetyWithMalformedEvidence:
                 dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
                 fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
                 trace_artifact_path="tests/fixtures/evidence/empty_trace.json",
-                trace_artifact_hash="abc123",  # Wrong hash for empty file
+                trace_artifact_hash="abc123",  # Wrong hash
                 mean_logit_cosine=0.996,
                 p05_logit_cosine=0.991,
                 min_logit_cosine=0.976,
@@ -1336,6 +1353,7 @@ class TestGateSafetyWithMalformedEvidence:
                 median_ratio_at_8192_plus=1.04,
                 execution_mode="metal_strict",
                 fallback_calls=0,
+                raw_timing_path="",
                 raw_timing_hash="test_hash",
             ),
             memory_report=MemoryReport(
@@ -1440,6 +1458,7 @@ class TestGateSafetyWithMalformedEvidence:
                 median_ratio_at_8192_plus=1.04,
                 execution_mode="metal_strict",
                 fallback_calls=0,
+                raw_timing_path="",
                 raw_timing_hash="test_hash",
             ),
             memory_report=MemoryReport(
@@ -1543,6 +1562,7 @@ class TestGateSafetyWithMalformedEvidence:
                 median_ratio_at_8192_plus=1.04,
                 execution_mode="metal_strict",
                 fallback_calls=0,
+                raw_timing_path="",
                 raw_timing_hash="test_hash",
             ),
             memory_report=MemoryReport(
