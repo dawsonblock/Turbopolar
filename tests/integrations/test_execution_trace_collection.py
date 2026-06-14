@@ -166,17 +166,36 @@ class TestExecutionTraceCollection:
         from rfsn_v11.evidence.execution_trace import AttentionExecutionTrace, KernelOperationTrace
         cache._trace_collector.record(
             AttentionExecutionTrace(
+                experiment_id="exp",
+                context_length=512,
+                fixture_id="fixture-001",
                 layer_index=0,
-                decode_step=0,
+                decode_step=512,
+                decode_ordinal=0,
+                cache_offset_before=512,
+                cache_tokens_before=512,
+                cache_tokens_after=513,
+                partial_tail_length=1,
                 expected_page_count=2,
                 page_traces=[
                     KernelOperationTrace(
-                        experiment_id="exp", layer_index=0, decode_step=0,
-                        operation="compressed_page", page_index=0,
-                        kernel_name="test", execution_mode="metal_strict",
-                        metal_requested=True, metal_executed=True,
-                        fallback_used=False, fallback_reason=None,
-                        expected_tokens=64, processed_tokens=64,
+                        experiment_id="exp",
+                        context_length=512,
+                        fixture_id="fixture-001",
+                        layer_index=0,
+                        decode_step=512,
+                        decode_ordinal=0,
+                        cache_offset_before=512,
+                        operation="compressed_page",
+                        page_index=0,
+                        kernel_name="test",
+                        execution_mode="metal_strict",
+                        metal_requested=True,
+                        metal_executed=True,
+                        fallback_used=False,
+                        fallback_reason=None,
+                        expected_tokens=64,
+                        processed_tokens=64,
                     )
                 ],
             )

@@ -22,8 +22,6 @@ class KernelOperationTrace:
     fixture_id: str
     layer_index: int
     decode_step: int
-    decode_ordinal: int  # Fixture-local ordinal (0, 1, 2, ...)
-    cache_offset_before: int  # Absolute cache token offset
     operation: str  # "compressed_page" | "dense_tail" | "merge" | "finalize"
     page_index: Optional[int]
     kernel_name: str
@@ -35,6 +33,8 @@ class KernelOperationTrace:
     expected_tokens: int
     processed_tokens: int
     output_evaluated: bool = False
+    decode_ordinal: int = 0  # Fixture-local ordinal (0, 1, 2, ...)
+    cache_offset_before: int = 0  # Absolute cache token offset
 
 
 @dataclass
@@ -46,14 +46,14 @@ class AttentionExecutionTrace:
     fixture_id: str
     layer_index: int
     decode_step: int
-    decode_ordinal: int  # Fixture-local ordinal (0, 1, 2, ...)
-    cache_offset_before: int  # Absolute cache token offset
-    cache_tokens_before: int  # Cache size before this operation
-    cache_tokens_after: int  # Cache size after this operation
-    partial_tail_length: int  # Non-zero if dense tail exists
     expected_page_count: int
     page_traces: List[KernelOperationTrace] = field(default_factory=list)
     dense_tail_trace: Optional[KernelOperationTrace] = None
+    decode_ordinal: int = 0  # Fixture-local ordinal (0, 1, 2, ...)
+    cache_offset_before: int = 0  # Absolute cache token offset
+    cache_tokens_before: int = 0  # Cache size before this operation
+    cache_tokens_after: int = 0  # Cache size after this operation
+    partial_tail_length: int = 0  # Non-zero if dense tail exists
 
     @property
     def fallback_count(self) -> int:

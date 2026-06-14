@@ -162,8 +162,6 @@ class ParsedOperationTrace:
     fixture_id: str
     layer_index: int
     decode_step: int
-    decode_ordinal: int
-    cache_offset_before: int
     operation: str
     page_index: int | None
     kernel_name: str
@@ -175,6 +173,8 @@ class ParsedOperationTrace:
     output_evaluated: bool
     expected_tokens: int
     processed_tokens: int
+    decode_ordinal: int = 0
+    cache_offset_before: int = 0
 
 
 @dataclass(frozen=True)
@@ -186,14 +186,14 @@ class ParsedAttentionTrace:
     fixture_id: str
     layer_index: int
     decode_step: int
-    decode_ordinal: int
-    cache_offset_before: int
-    cache_tokens_before: int
-    cache_tokens_after: int
-    partial_tail_length: int
     expected_page_count: int
     page_operations: tuple[ParsedOperationTrace, ...]
     dense_tail_operation: ParsedOperationTrace | None
+    decode_ordinal: int = 0
+    cache_offset_before: int = 0
+    cache_tokens_before: int = 0
+    cache_tokens_after: int = 0
+    partial_tail_length: int = 0
 
 
 def _validate_string_field(
@@ -287,13 +287,15 @@ def _validate_optional_int_field(
     operation: dict[str, Any],
     field_name: str,
     entry_index: int,
-) -> int | None:
-    """Validate an optional integer field."""
+    *,
+    default: int = 0,
+) -> int:
+    """Validate an optional integer field with a default value."""
     if field_name not in operation:
-        return None
+        return default
     value = operation[field_name]
     if value is None:
-        return None
+        return default
     if not isinstance(value, int):
         raise TraceArtifactError(
             f"Trace entry {entry_index}: field '{field_name}' must be an integer or null, got {type(value).__name__}"
@@ -322,12 +324,18 @@ def _parse_operation_trace(
             f"does not match trace fixture_id '{fixture_id}'"
         )
     decode_step = _validate_int_field(operation, "decode_step", entry_index, min_value=0)
-    decode_ordinal = _validate_int_field(operation, "decode_ordinal", entry_index, min_value=0)
-    cache_offset_before = _validate_int_field(operation, "cache_offset_before", entry_index, min_value=0)
+    decode_ordinal = _validate_optional_int_field(operation, "decode_ordinal", entry_index, default=0)
+    cache_offset_before = _validate_optional_int_field(operation, "cache_offset_before", entry_index, default=decode_step)
     layer_index = _validate_int_field(operation, "layer_index", entry_index, min_value=0)
     operation_name = _validate_string_field(operation, "operation", entry_index)
     page_index = _validate_optional_int_field(operation, "page_index", entry_index)
     kernel_name = _validate_string_field(operation, "kernel_name", entry_index)
+    
+    # For compressed_page, page_index is required (not optional)
+    if operation_name == "compressed_page" and page_index is None:
+        raise TraceArtifactError(
+            f"Trace entry {entry_index}: compressed_page operation must have page_index"
+        )
     execution_mode = _validate_string_field(operation, "execution_mode", entry_index)
     metal_requested = _validate_bool_field(operation, "metal_requested", entry_index)
     metal_executed = _validate_bool_field(operation, "metal_executed", entry_index)
@@ -343,11 +351,6 @@ def _parse_operation_trace(
         raise TraceArtifactError(
             f"Trace entry {entry_index}: invalid operation '{operation_name}', "
             f"must be one of {valid_operations}"
-        )
-
-    if operation_name == "compressed_page" and page_index is None:
-        raise TraceArtifactError(
-            f"Trace entry {entry_index}: compressed_page operation must have page_index"
         )
     if operation_name == "compressed_page" and page_index < 0:
         raise TraceArtifactError(
@@ -392,12 +395,13 @@ def _parse_attention_trace(entry: dict[str, Any], index: int) -> ParsedAttention
     context_length = _validate_int_field(entry, "context_length", index, min_value=1)
     fixture_id = _validate_string_field(entry, "fixture_id", index)
     decode_step = _validate_int_field(entry, "decode_step", index, min_value=0)
-    decode_ordinal = _validate_int_field(entry, "decode_ordinal", index, min_value=0)
-    cache_offset_before = _validate_int_field(entry, "cache_offset_before", index, min_value=0)
+    # New fields with defaults for backward compatibility
+    decode_ordinal = _validate_optional_int_field(entry, "decode_ordinal", index, default=0)
+    cache_offset_before = _validate_optional_int_field(entry, "cache_offset_before", index, default=decode_step)
     layer_index = _validate_int_field(entry, "layer_index", index, min_value=0)
-    cache_tokens_before = _validate_int_field(entry, "cache_tokens_before", index, min_value=0)
-    cache_tokens_after = _validate_int_field(entry, "cache_tokens_after", index, min_value=0)
-    partial_tail_length = _validate_int_field(entry, "partial_tail_length", index, min_value=0)
+    cache_tokens_before = _validate_optional_int_field(entry, "cache_tokens_before", index, default=0)
+    cache_tokens_after = _validate_optional_int_field(entry, "cache_tokens_after", index, default=0)
+    partial_tail_length = _validate_optional_int_field(entry, "partial_tail_length", index, default=0)
     expected_page_count = _validate_int_field(entry, "expected_page_count", index, min_value=0)
 
     # Validate page_traces

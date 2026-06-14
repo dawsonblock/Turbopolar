@@ -220,6 +220,16 @@ class TurboPolarFastCache:
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
+            # Calculate trace identity fields
+            # Use actual cache size as context_length (initial context length)
+            context_length = view.total_tokens - 1  # Before this append
+            fixture_id = experiment_id  # For now, use experiment_id as fixture_id
+            decode_ordinal = decode_step - context_length  # Fixture-local ordinal
+            cache_offset_before = decode_step
+            cache_tokens_before = view.total_tokens - 1  # Before this append
+            cache_tokens_after = view.total_tokens  # After this append
+            partial_tail_length = view.partial_k.shape[2] if view.partial_k is not None else 0
+            
             step_trace = self._build_attention_trace(
                 trace=trace,
                 view=view,
@@ -228,6 +238,13 @@ class TurboPolarFastCache:
                 experiment_id=experiment_id,
                 execution_mode=cfg.execution_mode.value,
                 output_evaluated=output_evaluated,
+                context_length=context_length,
+                fixture_id=fixture_id,
+                decode_ordinal=decode_ordinal,
+                cache_offset_before=cache_offset_before,
+                cache_tokens_before=cache_tokens_before,
+                cache_tokens_after=cache_tokens_after,
+                partial_tail_length=partial_tail_length,
             )
             if synchronous:
                 self._trace_collector.record(step_trace)
@@ -265,6 +282,13 @@ class TurboPolarFastCache:
         experiment_id: str,
         execution_mode: str,
         output_evaluated: bool = False,
+        context_length: int = 0,
+        fixture_id: str = "",
+        decode_ordinal: int = 0,
+        cache_offset_before: int = 0,
+        cache_tokens_before: int = 0,
+        cache_tokens_after: int = 0,
+        partial_tail_length: int = 0,
     ) -> AttentionExecutionTrace:
         """Build an AttentionExecutionTrace from the bridge execution trace."""
         page_traces_raw = trace.get("page_traces", [])
@@ -275,8 +299,12 @@ class TurboPolarFastCache:
             page_traces.append(
                 KernelOperationTrace(
                     experiment_id=experiment_id,
+                    context_length=context_length,
+                    fixture_id=fixture_id,
                     layer_index=layer_index,
                     decode_step=decode_step,
+                    decode_ordinal=decode_ordinal,
+                    cache_offset_before=cache_offset_before,
                     operation="compressed_page",
                     page_index=page_idx,
                     kernel_name=pt.get("kernel_name", "unknown"),
@@ -296,8 +324,12 @@ class TurboPolarFastCache:
         if view.partial_k is not None and view.partial_k.shape[2] > 0:
             dense_tail_trace = KernelOperationTrace(
                 experiment_id=experiment_id,
+                context_length=context_length,
+                fixture_id=fixture_id,
                 layer_index=layer_index,
                 decode_step=decode_step,
+                decode_ordinal=decode_ordinal,
+                cache_offset_before=cache_offset_before,
                 operation="dense_tail",
                 page_index=None,
                 kernel_name="dense_tail_raw"
@@ -314,8 +346,16 @@ class TurboPolarFastCache:
             )
 
         return AttentionExecutionTrace(
+            experiment_id=experiment_id,
+            context_length=context_length,
+            fixture_id=fixture_id,
             layer_index=layer_index,
             decode_step=decode_step,
+            decode_ordinal=decode_ordinal,
+            cache_offset_before=cache_offset_before,
+            cache_tokens_before=cache_tokens_before,
+            cache_tokens_after=cache_tokens_after,
+            partial_tail_length=partial_tail_length,
             expected_page_count=expected_page_count,
             page_traces=page_traces,
             dense_tail_trace=dense_tail_trace,
