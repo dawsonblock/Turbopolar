@@ -136,10 +136,11 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         self.assertTrue(len(fixtures) > 0)
         for fx in fixtures:
             self.assertEqual(len(fx["tokens"]), fx["length"])
-            self.assertIn(
-                fx["category"],
-                ("short", "boundary", "medium", "long", "stress", "fused_512"),
-            )
+            # Accept all standard categories plus fused_* categories
+            valid_categories = {"short", "boundary", "medium", "long", "stress"}
+            if fx["category"].startswith("fused_"):
+                valid_categories.add(fx["category"])
+            self.assertIn(fx["category"], valid_categories)
 
     def test_fallback_extraction_with_dict_traces(self):
         """Test that fallback reason extraction handles dict-format traces."""

@@ -87,8 +87,10 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 git_tree_state=GitTreeState.DIRTY if dirty else GitTreeState.CLEAN,
                 git_diff_hash="abcd1234" if dirty else "",
                 model_repo_id="test/model",
-                model_revision="abc123",
+                model_revision="abc123def",
+                tokenizer_revision="abc123def",
                 turbopolar_config_hash="def456",
+                evidence_kind="experimental",
             ),
         )
 
