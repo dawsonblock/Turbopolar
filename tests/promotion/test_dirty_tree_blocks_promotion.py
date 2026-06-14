@@ -39,6 +39,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 argmax_agreement=0.98,
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
+                raw_metrics_path="/tmp/teacher_forced.json",
             ),
             fused_decode_report=FusedDecodeReport(
                 mean_logit_cosine=0.999,
@@ -64,6 +65,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
                 fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                trace_artifact_path="/tmp/fused_decode_trace.json",
             ),
             speed_report=SpeedReport(
                 min_ratio_at_4096_plus=0.98,
@@ -71,6 +73,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 median_ratio_at_8192_plus=1.04,
                 trials_per_context=5,
                 contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                execution_mode="metal_strict",
+                raw_timing_path="/tmp/speed_timing.json",
             ),
             memory_report=MemoryReport(
                 logical_kv_ratio=1.90,
@@ -82,6 +86,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
             baseline_comparison_report=BaselineComparisonReport(
                 cartesian_int8_baseline_implemented=True,
                 turbo_polar_wins_on_speed=True,
+                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
             ),
             provenance=BenchmarkProvenance(
                 git_tree_state=GitTreeState.DIRTY if dirty else GitTreeState.CLEAN,
@@ -91,6 +96,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 tokenizer_revision="abc123def",
                 turbopolar_config_hash="def456",
                 evidence_kind="experimental",
+                token_fixtures_hash="abc123def",
             ),
         )
 
