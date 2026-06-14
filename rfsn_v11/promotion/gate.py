@@ -241,12 +241,44 @@ class PromotionGate:
                             f"Fused decode model_layer_count must be > 0, got {fd.model_layer_count}"
                         )
                     else:
-                        validate_trace_topology(
+                        topology_result = validate_trace_topology(
                             parsed_traces,
                             model_layer_count=fd.model_layer_count,
                             required_contexts=self.REQUIRED_CONTEXTS,
                             requested_positions_per_context=fd.requested_fused_positions_per_context,
                         )
+                        
+                        # Reconcile trace totals with report totals (P0-16-21)
+                        for context in self.REQUIRED_CONTEXTS:
+                            if context not in fd.compressed_page_dispatches_per_context:
+                                reasons.append(
+                                    f"Fused decode report missing compressed_page_dispatches_per_context for context {context}"
+                                )
+                                continue
+                            
+                            report_page_ops = fd.compressed_page_dispatches_per_context[context]
+                            trace_page_ops = topology_result.get("trace_computed_page_ops", {}).get(context, 0)
+                            if report_page_ops != trace_page_ops:
+                                reasons.append(
+                                    f"Context {context}: report compressed_page_dispatches {report_page_ops} "
+                                    f"!= trace-computed {trace_page_ops}"
+                                )
+                            
+                            report_tail_ops = fd.dense_tail_dispatches_per_context.get(context, 0)
+                            trace_tail_ops = topology_result.get("trace_computed_tail_ops", {}).get(context, 0)
+                            if report_tail_ops != trace_tail_ops:
+                                reasons.append(
+                                    f"Context {context}: report dense_tail_dispatches {report_tail_ops} "
+                                    f"!= trace-computed {trace_tail_ops}"
+                                )
+                            
+                            report_fallback_ops = fd.fallback_calls_per_context.get(context, 0)
+                            trace_fallback_ops = topology_result.get("trace_computed_fallback_ops", {}).get(context, 0)
+                            if report_fallback_ops != trace_fallback_ops:
+                                reasons.append(
+                                    f"Context {context}: report fallback_calls {report_fallback_ops} "
+                                    f"!= trace-computed {trace_fallback_ops}"
+                                )
                     
                 except (
                     EvidenceValidationError,

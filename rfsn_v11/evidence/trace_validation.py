@@ -593,6 +593,40 @@ def validate_trace_topology(
                     f"Context {context}: missing traces: {missing_keys}"
                 )
 
+        # Recompute totals from traces for reconciliation (P0-16-21)
+        trace_page_ops = 0
+        trace_tail_ops = 0
+        trace_fallback_ops = 0
+        trace_unevaluated_ops = 0
+        
+        for trace in context_traces:
+            trace_page_ops += len(trace.page_operations)
+            if trace.dense_tail_operation:
+                trace_tail_ops += 1
+            
+            for op in trace.page_operations:
+                if op.fallback_used:
+                    trace_fallback_ops += 1
+                if not op.output_evaluated:
+                    trace_unevaluated_ops += 1
+            
+            if trace.dense_tail_operation:
+                op = trace.dense_tail_operation
+                if op.fallback_used:
+                    trace_fallback_ops += 1
+                if not op.output_evaluated:
+                    trace_unevaluated_ops += 1
+        
+        # Store trace-computed totals for later comparison
+        topology_stats["trace_computed_page_ops"] = topology_stats.get("trace_computed_page_ops", {})
+        topology_stats["trace_computed_page_ops"][context] = trace_page_ops
+        topology_stats["trace_computed_tail_ops"] = topology_stats.get("trace_computed_tail_ops", {})
+        topology_stats["trace_computed_tail_ops"][context] = trace_tail_ops
+        topology_stats["trace_computed_fallback_ops"] = topology_stats.get("trace_computed_fallback_ops", {})
+        topology_stats["trace_computed_fallback_ops"][context] = trace_fallback_ops
+        topology_stats["trace_computed_unevaluated_ops"] = topology_stats.get("trace_computed_unevaluated_ops", {})
+        topology_stats["trace_computed_unevaluated_ops"][context] = trace_unevaluated_ops
+
         # Validate page indices and counts for each trace
         for trace in context_traces:
             page_indices = [op.page_index for op in trace.page_operations if op.page_index is not None]
