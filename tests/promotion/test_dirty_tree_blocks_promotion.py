@@ -27,37 +27,54 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     def setUp(self):
         """Create temporary files for artifact validation."""
         self.temp_dir = tempfile.mkdtemp()
-        
+
         # Create teacher-forced metrics file
         self.teacher_forced_path = Path(self.temp_dir) / "teacher_forced.json"
         teacher_forced_data = {
             "prompts": [
                 {
                     "position_metrics": [
-                        {"logit_cosine": 0.999, "top5_overlap": 0.96, "top10_overlap": 0.98, "argmax_agreement": True, "any_nan_or_inf": False}
+                        {
+                            "logit_cosine": 0.999,
+                            "top5_overlap": 0.96,
+                            "top10_overlap": 0.98,
+                            "argmax_agreement": True,
+                            "any_nan_or_inf": False,
+                        }
                         for _ in range(128)
                     ]
                 }
             ]
         }
         self.teacher_forced_path.write_text(json.dumps(teacher_forced_data))
-        self.teacher_forced_hash = hashlib.sha256(json.dumps(teacher_forced_data).encode()).hexdigest()
-        
+        self.teacher_forced_hash = hashlib.sha256(
+            json.dumps(teacher_forced_data).encode()
+        ).hexdigest()
+
         # Create fused decode trace file
         self.fused_trace_path = Path(self.temp_dir) / "fused_decode_trace.json"
         trace_data = {"experiments": []}
         self.fused_trace_path.write_text(json.dumps(trace_data))
-        self.fused_trace_hash = hashlib.sha256(json.dumps(trace_data).encode()).hexdigest()
-        
+        self.fused_trace_hash = hashlib.sha256(
+            json.dumps(trace_data).encode()
+        ).hexdigest()
+
         # Create speed timing file
         self.speed_timing_path = Path(self.temp_dir) / "speed_timing.json"
-        speed_data = {"schema_version": 1, "speed_evidence": {"trial_results": []}}
+        speed_data = {
+            "schema_version": 1,
+            "speed_evidence": {"trial_results": []},
+        }
         self.speed_timing_path.write_text(json.dumps(speed_data))
-        self.speed_timing_hash = hashlib.sha256(json.dumps(speed_data).encode()).hexdigest()
+        encoded_speed = json.dumps(speed_data).encode()
+        self.speed_timing_hash = hashlib.sha256(
+            encoded_speed
+        ).hexdigest()
 
     def tearDown(self):
         """Clean up temporary files."""
         import shutil
+
         shutil.rmtree(self.temp_dir)
 
     def _full_passing_evidence(self, dirty: bool) -> PromotionEvidence:

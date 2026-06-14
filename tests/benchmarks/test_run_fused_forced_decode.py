@@ -137,7 +137,13 @@ class TestRunFusedForcedDecode(unittest.TestCase):
         for fx in fixtures:
             self.assertEqual(len(fx["tokens"]), fx["length"])
             # Accept all standard categories plus fused_* categories
-            valid_categories = {"short", "boundary", "medium", "long", "stress"}
+            valid_categories = {
+                "short",
+                "boundary",
+                "medium",
+                "long",
+                "stress",
+            }
             if fx["category"].startswith("fused_"):
                 valid_categories.add(fx["category"])
             self.assertIn(fx["category"], valid_categories)
