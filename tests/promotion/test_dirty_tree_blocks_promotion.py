@@ -163,7 +163,9 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 ),
             ),
             provenance=BenchmarkProvenance(
-                git_tree_state=GitTreeState.DIRTY if dirty else GitTreeState.CLEAN,
+                git_tree_state=(
+                    GitTreeState.DIRTY if dirty else GitTreeState.CLEAN
+                ),
                 git_diff_hash="abcd1234" if dirty else "",
                 model_repo_id="test/model",
                 model_revision="abc123def",
@@ -177,7 +179,8 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
     def test_clean_tree_can_promote(self):
         evidence = self._full_passing_evidence(dirty=False)
         decision = PromotionGate().evaluate(evidence)
-        # This test uses minimal/malformed artifacts, so it should return FAILED
+        # This test uses minimal/malformed artifacts, so it should return
+        # FAILED
         # A valid but locked package would return REVIEW_REQUIRED
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(PromotionGate.PROMOTION_LOCKED)

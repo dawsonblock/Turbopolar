@@ -143,7 +143,7 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                         "fallback_calls": 0,
                     }
                     speed_data["speed_evidence"]["trial_results"].append(trial)
-        
+
         path = Path(self.temp_dir) / "speed_trials.json"
         content = json.dumps(speed_data)
         path.write_text(content)
@@ -164,8 +164,12 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 all_kernel_tests_passed=True,
                 all_integration_tests_passed=True,
                 cpu_metal_agreement_verified=True,
-                metal_tests_present=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
-                metal_tests_passed=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
+                metal_tests_present=list(
+                    PromotionGate.REQUIRED_NATIVE_METAL_TESTS
+                ),
+                metal_tests_passed=list(
+                    PromotionGate.REQUIRED_NATIVE_METAL_TESTS
+                ),
             ),
             teacher_forced_report=TeacherForcedReport(
                 mean_logit_cosine=0.999,
@@ -204,9 +208,15 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 fallback_reasons=[],
                 actual_fused_positions=128,
                 requested_fused_positions_per_context=128,
-                positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
-                failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
-                fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                positions_per_context={
+                    ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
+                failed_positions_per_context={
+                    ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
+                fallback_calls_per_context={
+                    ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
                 trace_artifact_path=str(trace_path),
                 trace_artifact_hash=trace_hash,
             ),
@@ -248,25 +258,30 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         )
 
     def test_complete_evidence_returns_review_required_when_locked(self):
-        """Complete valid evidence should return REVIEW_REQUIRED when promotion is locked.
+        """Complete valid evidence should return REVIEW_REQUIRED when locked.
 
-        Note: This test demonstrates that the gate correctly validates artifacts.
-        Creating truly valid artifacts requires full benchmark runs, so this test
-        primarily verifies the lock behavior and artifact validation pipeline.
+        Note: This test demonstrates that the gate correctly validates
+        artifacts. Creating truly valid artifacts requires full benchmark runs,
+        so this test primarily verifies the lock behavior and artifact
+        validation pipeline.
         """
         evidence = self._create_full_evidence()
         gate = PromotionGate()
-        
+
         # Verify promotion is locked
         self.assertTrue(gate.PROMOTION_LOCKED)
-        
+
         decision = gate.evaluate(evidence)
-        
+
         # The test artifacts are minimal, so validation failures are expected
         # This demonstrates the artifact validation pipeline is working
-        # A truly valid evidence package with locked promotion would return REVIEW_REQUIRED
-        self.assertIn(decision.state, [PromotionState.FAILED, PromotionState.REVIEW_REQUIRED])
-        
+        # A truly valid evidence package with locked promotion would return
+        # REVIEW_REQUIRED
+        self.assertIn(
+            decision.state,
+            [PromotionState.FAILED, PromotionState.REVIEW_REQUIRED],
+        )
+
         # If we got REVIEW_REQUIRED, verify it's due to the lock
         if decision.state == PromotionState.REVIEW_REQUIRED:
             self.assertIn("locked", decision.reasons[0].lower())
@@ -274,10 +289,10 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
     def test_missing_artifact_path_returns_failed(self):
         """Missing artifact path should return FAILED."""
         evidence = self._create_full_evidence()
-        
+
         # Remove the teacher metrics path
         evidence.teacher_forced_report.raw_metrics_path = None
-        
+
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(any("missing" in r.lower() for r in decision.reasons))
@@ -285,22 +300,26 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
     def test_wrong_hash_returns_failed(self):
         """Wrong artifact hash should return FAILED."""
         evidence = self._create_full_evidence()
-        
+
         # Corrupt the hash
         evidence.teacher_forced_report.raw_metrics_hash = "wrong_hash"
-        
+
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(any("hash" in r.lower() for r in decision.reasons))
 
     def test_synthetic_evidence_returns_review_required(self):
-        """Synthetic evidence should return REVIEW_REQUIRED even when valid."""
+        """Synthetic evidence should return REVIEW_REQUIRED when valid."""
         evidence = self._create_full_evidence()
         evidence.provenance.evidence_kind = "synthetic_dry_run"
-        
+
         decision = PromotionGate().evaluate(evidence)
-        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
-        self.assertTrue(any("synthetic" in r.lower() for r in decision.reasons))
+        self.assertEqual(
+            decision.state, PromotionState.REVIEW_REQUIRED
+        )
+        self.assertTrue(
+            any("synthetic" in r.lower() for r in decision.reasons)
+        )
 
 
 if __name__ == "__main__":
