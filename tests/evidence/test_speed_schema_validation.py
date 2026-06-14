@@ -93,18 +93,27 @@ class TestRawSpeedSchema(unittest.TestCase):
                         context_length=context,
                         method=mode,
                         trial_index=trial_idx + 1,
-                        execution_order=(f"{context}_{mode}", f"trial_{trial_idx + 1}"),
-                        execution_mode="metal_strict" if mode == "turbo" else "reference",
+                        execution_order=(
+                            f"{context}_{mode}",
+                            f"trial_{trial_idx + 1}",
+                        ),
+                        execution_mode=(
+                            "metal_strict" if mode == "turbo" else "reference"
+                        ),
                         prefill_seconds=0.1,
-                        token_latencies_ms=tuple([1.0] * REQUIRED_TOKEN_LATENCIES),
+                        token_latencies_ms=tuple(
+                            [1.0] * REQUIRED_TOKEN_LATENCIES
+                        ),
                         first_token_ms=1.5,
                         throughput_tps=1000.0,
-                        compressed_page_dispatches=10 if mode == "turbo" else 0,
+                        compressed_page_dispatches=(
+                            10 if mode == "turbo" else 0
+                        ),
                         dense_tail_dispatches=1 if mode == "turbo" else 0,
                         fallback_calls=0,
                     )
                     trials.append(trial)
-        
+
         artifact = RawSpeedArtifact(schema_version=1, trials=tuple(trials))
         errors = validate_speed_trials(artifact)
         self.assertEqual(errors, [])
@@ -119,7 +128,9 @@ class TestRawSpeedSchema(unittest.TestCase):
                 execution_order=("512_turbo", "trial_1"),
                 execution_mode="metal_strict",
                 prefill_seconds=0.1,
-                token_latencies_ms=tuple([1.0] * REQUIRED_TOKEN_LATENCIES),
+                token_latencies_ms=tuple(
+                    [1.0] * REQUIRED_TOKEN_LATENCIES
+                ),
                 first_token_ms=1.5,
                 throughput_tps=1000.0,
                 compressed_page_dispatches=10,
@@ -129,7 +140,9 @@ class TestRawSpeedSchema(unittest.TestCase):
         ]
         artifact = RawSpeedArtifact(schema_version=1, trials=tuple(trials))
         errors = validate_speed_trials(artifact)
-        self.assertTrue(any("Missing required context" in error for error in errors))
+        self.assertTrue(
+            any("Missing required context" in error for error in errors)
+        )
 
     def test_validate_insufficient_trials(self):
         """Validation should fail when insufficient trials per context."""
@@ -142,18 +155,27 @@ class TestRawSpeedSchema(unittest.TestCase):
                         context_length=context,
                         method=mode,
                         trial_index=trial_idx + 1,
-                        execution_order=(f"{context}_{mode}", f"trial_{trial_idx + 1}"),
-                        execution_mode="metal_strict" if mode == "turbo" else "reference",
+                        execution_order=(
+                            f"{context}_{mode}",
+                            f"trial_{trial_idx + 1}",
+                        ),
+                        execution_mode=(
+                            "metal_strict" if mode == "turbo" else "reference"
+                        ),
                         prefill_seconds=0.1,
-                        token_latencies_ms=tuple([1.0] * REQUIRED_TOKEN_LATENCIES),
+                        token_latencies_ms=tuple(
+                            [1.0] * REQUIRED_TOKEN_LATENCIES
+                        ),
                         first_token_ms=1.5,
                         throughput_tps=1000.0,
-                        compressed_page_dispatches=10 if mode == "turbo" else 0,
+                        compressed_page_dispatches=(
+                            10 if mode == "turbo" else 0
+                        ),
                         dense_tail_dispatches=1 if mode == "turbo" else 0,
                         fallback_calls=0,
                     )
                     trials.append(trial)
-        
+
         artifact = RawSpeedArtifact(schema_version=1, trials=tuple(trials))
         errors = validate_speed_trials(artifact)
         self.assertTrue(any("required 5" in error for error in errors))
