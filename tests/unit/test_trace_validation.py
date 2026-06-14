@@ -1269,7 +1269,9 @@ class TestExactFixtureManifest:
             tokenizer_revision="def456",
             contexts={512: [prose_entry, code_entry]},
         )
-        prose_fixture = manifest.get_fixture_for_context(512, category="natural_prose")
+        prose_fixture = manifest.get_fixture_for_context(
+            512, category="natural_prose"
+        )
         assert prose_fixture is not None
         assert prose_fixture.fixture_id == "prose-512-01"
 
@@ -1302,6 +1304,13 @@ class TestGateSafetyWithMalformedEvidence:
             GitTreeState,
         )
 
+        # Common context dictionaries
+        positions = {512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128}
+        failed = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        compressed = {512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048}
+        dense = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        fallback = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+
         # Create minimal evidence with empty trace artifact
         evidence = PromotionEvidence(
             kernel_report=KernelReport(
@@ -1331,11 +1340,11 @@ class TestGateSafetyWithMalformedEvidence:
                 model_layer_count=32,
                 requested_fused_positions_per_context=128,
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
-                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
-                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
-                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                positions_per_context=positions,
+                failed_positions_per_context=failed,
+                compressed_page_dispatches_per_context=compressed,
+                dense_tail_dispatches_per_context=dense,
+                fallback_calls_per_context=fallback,
                 trace_artifact_path="tests/fixtures/evidence/empty_trace.json",
                 trace_artifact_hash="abc123",  # Wrong hash
                 mean_logit_cosine=0.996,
@@ -1408,6 +1417,13 @@ class TestGateSafetyWithMalformedEvidence:
             content = f.read()
         correct_hash = hashlib.sha256(content).hexdigest()
 
+        # Common context dictionaries
+        positions = {512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128}
+        failed = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        compressed = {512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048}
+        dense = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        fallback = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+
         evidence = PromotionEvidence(
             kernel_report=KernelReport(
                 all_unit_tests_passed=True,
@@ -1436,11 +1452,11 @@ class TestGateSafetyWithMalformedEvidence:
                 model_layer_count=32,
                 requested_fused_positions_per_context=128,
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
-                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
-                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
-                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
+                positions_per_context=positions,
+                failed_positions_per_context=failed,
+                compressed_page_dispatches_per_context=compressed,
+                dense_tail_dispatches_per_context=dense,
+                fallback_calls_per_context=fallback,
                 trace_artifact_path="tests/fixtures/evidence/null_trace.json",
                 trace_artifact_hash=correct_hash,
                 mean_logit_cosine=0.996,
@@ -1508,9 +1524,17 @@ class TestGateSafetyWithMalformedEvidence:
         )
 
         # Calculate correct hash for fallback trace file
-        with open("tests/fixtures/evidence/fallback_trace.json", "rb") as f:
+        trace_path = "tests/fixtures/evidence/fallback_trace.json"
+        with open(trace_path, "rb") as f:
             content = f.read()
         correct_hash = hashlib.sha256(content).hexdigest()
+
+        # Common context dictionaries
+        positions = {512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128}
+        failed = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        compressed = {512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048}
+        dense = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
+        fallback = {512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0}
 
         evidence = PromotionEvidence(
             kernel_report=KernelReport(
@@ -1540,12 +1564,12 @@ class TestGateSafetyWithMalformedEvidence:
                 model_layer_count=32,
                 requested_fused_positions_per_context=128,
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
-                positions_per_context={512: 128, 2048: 128, 4096: 128, 8192: 128, 16384: 128},
-                failed_positions_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                compressed_page_dispatches_per_context={512: 64, 2048: 256, 4096: 512, 8192: 1024, 16384: 2048},
-                dense_tail_dispatches_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                fallback_calls_per_context={512: 0, 2048: 0, 4096: 0, 8192: 0, 16384: 0},
-                trace_artifact_path="tests/fixtures/evidence/fallback_trace.json",
+                positions_per_context=positions,
+                failed_positions_per_context=failed,
+                compressed_page_dispatches_per_context=compressed,
+                dense_tail_dispatches_per_context=dense,
+                fallback_calls_per_context=fallback,
+                trace_artifact_path=trace_path,
                 trace_artifact_hash=correct_hash,
                 mean_logit_cosine=0.996,
                 p05_logit_cosine=0.991,
