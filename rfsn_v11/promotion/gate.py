@@ -1072,7 +1072,7 @@ class PromotionGate:
                 "immutable git commit hash required (at least 7 characters)."
             )
         
-        # Check evidence kind early - synthetic evidence is never promotable
+        # Check evidence kind - synthetic evidence is never promotable
         if pv.evidence_kind != "experimental":
             return PromotionDecision(
                 state=PromotionState.REVIEW_REQUIRED,
@@ -1115,9 +1115,7 @@ class PromotionGate:
             return PromotionDecision(
                 state=PromotionState.REVIEW_REQUIRED,
                 reasons=[
-                    "All quantitative thresholds pass, but promotion is capped at REVIEW_REQUIRED "
-                    "until the full evidence suite (fused decode, isolated memory, fair baseline, "
-                    "installed-wheel test) has been independently validated on native Apple Silicon."
+                    "Promotion is locked pending independent native evidence review."
                 ],
                 evidence=evidence,
             )
