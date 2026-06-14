@@ -225,6 +225,13 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
+    
+    # Calculate full SHA-256 of the raw metrics file
+    raw_metrics_path = output_dir / "teacher_forced" / "report.json"
+    import hashlib
+    with open(raw_metrics_path, "rb") as f:
+        raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
+    
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
@@ -237,8 +244,8 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         mean_top10_overlap=agg.get("mean_top10_overlap"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
         any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
-        raw_metrics_path=str(output_dir / "teacher_forced" / "report.json"),
-        raw_metrics_hash="",
+        raw_metrics_path=str(raw_metrics_path),
+        raw_metrics_hash=raw_metrics_hash,
         notes=list(report.get("notes", [])),
     )
 
@@ -264,6 +271,13 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
+    
+    # Calculate full SHA-256 of the raw metrics file
+    raw_metrics_path = output_dir / "teacher_forced" / "report.json"
+    import hashlib
+    with open(raw_metrics_path, "rb") as f:
+        raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
+    
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
@@ -276,8 +290,8 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         mean_top10_overlap=agg.get("mean_top10_overlap"),
         mean_perplexity_delta=agg.get("mean_perplexity_delta"),
         any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
-        raw_metrics_path=str(output_dir / "teacher_forced" / "report.json"),
-        raw_metrics_hash="",
+        raw_metrics_path=str(raw_metrics_path),
+        raw_metrics_hash=raw_metrics_hash,
         notes=list(report.get("notes", [])) + ["Quick mode: 512-4096 contexts only, 32 decode tokens."],
     )
 
@@ -306,6 +320,7 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
     contexts = report.get("contexts_evaluated", [])
     return FusedDecodeReport(
         model=model,
+        model_layer_count=int(report.get("num_layers", 0)),
         contexts_evaluated=contexts,
         requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
         positions_per_context=dict(agg.get("positions_per_context", {})),
@@ -360,6 +375,7 @@ def _fused_decode_report_quick(model: str, output_dir: Path) -> FusedDecodeRepor
     contexts = report.get("contexts_evaluated", [])
     return FusedDecodeReport(
         model=model,
+        model_layer_count=int(report.get("num_layers", 0)),
         contexts_evaluated=contexts,
         requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
         positions_per_context=dict(agg.get("positions_per_context", {})),
@@ -445,16 +461,19 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     # Calculate total fallback count from trial records
     trial_results = report.get("trial_results", [])
     total_fallbacks = sum(
-        tr.get("fallbacks", 0) 
-        for tr in trial_results 
+        tr.get("fallbacks", 0)
+        for tr in trial_results
         if tr.get("mode") == "turbo"
     )
     
-    # Hash raw trial records for timing artifact hash
+    # Write raw timing data to dedicated file and calculate full SHA-256
     import hashlib
     import json
-    trial_results_str = json.dumps(trial_results, sort_keys=True)
-    raw_timing_hash = hashlib.sha256(trial_results_str.encode()).hexdigest()[:16]
+    raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
+    with open(raw_timing_path, "w") as f:
+        json.dump(trial_results, f, sort_keys=True)
+    with open(raw_timing_path, "rb") as f:
+        raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
     return SpeedReport(
         model=model,
@@ -466,6 +485,7 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         median_ratio_at_8192_plus=median_8192,
         execution_mode=report.get("execution_mode"),
         fallback_calls=total_fallbacks,
+        raw_timing_path=str(raw_timing_path),
         raw_timing_hash=raw_timing_hash,
     )
 
@@ -516,16 +536,19 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
     # Calculate total fallback count from trial records
     trial_results = report.get("trial_results", [])
     total_fallbacks = sum(
-        tr.get("fallbacks", 0) 
-        for tr in trial_results 
+        tr.get("fallbacks", 0)
+        for tr in trial_results
         if tr.get("mode") == "turbo"
     )
     
-    # Hash raw trial records for timing artifact hash
+    # Write raw timing data to dedicated file and calculate full SHA-256
     import hashlib
     import json
-    trial_results_str = json.dumps(trial_results, sort_keys=True)
-    raw_timing_hash = hashlib.sha256(trial_results_str.encode()).hexdigest()[:16]
+    raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
+    with open(raw_timing_path, "w") as f:
+        json.dump(trial_results, f, sort_keys=True)
+    with open(raw_timing_path, "rb") as f:
+        raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
     return SpeedReport(
         model=model,
@@ -537,6 +560,7 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
         median_ratio_at_8192_plus=median_8192,
         execution_mode=report.get("execution_mode"),
         fallback_calls=total_fallbacks,
+        raw_timing_path=str(raw_timing_path),
         raw_timing_hash=raw_timing_hash,
     )
 

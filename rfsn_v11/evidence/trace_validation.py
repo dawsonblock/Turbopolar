@@ -160,8 +160,10 @@ class ParsedOperationTrace:
     experiment_id: str
     context_length: int
     fixture_id: str
-    decode_step: int
     layer_index: int
+    decode_step: int
+    decode_ordinal: int
+    cache_offset_before: int
     operation: str
     page_index: int | None
     kernel_name: str
@@ -182,8 +184,13 @@ class ParsedAttentionTrace:
     experiment_id: str
     context_length: int
     fixture_id: str
-    decode_step: int
     layer_index: int
+    decode_step: int
+    decode_ordinal: int
+    cache_offset_before: int
+    cache_tokens_before: int
+    cache_tokens_after: int
+    partial_tail_length: int
     expected_page_count: int
     page_operations: tuple[ParsedOperationTrace, ...]
     dense_tail_operation: ParsedOperationTrace | None
@@ -315,6 +322,8 @@ def _parse_operation_trace(
             f"does not match trace fixture_id '{fixture_id}'"
         )
     decode_step = _validate_int_field(operation, "decode_step", entry_index, min_value=0)
+    decode_ordinal = _validate_int_field(operation, "decode_ordinal", entry_index, min_value=0)
+    cache_offset_before = _validate_int_field(operation, "cache_offset_before", entry_index, min_value=0)
     layer_index = _validate_int_field(operation, "layer_index", entry_index, min_value=0)
     operation_name = _validate_string_field(operation, "operation", entry_index)
     page_index = _validate_optional_int_field(operation, "page_index", entry_index)
@@ -355,6 +364,8 @@ def _parse_operation_trace(
         context_length=context_length,
         fixture_id=fixture_id,
         decode_step=decode_step,
+        decode_ordinal=decode_ordinal,
+        cache_offset_before=cache_offset_before,
         layer_index=layer_index,
         operation=operation_name,
         page_index=page_index,
@@ -381,7 +392,12 @@ def _parse_attention_trace(entry: dict[str, Any], index: int) -> ParsedAttention
     context_length = _validate_int_field(entry, "context_length", index, min_value=1)
     fixture_id = _validate_string_field(entry, "fixture_id", index)
     decode_step = _validate_int_field(entry, "decode_step", index, min_value=0)
+    decode_ordinal = _validate_int_field(entry, "decode_ordinal", index, min_value=0)
+    cache_offset_before = _validate_int_field(entry, "cache_offset_before", index, min_value=0)
     layer_index = _validate_int_field(entry, "layer_index", index, min_value=0)
+    cache_tokens_before = _validate_int_field(entry, "cache_tokens_before", index, min_value=0)
+    cache_tokens_after = _validate_int_field(entry, "cache_tokens_after", index, min_value=0)
+    partial_tail_length = _validate_int_field(entry, "partial_tail_length", index, min_value=0)
     expected_page_count = _validate_int_field(entry, "expected_page_count", index, min_value=0)
 
     # Validate page_traces
@@ -433,6 +449,11 @@ def _parse_attention_trace(entry: dict[str, Any], index: int) -> ParsedAttention
         context_length=context_length,
         fixture_id=fixture_id,
         decode_step=decode_step,
+        decode_ordinal=decode_ordinal,
+        cache_offset_before=cache_offset_before,
+        cache_tokens_before=cache_tokens_before,
+        cache_tokens_after=cache_tokens_after,
+        partial_tail_length=partial_tail_length,
         layer_index=layer_index,
         expected_page_count=expected_page_count,
         page_operations=tuple(page_operations),
@@ -526,16 +547,16 @@ def validate_trace_topology(
 
         context_traces = topology_stats["traces_by_context"][context]
         trace_index = {
-            (t.decode_step, t.layer_index): t for t in context_traces
+            (t.decode_ordinal, t.layer_index): t for t in context_traces
         }
 
         # Check all required decode steps and layers are present
-        for decode_step in range(requested_positions_per_context):
+        for decode_ordinal in range(requested_positions_per_context):
             for layer_index in range(model_layer_count):
-                key = (decode_step, layer_index)
+                key = (decode_ordinal, layer_index)
                 if key not in trace_index:
                     failures.append(
-                        f"Context {context}: missing trace for decode_step={decode_step}, layer_index={layer_index}"
+                        f"Context {context}: missing trace for decode_ordinal={decode_ordinal}, layer_index={layer_index}"
                     )
 
         # Validate page indices and counts for each trace
@@ -545,7 +566,7 @@ def validate_trace_topology(
             # Check page count matches expected
             if len(page_indices) != trace.expected_page_count:
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"page count {len(page_indices)} != expected {trace.expected_page_count}"
                 )
 
@@ -553,7 +574,7 @@ def validate_trace_topology(
             if len(page_indices) != len(set(page_indices)):
                 duplicates = [idx for idx in page_indices if page_indices.count(idx) > 1]
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"duplicate page indices: {set(duplicates)}"
                 )
 
@@ -562,17 +583,18 @@ def validate_trace_topology(
                 expected_indices = list(range(trace.expected_page_count))
                 if sorted(page_indices) != expected_indices:
                     failures.append(
-                        f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                         f"page indices {sorted(page_indices)} != expected {expected_indices}"
                     )
 
             # Check dense tail presence matches expectation
             has_tail = trace.dense_tail_operation is not None
-            expected_tail = trace.context_length % 64 > 0
-            if has_tail and not expected_tail:
+            expected_tail = trace.partial_tail_length > 0
+            if has_tail != expected_tail:
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
-                    f"unexpected dense tail operation (context length {context} % 64 = {context % 64})"
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
+                    f"dense tail mismatch: has_tail={has_tail}, expected_tail={expected_tail} "
+                    f"(partial_tail_length={trace.partial_tail_length})"
                 )
 
             # Collect statistics
@@ -592,7 +614,7 @@ def validate_trace_topology(
                         topology_stats["fallback_operations_by_context"][context] = 0
                     topology_stats["fallback_operations_by_context"][context] += 1
                     failures.append(
-                        f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}, "
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, "
                         f"page={op.page_index}: fallback used: {op.fallback_reason}"
                     )
 
@@ -601,7 +623,7 @@ def validate_trace_topology(
                     topology_stats["fallback_operations_by_context"][context] = 0
                 topology_stats["fallback_operations_by_context"][context] += 1
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"dense tail fallback used: {trace.dense_tail_operation.fallback_reason}"
                 )
 
@@ -609,13 +631,13 @@ def validate_trace_topology(
             for op in trace.page_operations:
                 if not op.metal_executed:
                     failures.append(
-                        f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}, "
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, "
                         f"page={op.page_index}: Metal not executed"
                     )
 
             if trace.dense_tail_operation and not trace.dense_tail_operation.metal_executed:
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"dense tail Metal not executed"
                 )
 
@@ -626,7 +648,7 @@ def validate_trace_topology(
                         topology_stats["unevaluated_operations_by_context"][context] = 0
                     topology_stats["unevaluated_operations_by_context"][context] += 1
                     failures.append(
-                        f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}, "
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, "
                         f"page={op.page_index}: output not evaluated"
                     )
 
@@ -635,7 +657,7 @@ def validate_trace_topology(
                     topology_stats["unevaluated_operations_by_context"][context] = 0
                 topology_stats["unevaluated_operations_by_context"][context] += 1
                 failures.append(
-                    f"Context {context}, step={trace.decode_step}, layer={trace.layer_index}: "
+                    f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
                     f"dense tail output not evaluated"
                 )
 

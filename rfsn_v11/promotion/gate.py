@@ -175,6 +175,10 @@ class PromotionGate:
 
         # Fused decode quality
         fd = evidence.fused_decode_report
+        if fd.requested_fused_positions_per_context != 128:
+            reasons.append(
+                f"Fused decode requested_fused_positions_per_context must be 128, got {fd.requested_fused_positions_per_context}"
+            )
         if fd.mean_logit_cosine is None or fd.mean_logit_cosine < self.MEAN_COSINE:
             reasons.append(
                 f"Fused decode mean cosine {fd.mean_logit_cosine} < {self.MEAN_COSINE}"
@@ -231,8 +235,12 @@ class PromotionGate:
                     raw_traces = json.loads(content)
                     parsed_traces = parse_trace_artifact(raw_traces)
                     
-                    # Validate trace topology if model_layer_count is provided
-                    if fd.model_layer_count > 0:
+                    # Validate trace topology - require model_layer_count to be set
+                    if fd.model_layer_count <= 0:
+                        reasons.append(
+                            f"Fused decode model_layer_count must be > 0, got {fd.model_layer_count}"
+                        )
+                    else:
                         validate_trace_topology(
                             parsed_traces,
                             model_layer_count=fd.model_layer_count,
