@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -27,6 +28,9 @@ def _measure_mode(
     forced_decode_count: int = 128,
 ) -> Dict[str, Any]:
     """Run full_model_memory_worker.py for one mode and length."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        output_path = tmp.name
+
     cmd = [
         sys.executable,
         str(worker),
@@ -36,6 +40,7 @@ def _measure_mode(
         "--forced-decode-count", str(forced_decode_count),
         "--execution-mode", execution_mode,
         "--seed", str(seed),
+        "--output", output_path,
     ]
     result = subprocess.run(
         cmd,
@@ -47,25 +52,8 @@ def _measure_mode(
         raise RuntimeError(
             f"memory_worker failed for length={length} mode={mode}: {result.stderr}"
         )
-    # The worker prints the JSON result to stdout, but HF progress bars
-    # and load messages may precede it. Extract the first complete JSON
-    # object by scanning from each '{' to the matching '}'.
-    stdout = result.stdout
-    brace_idx = stdout.find("{")
-    while brace_idx != -1:
-        # Try to parse an object starting at this brace.
-        for end in range(brace_idx + 2, len(stdout) + 1):
-            try:
-                candidate = stdout[brace_idx:end]
-                # Only accept objects that end with '}' (possibly followed by whitespace).
-                if candidate.rstrip().endswith("}"):
-                    return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-        brace_idx = stdout.find("{", brace_idx + 1)
-    raise RuntimeError(
-        f"memory_worker produced no valid JSON for length={length} mode={mode}"
-    )
+    with open(output_path, "r") as f:
+        return json.load(f)
 
 
 def main():
@@ -113,27 +101,32 @@ def main():
             forced_decode_count=args.forced_decode_count,
         )
 
-        dense_bytes = dense.get("post_decode_bytes", 0)
+        # Use separate numerators and denominators so each ratio compares
+        # compatible quantities.
+        dense_kv_bytes = dense.get("dense_kv_bytes", 0)
+        dense_total_peak = dense.get("total_peak_bytes", 0)
+
         turbo_logical = turbo.get("logical_cache_bytes", 0)
         turbo_allocated = turbo.get("allocated_cache_bytes", 0)
-        turbo_peak = turbo.get("post_decode_bytes", 0)
+        turbo_total_peak = turbo.get("total_peak_bytes", 0)
 
         logical_kv_ratio = (
-            dense_bytes / turbo_logical if turbo_logical > 0 else 0.0
+            dense_kv_bytes / turbo_logical if turbo_logical > 0 else 0.0
         )
         persistent_storage_ratio = (
-            dense_bytes / turbo_allocated if turbo_allocated > 0 else 0.0
+            dense_kv_bytes / turbo_allocated if turbo_allocated > 0 else 0.0
         )
         peak_device_memory_ratio = (
-            dense_bytes / turbo_peak if turbo_peak > 0 else 0.0
+            dense_total_peak / turbo_total_peak if turbo_total_peak > 0 else 0.0
         )
 
         record = {
             "length": length,
-            "dense_post_decode_bytes": dense_bytes,
+            "dense_kv_bytes": dense_kv_bytes,
+            "dense_total_peak_bytes": dense_total_peak,
             "turbo_logical_bytes": turbo_logical,
             "turbo_allocated_bytes": turbo_allocated,
-            "turbo_post_decode_bytes": turbo_peak,
+            "turbo_total_peak_bytes": turbo_total_peak,
             "logical_kv_ratio": logical_kv_ratio,
             "persistent_storage_ratio": persistent_storage_ratio,
             "peak_device_memory_ratio": peak_device_memory_ratio,

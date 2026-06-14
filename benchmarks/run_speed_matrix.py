@@ -138,6 +138,12 @@ def _measure_decode_loop_forced(
     elapsed = time.perf_counter() - start
 
     num_decode = len(forced_continuation)
+
+    # In ASYNC_PERFORMANCE mode, traces were recorded provisionally.
+    # Commit them now that the decode loop has been fully evaluated.
+    if hasattr(cache[0], 'commit_provisional_traces'):
+        cache[0].commit_provisional_traces(output_evaluated=True)
+
     stats = {}
     if adapter is not None and hasattr(cache[0], 'execution_stats'):
         bridge_stats = cache[0].execution_stats()

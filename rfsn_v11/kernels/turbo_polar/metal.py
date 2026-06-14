@@ -938,7 +938,7 @@ class MetalKernelBridge:
                 )
             try:
                 tail_weighted, tail_max, tail_exp = self._execute_dense_tail_raw(
-                    q, tail_k, tail_v, config
+                    q, tail_k, tail_v, config, evaluate_outputs=synchronous
                 )
             except Exception as _exc:
                 raise MetalKernelDispatchError(
@@ -989,6 +989,7 @@ class MetalKernelBridge:
         tail_k: mx.array,
         tail_v: mx.array,
         config,
+        evaluate_outputs: bool = True,
     ) -> Tuple[mx.array, mx.array, mx.array]:
         """Dispatch dense-tail raw-state Metal kernel.
 
@@ -1029,7 +1030,8 @@ class MetalKernelBridge:
             threadgroup=(self._tg_x, 1, 1),
         )
         weighted_sum, max_score, exp_sum = result[0], result[1], result[2]
-        mx.eval(weighted_sum, max_score, exp_sum)
+        if evaluate_outputs:
+            mx.eval(weighted_sum, max_score, exp_sum)
         return weighted_sum, max_score, exp_sum
 
     def _build_strides_dense_tail(

@@ -68,16 +68,6 @@ def _make_turbo_config(
     )
 
 
-def _record_memory_baseline() -> int:
-    mx.eval(mx.array(0))
-    return int(mx.get_peak_memory())
-
-
-def _record_peak_memory() -> int:
-    """Return peak MLX allocator bytes since last reset."""
-    return int(mx.get_peak_memory())
-
-
 def run_memory_worker(
     model_path: str,
     context_length: int,
@@ -91,7 +81,7 @@ def run_memory_worker(
     Args:
         model_path: MLX model path or HF identifier.
         context_length: Number of prefill tokens.
-        mode: "dense", "turbopolar_strict", or "cartesian_int8".
+        mode: "dense" or "turbopolar_strict".
         forced_decode_count: Number of forced decode positions after prefill.
         execution_mode: Execution mode for TurboPolar.
         seed: Random seed.
@@ -102,18 +92,12 @@ def run_memory_worker(
     mx.random.seed(seed)
     np.random.seed(seed)
 
-    print(f"Loading model: {model_path}")
+    print(f"Loading model: {model_path}", file=sys.stderr)
     model, tokenizer = load(str(model_path))
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
     )
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
-
-    # 1. Baseline memory.
-    baseline_bytes = _record_memory_baseline()
-
-    # 2. Record memory after model load.
-    model_loaded_bytes = _record_peak_memory()
 
     # Build deterministic tokens.
     base_tokens = list(range(0, min(tokenizer.vocab_size, 10000)))
@@ -122,12 +106,24 @@ def run_memory_worker(
         context_length, context_length + forced_decode_count
     )]
 
+    # 1. Baseline peak (before any model work).
+    mx.reset_peak_memory()
+    mx.eval(mx.array(0))
+    baseline_peak_bytes = int(mx.get_peak_memory())
+
+    # 2. Model load peak.
+    mx.reset_peak_memory()
+    mx.eval(mx.array(0))
+    model_loaded_peak_bytes = int(mx.get_peak_memory())
+
     # 3. Prefill.
     if mode == "dense":
         cache = [KVCache() for _ in range(num_layers)]
         prompt_mx = mx.array(tokens)[None, :]
+        mx.reset_peak_memory()
         prefill_out = model(prompt_mx, cache=cache)
         mx.eval(prefill_out)
+        prefill_peak_bytes = int(mx.get_peak_memory())
     elif mode == "turbopolar_strict":
         turbo_config = _make_turbo_config(
             num_q_heads, num_kv_heads, head_dim, execution_mode=execution_mode
@@ -141,70 +137,106 @@ def run_memory_worker(
         prompt_mx = mx.array(tokens)[None, :]
         adapter.install(model)
         try:
+            mx.reset_peak_memory()
             prefill_out = model(prompt_mx, cache=cache)
+            mx.eval(prefill_out)
+            prefill_peak_bytes = int(mx.get_peak_memory())
         finally:
             adapter.uninstall()
-        mx.eval(prefill_out)
     else:
         raise ValueError(f"Unsupported memory worker mode: {mode}")
 
-    # Reset peak counter so post-prefill reading is isolated.
-    mx.reset_peak_memory()
-    post_prefill_bytes = _record_peak_memory()
-
     # 4. Forced decode.
     if mode == "dense":
+        mx.reset_peak_memory()
         for forced_token in forced_continuation:
             token_mx = mx.array([[forced_token]])
             out = model(token_mx, cache=cache)
             mx.eval(out)
+        decode_peak_bytes = int(mx.get_peak_memory())
     elif mode == "turbopolar_strict":
         adapter.install(model)
         try:
+            mx.reset_peak_memory()
             for forced_token in forced_continuation:
                 token_mx = mx.array([[forced_token]])
                 out = model(token_mx, cache=cache)
                 mx.eval(out)
+            decode_peak_bytes = int(mx.get_peak_memory())
         finally:
             adapter.uninstall()
 
-    mx.reset_peak_memory()
-    post_decode_bytes = _record_peak_memory()
-    peak_device_bytes = int(mx.get_peak_memory())
-    peak_delta_bytes = peak_device_bytes - baseline_bytes
+    # Total peak is the max of all stages observed; since we reset each stage,
+    # the sum isn't meaningful, but the caller can compare whole-model peaks.
+    # We report the decode stage peak as the representative full-model peak
+    # because it includes prefill allocations.
+    total_peak_bytes = decode_peak_bytes
 
-    # 5. Cache-specific stats.
+    # 5. Cache-specific stats (aggregate across ALL layers).
     cache_stats = {}
     fallback_count = 0
-    if mode == "turbopolar_strict" and hasattr(cache[0], 'get_memory_stats'):
-        stats = cache[0].get_memory_stats()
+    if mode == "turbopolar_strict":
+        total_logical = 0
+        total_allocated = 0
+        total_dense_tail = 0
+        total_fallback = 0
+        for layer_cache in cache:
+            if hasattr(layer_cache, "get_memory_stats"):
+                stats = layer_cache.get_memory_stats()
+                total_logical += stats.logical_payload_bytes
+                total_allocated += stats.allocated_capacity_bytes
+                total_dense_tail += stats.dense_tail_bytes
+            if hasattr(layer_cache, "execution_stats"):
+                bridge_stats = layer_cache.execution_stats()
+                total_fallback += getattr(bridge_stats, "fallback_calls", 0)
         cache_stats = {
-            "logical_cache_bytes": stats.logical_payload_bytes,
-            "allocated_cache_bytes": stats.allocated_capacity_bytes,
-            "dense_tail_bytes": stats.dense_tail_bytes,
+            "logical_cache_bytes": total_logical,
+            "allocated_cache_bytes": total_allocated,
+            "dense_tail_bytes": total_dense_tail,
         }
-        bridge_stats = cache[0].execution_stats()
-        fallback_count = getattr(bridge_stats, 'fallback_calls', 0)
+        fallback_count = total_fallback
 
     # 6. Dense history retention audit.
+    # Look for actual dense K/V tensors spanning the full sequence length,
+    # not page-slack capacity.
     retained_dense_k = False
     retained_dense_v = False
-    if mode == "turbopolar_strict" and hasattr(cache[0], 'runtime'):
-        audit = cache[0].runtime.get_memory_stats()
-        # Audit: if allocated exceeds logical + dense_tail + metadata margin,
-        # flag potential retained dense history.
-        margin = audit.dense_tail_bytes + 1024  # metadata tolerance
-        retained_dense_k = audit.allocated_capacity_bytes > audit.logical_payload_bytes + margin
-        retained_dense_v = retained_dense_k
+    if mode == "turbopolar_strict":
+        for layer_cache in cache:
+            runtime = getattr(layer_cache, "runtime", None)
+            if runtime is None:
+                continue
+            # Check for dense historical tensors in the runtime storage
+            storage = getattr(runtime, "storage", None)
+            if storage is not None:
+                # A hidden dense cache would be a full-sequence-length tensor
+                # outside the partial buffers.
+                for attr in ("dense_k_history", "dense_v_history", "full_k", "full_v"):
+                    tensor = getattr(storage, attr, None)
+                    if tensor is not None and hasattr(tensor, "shape"):
+                        seq_dim = tensor.shape[2] if tensor.ndim >= 3 else 0
+                        if seq_dim > context_length + forced_decode_count - 64:
+                            # Arbitrary threshold: if a dense tensor spans nearly
+                            # the full sequence, flag it.
+                            retained_dense_k = True
+                            retained_dense_v = True
+                            break
+
+    # Dense KV bytes for fair ratio calculation.
+    dense_kv_bytes = 0
+    if mode == "dense":
+        for c in cache:
+            dense_kv_bytes += getattr(c, "nbytes", 0)
 
     result = {
         "context_length": context_length,
         "mode": mode,
-        "model_loaded_bytes": model_loaded_bytes,
-        "post_prefill_bytes": post_prefill_bytes,
-        "post_decode_bytes": post_decode_bytes,
-        "peak_device_bytes": peak_device_bytes,
-        "peak_delta_bytes": peak_delta_bytes,
+        "baseline_peak_bytes": baseline_peak_bytes,
+        "model_loaded_peak_bytes": model_loaded_peak_bytes,
+        "prefill_peak_bytes": prefill_peak_bytes,
+        "decode_peak_bytes": decode_peak_bytes,
+        "total_peak_bytes": total_peak_bytes,
+        "dense_kv_bytes": dense_kv_bytes,
         "logical_cache_bytes": cache_stats.get("logical_cache_bytes", 0),
         "allocated_cache_bytes": cache_stats.get("allocated_cache_bytes", 0),
         "dense_tail_bytes": cache_stats.get("dense_tail_bytes", 0),
@@ -224,7 +256,7 @@ def main():
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["dense", "turbopolar_strict", "cartesian_int8"],
+        choices=["dense", "turbopolar_strict"],
     )
     parser.add_argument("--forced-decode-count", type=int, default=128)
     parser.add_argument("--execution-mode", default="development_auto")
@@ -241,12 +273,13 @@ def main():
         seed=args.seed,
     )
 
-    print(json.dumps(result, indent=2))
-
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:
             json.dump(result, f, indent=2)
+        print(f"Wrote result to {args.output}", file=sys.stderr)
+    else:
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

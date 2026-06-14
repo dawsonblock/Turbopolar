@@ -215,14 +215,12 @@ class TurboPolarFastCache:
 
         # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs internally.
         # In ASYNC_PERFORMANCE mode evaluation is deferred to the caller.
-        output_evaluated = (
-            cfg.execution_mode is ExecutionMode.METAL_STRICT
-            and cfg.trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
-        )
+        synchronous = cfg.trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
+        output_evaluated = cfg.execution_mode is ExecutionMode.METAL_STRICT and synchronous
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
-            self._record_attention_trace(
+            step_trace = self._build_attention_trace(
                 trace=trace,
                 view=view,
                 layer_index=layer_index,
@@ -231,6 +229,10 @@ class TurboPolarFastCache:
                 execution_mode=cfg.execution_mode.value,
                 output_evaluated=output_evaluated,
             )
+            if synchronous:
+                self._trace_collector.record(step_trace)
+            else:
+                self._trace_collector.record_provisional(step_trace)
 
         # Strict validation: exact page count, all Metal, zero fallback.
         # In SYNCHRONOUS_EVIDENCE mode outputs are evaluated inside the bridge.
@@ -254,7 +256,7 @@ class TurboPolarFastCache:
                 )
         return output
 
-    def _record_attention_trace(
+    def _build_attention_trace(
         self,
         trace: dict,
         view,
@@ -263,8 +265,8 @@ class TurboPolarFastCache:
         experiment_id: str,
         execution_mode: str,
         output_evaluated: bool = False,
-    ) -> None:
-        """Record an AttentionExecutionTrace from the bridge execution trace."""
+    ) -> AttentionExecutionTrace:
+        """Build an AttentionExecutionTrace from the bridge execution trace."""
         page_traces_raw = trace.get("page_traces", [])
         expected_page_count = len(view.pages)
 
@@ -311,16 +313,21 @@ class TurboPolarFastCache:
                 output_evaluated=output_evaluated,
             )
 
-        step_trace = AttentionExecutionTrace(
+        return AttentionExecutionTrace(
             layer_index=layer_index,
             decode_step=decode_step,
             expected_page_count=expected_page_count,
             page_traces=page_traces,
             dense_tail_trace=dense_tail_trace,
         )
-        self._trace_collector.record(step_trace)
 
-        # Strict validation is performed unconditionally in decode_attention.
+    def commit_provisional_traces(self, output_evaluated: bool = True) -> None:
+        """Commit all provisional traces held by the shared collector."""
+        self._trace_collector.commit_provisional(output_evaluated=output_evaluated)
+
+    def clear_provisional_traces(self) -> None:
+        """Discard all provisional traces without committing them."""
+        self._trace_collector.clear_provisional()
 
     def make_mask(
         self, N: int, return_array: bool = False, window_size: Optional[int] = None

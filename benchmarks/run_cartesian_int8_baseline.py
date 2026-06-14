@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Fair dense-vs-TurboPolar baseline comparison.
+"""Fair dense-vs-Cartesian-vs-TurboPolar baseline comparison.
 
-Runs both caches through the same forced-decode fixtures on a real model and
+Runs all three caches through the same forced-decode fixtures on a real model and
 reports quality, memory, and speed deltas.
 """
 
@@ -22,6 +22,7 @@ project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+from rfsn_v11.generation.cartesian_int8_paged_cache import PagedCartesianInt8KVCache
 from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
@@ -71,7 +72,7 @@ def _compare_fixture(
     execution_mode: str,
     seed: int,
 ) -> Dict[str, Any]:
-    """Compare dense KV-cache vs TurboPolar for one context length."""
+    """Compare dense, Cartesian-int8, and TurboPolar for one context length."""
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
@@ -85,9 +86,10 @@ def _compare_fixture(
         length, length + num_decode
     )]
 
+    prompt_mx = mx.array(tokens)[None, :]
+
     # Dense path.
     dense_cache = [KVCache() for _ in range(num_layers)]
-    prompt_mx = mx.array(tokens)[None, :]
     dense_prefill = model(prompt_mx, cache=dense_cache)
     mx.eval(dense_prefill)
 
@@ -97,6 +99,18 @@ def _compare_fixture(
         logits = model(token_mx, cache=dense_cache)
         mx.eval(logits)
         dense_logits.append(np.array(logits[:, -1, :].astype(mx.float32)).flatten())
+
+    # Cartesian-int8 path.
+    cartesian_cache = [PagedCartesianInt8KVCache(block_size=64) for _ in range(num_layers)]
+    cartesian_prefill = model(prompt_mx, cache=cartesian_cache)
+    mx.eval(cartesian_prefill)
+
+    cartesian_logits = []
+    for forced_token in forced_continuation:
+        token_mx = mx.array([[forced_token]])
+        logits = model(token_mx, cache=cartesian_cache)
+        mx.eval(logits)
+        cartesian_logits.append(np.array(logits[:, -1, :].astype(mx.float32)).flatten())
 
     # TurboPolar path.
     turbo_config = TurboPolarConfig(
@@ -133,32 +147,40 @@ def _compare_fixture(
     finally:
         adapter.uninstall()
 
-    # Quality metrics.
-    cosines = []
-    argmax_agreements = []
-    top5s = []
-    for d, t in zip(dense_logits, turbo_logits):
-        cosines.append(_logit_cosine(d, t))
-        argmax_agreements.append(float(np.argmax(d) == np.argmax(t)))
-        top5s.append(_topk_overlap(d, t, 5))
+    # Quality metrics: TurboPolar vs dense and vs Cartesian.
+    cosines_dense = []
+    cosines_cartesian = []
+    argmax_agreements_dense = []
+    argmax_agreements_cartesian = []
+    top5s_dense = []
+    top5s_cartesian = []
+    for d, c, t in zip(dense_logits, cartesian_logits, turbo_logits):
+        cosines_dense.append(_logit_cosine(d, t))
+        cosines_cartesian.append(_logit_cosine(c, t))
+        argmax_agreements_dense.append(float(np.argmax(d) == np.argmax(t)))
+        argmax_agreements_cartesian.append(float(np.argmax(c) == np.argmax(t)))
+        top5s_dense.append(_topk_overlap(d, t, 5))
+        top5s_cartesian.append(_topk_overlap(c, t, 5))
 
     # Memory.
-    dense_bytes = dense_cache[0].nbytes if hasattr(dense_cache[0], 'nbytes') else 0
-    for c in dense_cache[1:]:
-        dense_bytes += c.nbytes if hasattr(c, 'nbytes') else 0
+    dense_bytes = 0
+    for c in dense_cache:
+        dense_bytes += getattr(c, "nbytes", 0)
 
-    turbo_bytes = turbo_cache[0].nbytes if hasattr(turbo_cache[0], 'nbytes') else 0
-    for c in turbo_cache[1:]:
-        turbo_bytes += c.nbytes if hasattr(c, 'nbytes') else 0
+    cartesian_bytes = 0
+    for c in cartesian_cache:
+        cartesian_bytes += getattr(c, "nbytes", 0)
 
-    # Use allocated bytes for fair comparison.
-    if hasattr(turbo_cache[0], 'get_memory_stats'):
-        stats = turbo_cache[0].get_memory_stats()
-        turbo_allocated = stats.allocated_capacity_bytes
-    else:
-        turbo_allocated = turbo_bytes
+    turbo_logical = 0
+    turbo_allocated = 0
+    for c in turbo_cache:
+        turbo_logical += getattr(c, "nbytes", 0)
+        if hasattr(c, "get_memory_stats"):
+            stats = c.get_memory_stats()
+            turbo_allocated += stats.allocated_capacity_bytes
+            turbo_logical += stats.logical_payload_bytes
 
-    # Speed: quick 16-token measurement.
+    # Speed: quick 16-token measurement for all three.
     import time as time_mod
     mx.random.seed(seed)
     np.random.seed(seed)
@@ -173,6 +195,16 @@ def _compare_fixture(
         out = model(mx.array([[tok]]), cache=dense_cache_s)
         mx.eval(out)
     dense_time = time_mod.perf_counter() - t0
+
+    # Cartesian speed.
+    cartesian_cache_s = [PagedCartesianInt8KVCache(block_size=64) for _ in range(num_layers)]
+    _ = model(prompt_mx, cache=cartesian_cache_s)
+    mx.eval(_)
+    t0 = time_mod.perf_counter()
+    for tok in warm_tokens:
+        out = model(mx.array([[tok]]), cache=cartesian_cache_s)
+        mx.eval(out)
+    cartesian_time = time_mod.perf_counter() - t0
 
     # Turbo speed.
     turbo_cache_s = make_turbo_caches(
@@ -191,32 +223,41 @@ def _compare_fixture(
     finally:
         adapter.uninstall()
 
-    speedup = dense_time / turbo_time if turbo_time > 0 else 0.0
+    speedup_vs_dense = dense_time / turbo_time if turbo_time > 0 else 0.0
+    speedup_vs_cartesian = cartesian_time / turbo_time if turbo_time > 0 else 0.0
 
     return {
         "length": length,
         "num_decode": num_decode,
-        "mean_turbo_cosine": float(np.mean(cosines)),
-        "p05_turbo_cosine": float(np.percentile(cosines, 5)),
-        "min_turbo_cosine": float(np.min(cosines)),
-        "turbo_argmax_agreement": float(np.mean(argmax_agreements)),
-        "turbo_top5": float(np.mean(top5s)),
+        "mean_turbo_cosine_vs_dense": float(np.mean(cosines_dense)),
+        "mean_turbo_cosine_vs_cartesian": float(np.mean(cosines_cartesian)),
+        "p05_turbo_cosine_vs_dense": float(np.percentile(cosines_dense, 5)),
+        "p05_turbo_cosine_vs_cartesian": float(np.percentile(cosines_cartesian, 5)),
+        "min_turbo_cosine_vs_dense": float(np.min(cosines_dense)),
+        "min_turbo_cosine_vs_cartesian": float(np.min(cosines_cartesian)),
+        "turbo_argmax_agreement_vs_dense": float(np.mean(argmax_agreements_dense)),
+        "turbo_argmax_agreement_vs_cartesian": float(np.mean(argmax_agreements_cartesian)),
+        "turbo_top5_vs_dense": float(np.mean(top5s_dense)),
+        "turbo_top5_vs_cartesian": float(np.mean(top5s_cartesian)),
         "dense_bytes": dense_bytes,
-        "turbo_logical_bytes": turbo_bytes,
+        "cartesian_bytes": cartesian_bytes,
+        "turbo_logical_bytes": turbo_logical,
         "turbo_allocated_bytes": turbo_allocated,
         "dense_time_16tok": dense_time,
+        "cartesian_time_16tok": cartesian_time,
         "turbo_time_16tok": turbo_time,
-        "speedup_16tok": speedup,
+        "speedup_vs_dense_16tok": speedup_vs_dense,
+        "speedup_vs_cartesian_16tok": speedup_vs_cartesian,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dense vs TurboPolar baseline comparison")
+    parser = argparse.ArgumentParser(description="Dense vs Cartesian vs TurboPolar baseline comparison")
     parser.add_argument("--model", required=True, help="MLX model path or HF identifier")
     parser.add_argument(
-        "--lengths", type=int, nargs="+", default=[64, 128, 256, 512, 1024]
+        "--lengths", type=int, nargs="+", default=[64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
     )
-    parser.add_argument("--num-decode", type=int, default=1)
+    parser.add_argument("--num-decode", type=int, default=128)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -236,23 +277,50 @@ def main():
     model, tokenizer = load(str(args.model))
 
     records = []
+    cartesian_implemented = True
     for length in args.lengths:
-        record = _compare_fixture(
-            model, tokenizer, length, args.num_decode, args.execution_mode, args.seed
-        )
-        records.append(record)
-        print(
-            f"length={length:5d} "
-            f"cosine={record['mean_turbo_cosine']:.4f} "
-            f"argmax={record['turbo_argmax_agreement']:.4f} "
-            f"mem_ratio={record['dense_bytes'] / record['turbo_allocated_bytes']:.2f}x "
-            f"speedup={record['speedup_16tok']:.2f}x"
-        )
+        try:
+            record = _compare_fixture(
+                model, tokenizer, length, args.num_decode, args.execution_mode, args.seed
+            )
+            records.append(record)
+            print(
+                f"length={length:5d} "
+                f"cosine(dense)={record['mean_turbo_cosine_vs_dense']:.4f} "
+                f"cosine(cart)={record['mean_turbo_cosine_vs_cartesian']:.4f} "
+                f"argmax(dense)={record['turbo_argmax_agreement_vs_dense']:.4f} "
+                f"argmax(cart)={record['turbo_argmax_agreement_vs_cartesian']:.4f} "
+                f"mem_dense={record['dense_bytes']} "
+                f"mem_cart={record['cartesian_bytes']} "
+                f"mem_turbo={record['turbo_allocated_bytes']} "
+                f"speedup(dense)={record['speedup_vs_dense_16tok']:.2f}x "
+                f"speedup(cart)={record['speedup_vs_cartesian_16tok']:.2f}x"
+            )
+        except Exception as exc:
+            print(f"length={length:5d} FAILED: {exc}")
+            cartesian_implemented = False
 
-    # Winner decisions.
-    wins_quality = all(r["mean_turbo_cosine"] >= 0.99 for r in records)
-    wins_memory = all(r["turbo_allocated_bytes"] < r["dense_bytes"] for r in records)
-    wins_speed = all(r["speedup_16tok"] > 1.0 for r in records)
+    # Winner decisions compare TurboPolar against Cartesian (the fair baseline).
+    if cartesian_implemented and records:
+        wins_quality = all(
+            r["mean_turbo_cosine_vs_cartesian"] >= 0.99 for r in records
+        )
+        wins_memory = all(
+            r["turbo_allocated_bytes"] < r["cartesian_bytes"] for r in records
+        )
+        wins_speed = all(
+            r["speedup_vs_cartesian_16tok"] > 1.0 for r in records
+        )
+        recommendation = (
+            "TurboPolar shows competitive quality and memory savings vs Cartesian int8."
+            if wins_quality and wins_memory else
+            "Further tuning required."
+        )
+    else:
+        wins_quality = None
+        wins_memory = None
+        wins_speed = None
+        recommendation = "Cartesian int8 baseline did not complete successfully."
 
     report = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -260,15 +328,11 @@ def main():
         "records": records,
         "contexts_evaluated": args.lengths,
         "baseline_comparison_report": {
-            "cartesian_int8_baseline_implemented": True,
+            "cartesian_int8_baseline_implemented": cartesian_implemented,
             "turbo_polar_wins_on_quality": wins_quality,
             "turbo_polar_wins_on_memory": wins_memory,
             "turbo_polar_wins_on_speed": wins_speed,
-            "recommendation": (
-                "TurboPolar shows competitive quality and memory savings vs dense fp16."
-                if wins_quality and wins_memory else
-                "Further tuning required."
-            ),
+            "recommendation": recommendation,
             "notes": [
                 f"Execution mode: {args.execution_mode}",
                 f"Contexts: {args.lengths}",
