@@ -86,9 +86,9 @@ class PagedCartesianInt8KStorage:
         if not self.pages:
             raise ValueError("No pages allocated")
         blocks = []
-        for page in self.pages:
+        for page_idx, page in enumerate(self.pages):
             for i in range(page.valid_blocks):
-                blocks.append(self.get_block(len(blocks) // page.capacity_blocks, i))
+                blocks.append(self.get_block(page_idx, i))
         if not blocks:
             raise ValueError("No valid blocks to materialize")
         # Concatenate along the block dimension (axis=2).
@@ -170,6 +170,23 @@ class PagedCartesianInt8KVCache:
                 self.partial_k_buffer = mx.zeros_like(self.partial_k_buffer)
                 self.partial_v_buffer = mx.zeros_like(self.partial_v_buffer)
 
+    def update_and_fetch(self, keys: mx.array, values: mx.array) -> Tuple[mx.array, mx.array]:
+        """MLX-LM-compatible update method: append and return decompressed history."""
+        original_dtype = keys.dtype
+        if keys.dtype != mx.float16:
+            keys = keys.astype(mx.float16)
+        if values.dtype != mx.float16:
+            values = values.astype(mx.float16)
+
+        self.append(keys, values)
+        k_dense, v_dense = self.get_history()
+
+        if original_dtype != k_dense.dtype:
+            k_dense = k_dense.astype(original_dtype)
+            v_dense = v_dense.astype(original_dtype)
+
+        return k_dense, v_dense
+
     def get_history(self) -> Tuple[mx.array, mx.array]:
         """Return decompressed K and V history."""
         if self.storage.block_count == 0:
@@ -231,6 +248,7 @@ class PagedCartesianInt8KVCache:
 
     @property
     def nbytes(self) -> int:
+        """Logical occupied bytes (valid blocks only)."""
         total = 0
         for page in self.storage.pages:
             valid = page.valid_blocks
@@ -239,6 +257,24 @@ class PagedCartesianInt8KVCache:
                 + page.k_scales[:, :, :valid, :, :].size * page.k_scales.itemsize
                 + page.v_codes[:, :, :valid, :, :].size * page.v_codes.itemsize
                 + page.v_scales[:, :, :valid, :, :].size * page.v_scales.itemsize
+            )
+        if self.partial_k_buffer is not None:
+            total += int(
+                self.partial_k_buffer.size * self.partial_k_buffer.itemsize
+                + self.partial_v_buffer.size * self.partial_v_buffer.itemsize
+            )
+        return total
+
+    @property
+    def allocated_bytes(self) -> int:
+        """Allocated capacity bytes (including unused page slack)."""
+        total = 0
+        for page in self.storage.pages:
+            total += int(
+                page.k_codes.size * page.k_codes.itemsize
+                + page.k_scales.size * page.k_scales.itemsize
+                + page.v_codes.size * page.v_codes.itemsize
+                + page.v_scales.size * page.v_scales.itemsize
             )
         if self.partial_k_buffer is not None:
             total += int(

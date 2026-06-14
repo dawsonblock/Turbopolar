@@ -8,13 +8,10 @@ Designed to be launched in a fresh process for each mode and context length.
 import argparse
 import json
 import sys
-import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import mlx.core as mx
-import mlx_lm
 import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
@@ -92,8 +89,19 @@ def run_memory_worker(
     mx.random.seed(seed)
     np.random.seed(seed)
 
+    # 1. Baseline peak (before any model work, including model load).
+    mx.reset_peak_memory()
+    mx.eval(mx.array(0))
+    baseline_peak_bytes = int(mx.get_peak_memory())
+
+    # 2. Model load peak.
     print(f"Loading model: {model_path}", file=sys.stderr)
+    mx.reset_peak_memory()
     model, tokenizer = load(str(model_path))
+    # Evaluate the model to ensure parameters are materialized on device.
+    mx.eval(model)
+    model_loaded_peak_bytes = int(mx.get_peak_memory())
+
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
     )
@@ -105,16 +113,6 @@ def run_memory_worker(
     forced_continuation = [base_tokens[i % len(base_tokens)] for i in range(
         context_length, context_length + forced_decode_count
     )]
-
-    # 1. Baseline peak (before any model work).
-    mx.reset_peak_memory()
-    mx.eval(mx.array(0))
-    baseline_peak_bytes = int(mx.get_peak_memory())
-
-    # 2. Model load peak.
-    mx.reset_peak_memory()
-    mx.eval(mx.array(0))
-    model_loaded_peak_bytes = int(mx.get_peak_memory())
 
     # 3. Prefill.
     if mode == "dense":
@@ -166,11 +164,12 @@ def run_memory_worker(
         finally:
             adapter.uninstall()
 
-    # Total peak is the max of all stages observed; since we reset each stage,
-    # the sum isn't meaningful, but the caller can compare whole-model peaks.
-    # We report the decode stage peak as the representative full-model peak
-    # because it includes prefill allocations.
-    total_peak_bytes = decode_peak_bytes
+    # Total peak is the max of all stages observed.
+    total_peak_bytes = max(
+        model_loaded_peak_bytes,
+        prefill_peak_bytes,
+        decode_peak_bytes,
+    )
 
     # 5. Cache-specific stats (aggregate across ALL layers).
     cache_stats = {}
@@ -179,26 +178,27 @@ def run_memory_worker(
         total_logical = 0
         total_allocated = 0
         total_dense_tail = 0
-        total_fallback = 0
         for layer_cache in cache:
             if hasattr(layer_cache, "get_memory_stats"):
                 stats = layer_cache.get_memory_stats()
                 total_logical += stats.logical_payload_bytes
                 total_allocated += stats.allocated_capacity_bytes
                 total_dense_tail += stats.dense_tail_bytes
-            if hasattr(layer_cache, "execution_stats"):
-                bridge_stats = layer_cache.execution_stats()
-                total_fallback += getattr(bridge_stats, "fallback_calls", 0)
         cache_stats = {
             "logical_cache_bytes": total_logical,
             "allocated_cache_bytes": total_allocated,
             "dense_tail_bytes": total_dense_tail,
         }
-        fallback_count = total_fallback
+        # Read singleton bridge statistics once, not per layer.
+        fallback_count = getattr(
+            cache[0].execution_stats() if hasattr(cache[0], "execution_stats") else {},
+            "fallback_calls",
+            0,
+        )
 
     # 6. Dense history retention audit.
-    # Look for actual dense K/V tensors spanning the full sequence length,
-    # not page-slack capacity.
+    # Check runtime for dense arrays that could indicate improper full-sequence retention.
+    # TurboPolar should only keep block_size (64) tokens in dense partial buffers.
     retained_dense_k = False
     retained_dense_v = False
     if mode == "turbopolar_strict":
@@ -206,21 +206,25 @@ def run_memory_worker(
             runtime = getattr(layer_cache, "runtime", None)
             if runtime is None:
                 continue
-            # Check for dense historical tensors in the runtime storage
-            storage = getattr(runtime, "storage", None)
-            if storage is not None:
-                # A hidden dense cache would be a full-sequence-length tensor
-                # outside the partial buffers.
-                for attr in ("dense_k_history", "dense_v_history", "full_k", "full_v"):
-                    tensor = getattr(storage, attr, None)
-                    if tensor is not None and hasattr(tensor, "shape"):
-                        seq_dim = tensor.shape[2] if tensor.ndim >= 3 else 0
-                        if seq_dim > context_length + forced_decode_count - 64:
-                            # Arbitrary threshold: if a dense tensor spans nearly
-                            # the full sequence, flag it.
-                            retained_dense_k = True
-                            retained_dense_v = True
-                            break
+            # Check partial buffers - they should only hold up to block_size (64) tokens
+            partial_k = getattr(runtime, "partial_k_buffer", None)
+            partial_v = getattr(runtime, "partial_v_buffer", None)
+            
+            # Check K partial buffer
+            if partial_k is not None and hasattr(partial_k, "shape"):
+                if partial_k.ndim >= 3:
+                    seq_dim = partial_k.shape[2] if partial_k.ndim >= 3 else 0
+                    # Partial buffer should not exceed block_size (64)
+                    if seq_dim > 64:
+                        retained_dense_k = True
+            
+            # Check V partial buffer  
+            if partial_v is not None and hasattr(partial_v, "shape"):
+                if partial_v.ndim >= 3:
+                    seq_dim = partial_v.shape[2] if partial_v.ndim >= 3 else 0
+                    # Partial buffer should not exceed block_size (64)
+                    if seq_dim > 64:
+                        retained_dense_v = True
 
     # Dense KV bytes for fair ratio calculation.
     dense_kv_bytes = 0

@@ -228,11 +228,11 @@ class TestModelDecodeReplay(unittest.TestCase):
                 turbo_last = np.array(turbo_logits[:, -1, :].astype(mx.float32))
                 self.assertFalse(
                     np.isnan(turbo_last).any(),
-                    f"NaN in turbo logits at strict position"
+                    "NaN in turbo logits at strict position"
                 )
                 self.assertFalse(
                     np.isinf(turbo_last).any(),
-                    f"Inf in turbo logits at strict position"
+                    "Inf in turbo logits at strict position"
                 )
                 # Quality metrics per position.
                 cosine = self._cosine_similarity(dense_last[0], turbo_last[0])

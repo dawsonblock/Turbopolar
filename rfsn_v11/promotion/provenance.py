@@ -75,6 +75,7 @@ def capture_provenance(
     context_lengths: list[int],
     decode_token_count: int,
     qjl_enabled: bool,
+    evidence_kind: str = "experimental",
 ) -> BenchmarkProvenance:
     """Build a BenchmarkProvenance record from the current environment."""
     git_commit = _run(["git", "rev-parse", "HEAD"])
@@ -108,6 +109,7 @@ def capture_provenance(
         "use_int8_radii": turbopolar_config.use_int8_radii,
         "v_bits": turbopolar_config.v_bits,
         "block_size": turbopolar_config.block_size,
+        "page_capacity_blocks": turbopolar_config.page_capacity_blocks if hasattr(turbopolar_config, "page_capacity_blocks") else 16,
         "head_dim": turbopolar_config.head_dim,
         "qjl_proj_dim": turbopolar_config.qjl_proj_dim,
         "use_qjl": turbopolar_config.use_qjl,
@@ -116,9 +118,22 @@ def capture_provenance(
         "attention_scale": turbopolar_config.attention_scale,
         "num_q_heads": turbopolar_config.num_q_heads,
         "num_kv_heads": turbopolar_config.num_kv_heads,
+        "execution_mode": turbopolar_config.execution_mode.value if hasattr(turbopolar_config.execution_mode, "value") else str(turbopolar_config.execution_mode),
+        "trace_validation_mode": turbopolar_config.trace_validation_mode.value if hasattr(turbopolar_config.trace_validation_mode, "value") else str(turbopolar_config.trace_validation_mode),
     }
 
     prompt_suite_hash = _file_sha256(prompt_suite_path)
+    
+    # Hash Python bindings and storage-layout code
+    integration_dir = Path(__file__).parents[1] / "integrations" / "mlx_lm"
+    storage_dir = Path(__file__).parents[1] / "generation"
+    python_bindings_hash = _dir_sha256(integration_dir, "*.py")
+    storage_layout_hash = _dir_sha256(storage_dir, "*.py")
+    
+    # Combine hashes for config
+    config_dict["python_bindings_hash"] = python_bindings_hash
+    config_dict["storage_layout_hash"] = storage_layout_hash
+    
     config_hash = _hash_jsonable(config_dict)
 
     # Reject placeholder "unknown" revisions so the gate fails explicitly.
@@ -152,4 +167,5 @@ def capture_provenance(
         decode_token_count=decode_token_count,
         qjl_enabled=qjl_enabled,
         metal_kernel_source_hash=metal_kernel_source_hash,
+        evidence_kind=evidence_kind,
     )

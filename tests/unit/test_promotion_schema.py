@@ -44,6 +44,7 @@ class TestPromotionSchema(unittest.TestCase):
                 model_repo_id="test/model",
                 model_revision="abc",
                 turbopolar_config_hash="def",
+                evidence_kind="experimental",
             ),
         )
         from dataclasses import asdict
@@ -54,6 +55,29 @@ class TestPromotionSchema(unittest.TestCase):
         self.assertIsInstance(restored.kernel_report, KernelReport)
         self.assertTrue(restored.kernel_report.all_unit_tests_passed)
         self.assertEqual(restored.provenance.git_tree_state, GitTreeState.CLEAN)
+        self.assertEqual(restored.provenance.evidence_kind, "experimental")
+
+    def test_speed_report_new_fields(self):
+        """Test that SpeedReport includes new execution mode and fallback fields."""
+        sr = SpeedReport(
+            model="test",
+            contexts_evaluated=[512, 2048],
+            trials_per_context=5,
+            execution_mode="metal_strict",
+            fallback_calls=0,
+            raw_timing_hash="abc123",
+        )
+        self.assertEqual(sr.execution_mode, "metal_strict")
+        self.assertEqual(sr.fallback_calls, 0)
+        self.assertEqual(sr.raw_timing_hash, "abc123")
+
+    def test_kernel_report_skipped_tests(self):
+        """Test that KernelReport includes skipped tests field."""
+        kr = KernelReport(
+            all_unit_tests_passed=True,
+            metal_tests_skipped=["tests.kernels.test_fallback_injection"],
+        )
+        self.assertEqual(kr.metal_tests_skipped, ["tests.kernels.test_fallback_injection"])
 
     def test_git_tree_state_unknown_is_review_required(self):
         evidence = PromotionEvidence(
@@ -123,6 +147,8 @@ class TestPromotionSchema(unittest.TestCase):
                 dense_tail_fallback_calls=0,
                 full_attention_fallback_calls=0,
                 fallback_reasons=[],
+                trace_artifact_path="/tmp/test_trace.json",
+                trace_artifact_hash="test_hash",
             ),
             speed_report=SpeedReport(
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
@@ -130,6 +156,9 @@ class TestPromotionSchema(unittest.TestCase):
                 min_ratio_at_4096_plus=0.98,
                 max_ratio_at_4096_plus=1.06,
                 median_ratio_at_8192_plus=1.04,
+                execution_mode="metal_strict",
+                fallback_calls=0,
+                raw_timing_hash="test_hash",
             ),
             memory_report=MemoryReport(
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
@@ -139,6 +168,7 @@ class TestPromotionSchema(unittest.TestCase):
                 hidden_dense_cache_detected=False,
             ),
             baseline_comparison_report=BaselineComparisonReport(
+                contexts_evaluated=[512, 2048, 4096, 8192, 16384],
                 cartesian_int8_baseline_implemented=True,
                 turbo_polar_wins_on_quality=True,
                 turbo_polar_wins_on_memory=True,

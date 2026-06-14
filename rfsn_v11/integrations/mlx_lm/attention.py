@@ -22,11 +22,13 @@ class TurboPolarLlamaAttention(nn.Module):
         original_attention: nn.Module,
         turbo_config: TurboPolarConfig,
         layer_index: int,
+        experiment_id: str = "",
     ):
         super().__init__()
         self.original_attention = original_attention
         self.turbo_config = turbo_config
         self.layer_index = layer_index
+        self.experiment_id = experiment_id
         # Capture the bound instance method so we can call it later.
         self._original_call = original_attention.__call__
 
@@ -60,6 +62,7 @@ class TurboPolarLlamaAttention(nn.Module):
                 queries, keys, values, attn.scale, mask=mask,
                 layer_index=self.layer_index,
                 decode_step=cache.offset,
+                experiment_id=self.experiment_id,
             )
             # output: [B, H_q, D] -> [B, L, H_q * D]
             output = output[:, None, :, :].transpose(0, 2, 1, 3).reshape(B, L, -1)

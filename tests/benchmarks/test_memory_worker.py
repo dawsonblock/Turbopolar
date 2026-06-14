@@ -1,14 +1,11 @@
 """Tests for the full-model memory worker."""
 
-import json
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,14 +104,62 @@ class TestMemoryWorkerLogic(unittest.TestCase):
             "Expected keys should be non-empty",
         )
 
+    def test_memory_measurement_algorithm(self):
+        """Test that the memory measurement algorithm follows the correct sequence."""
+        # Since we can't easily mock MLX imports, we verify the algorithm structure
+        # by inspecting the source code for the correct measurement sequence
+        source = (PROJECT_ROOT / "benchmarks" / "full_model_memory_worker.py").read_text()
+        
+        # Verify baseline is measured before model load
+        baseline_idx = source.find("baseline_peak_bytes = int(mx.get_peak_memory())")
+        model_load_idx = source.find("model, tokenizer = load(")
+        self.assertGreater(baseline_idx, -1, "Baseline measurement should exist")
+        self.assertGreater(model_load_idx, -1, "Model load should exist")
+        self.assertLess(baseline_idx, model_load_idx, 
+                       "Baseline should be measured before model load")
+        
+        # Verify model load peak is measured during/after load
+        model_load_peak_idx = source.find("model_loaded_peak_bytes = int(mx.get_peak_memory())")
+        self.assertGreater(model_load_peak_idx, -1, "Model load peak should be measured")
+        self.assertGreater(model_load_peak_idx, model_load_idx,
+                          "Model load peak should be measured after load starts")
+        
+        # Verify prefill peak is measured
+        prefill_peak_idx = source.find("prefill_peak_bytes = int(mx.get_peak_memory())")
+        self.assertGreater(prefill_peak_idx, -1, "Prefill peak should be measured")
+        
+        # Verify decode peak is measured
+        decode_peak_idx = source.find("decode_peak_bytes = int(mx.get_peak_memory())")
+        self.assertGreater(decode_peak_idx, -1, "Decode peak should be measured")
+        
+        # Verify total_peak uses max of all stages
+        total_peak_idx = source.find("total_peak_bytes = max(")
+        self.assertGreater(total_peak_idx, -1, "Total peak should use max()")
+        self.assertIn("model_loaded_peak_bytes", source[total_peak_idx:total_peak_idx+200])
+        self.assertIn("prefill_peak_bytes", source[total_peak_idx:total_peak_idx+200])
+        self.assertIn("decode_peak_bytes", source[total_peak_idx:total_peak_idx+200])
+
+    def test_dense_history_audit_logic(self):
+        """Test that dense history audit checks partial buffers correctly."""
+        # Verify the source contains the correct logic for checking partial buffers
+        source = (PROJECT_ROOT / "benchmarks" / "full_model_memory_worker.py").read_text()
+        self.assertIn("partial_k_buffer", source)
+        self.assertIn("partial_v_buffer", source)
+        self.assertIn("seq_dim > 64", source)
+        
+        # Verify it checks runtime attributes
+        self.assertIn("runtime = getattr(layer_cache, \"runtime\", None)", source)
+        
+        # Verify it checks both K and V storage
+        self.assertIn("retained_dense_k", source)
+        self.assertIn("retained_dense_v", source)
+
 
 class TestMemoryMatrixJSONParser(unittest.TestCase):
     """Test that the memory matrix reader uses the output file correctly."""
 
     def test_reads_from_output_file(self):
         """_measure_mode must read JSON from the --output file, not stdout."""
-        import json as _json
-        import tempfile as _tempfile
 
         # We verify the logic by checking that the helper now uses --output.
         # Since we cannot run the full matrix (requires model), we inspect

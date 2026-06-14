@@ -35,6 +35,7 @@ class KernelReport:
     required_metal_tests: List[str] = field(default_factory=list)
     metal_tests_present: List[str] = field(default_factory=list)
     metal_tests_passed: List[str] = field(default_factory=list)
+    metal_tests_skipped: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
     @classmethod
@@ -52,6 +53,7 @@ class KernelReport:
             required_metal_tests=list(data.get("required_metal_tests", [])),
             metal_tests_present=list(data.get("metal_tests_present", [])),
             metal_tests_passed=list(data.get("metal_tests_passed", [])),
+            metal_tests_skipped=list(data.get("metal_tests_skipped", [])),
             notes=list(data.get("notes", [])),
         )
 
@@ -192,6 +194,9 @@ class SpeedReport:
     min_ratio_at_4096_plus: Optional[float] = None
     max_ratio_at_4096_plus: Optional[float] = None
     median_ratio_at_8192_plus: Optional[float] = None
+    execution_mode: Optional[str] = None
+    fallback_calls: int = 0
+    raw_timing_hash: str = ""
     notes: List[str] = field(default_factory=list)
 
     @classmethod
@@ -208,6 +213,9 @@ class SpeedReport:
             min_ratio_at_4096_plus=data.get("min_ratio_at_4096_plus"),
             max_ratio_at_4096_plus=data.get("max_ratio_at_4096_plus"),
             median_ratio_at_8192_plus=data.get("median_ratio_at_8192_plus"),
+            execution_mode=data.get("execution_mode"),
+            fallback_calls=int(data.get("fallback_calls", 0)),
+            raw_timing_hash=data.get("raw_timing_hash", ""),
             notes=list(data.get("notes", [])),
         )
 
@@ -292,6 +300,7 @@ class BenchmarkProvenance:
     decode_token_count: int = 0
     qjl_enabled: bool = False
     metal_kernel_source_hash: str = ""
+    evidence_kind: str = "experimental"  # "experimental" | "synthetic_dry_run"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BenchmarkProvenance":
@@ -325,6 +334,7 @@ class BenchmarkProvenance:
             decode_token_count=int(data.get("decode_token_count", 0)),
             qjl_enabled=bool(data.get("qjl_enabled", False)),
             metal_kernel_source_hash=data.get("metal_kernel_source_hash", ""),
+            evidence_kind=data.get("evidence_kind", "experimental"),
         )
 
 

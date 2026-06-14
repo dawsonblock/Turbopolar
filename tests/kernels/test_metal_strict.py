@@ -162,8 +162,8 @@ class TestMetalStrictPagedAttention:
                 f"Expected {expected_page_count} page traces, got {len(trace.get('page_traces', []))}"
             )
         for pt in trace.get("page_traces", []):
-            assert pt["metal_used"] is True, f"Page trace reported metal_used=False"
-            assert pt["fallback_used"] is False, f"Page trace reported fallback_used=True"
+            assert pt["metal_used"] is True, "Page trace reported metal_used=False"
+            assert pt["fallback_used"] is False, "Page trace reported fallback_used=True"
         return out, trace
 
     def test_strict_multiple_blocks_one_page(self):

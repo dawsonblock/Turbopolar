@@ -22,10 +22,12 @@ class TurboPolarLlamaAdapter:
     def __init__(
         self,
         turbo_config: Optional[TurboPolarConfig] = None,
+        experiment_id: str = "",
     ):
         if turbo_config is None:
             turbo_config = TurboPolarConfig()
         self.turbo_config = turbo_config
+        self.experiment_id = experiment_id
         self._installed = False
         self._model: Optional[Any] = None
         self._original_attentions: Dict[int, Any] = {}
@@ -89,6 +91,7 @@ class TurboPolarLlamaAdapter:
                     original_attention=attention,
                     turbo_config=self.turbo_config,
                     layer_index=i,
+                    experiment_id=self.experiment_id,
                 )
                 if hasattr(layer, "attention"):
                     layer.attention = wrapped

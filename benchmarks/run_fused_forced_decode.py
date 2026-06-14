@@ -339,8 +339,8 @@ def _compute_aggregate(
     candidate_mean_nll = float(np.mean(candidate_nll_all)) if candidate_nll_all else 0.0
     dense_ppl = float(np.exp(dense_mean_nll))
     candidate_ppl = float(np.exp(candidate_mean_nll))
-    abs_ppl_delta = candidate_ppl - dense_ppl
-    rel_ppl_delta = (candidate_ppl / dense_ppl - 1.0) if dense_ppl > 0 else 0.0
+    abs_ppl_delta = abs(candidate_ppl - dense_ppl)
+    rel_ppl_delta = abs(candidate_ppl / dense_ppl - 1.0) if dense_ppl > 0 else 0.0
 
     total_online = sum(r.kernel_stats.get("online_attention_calls", 0) for r in results)
     total_dense_tail = sum(r.kernel_stats.get("dense_tail_calls", 0) for r in results)
@@ -357,6 +357,32 @@ def _compute_aggregate(
     total_tail_fallbacks = sum(
         r.kernel_stats.get("dense_tail_fallbacks", 0) for r in results
     )
+    total_full_fallbacks = sum(
+        r.kernel_stats.get("full_attention_fallbacks", 0) for r in results
+    )
+    
+    # Extract fallback reasons from execution traces
+    fallback_reasons = []
+    for r in results:
+        for trace in r.execution_traces:
+            for page_trace in trace.page_traces:
+                if page_trace.fallback_used and page_trace.fallback_reason:
+                    fallback_reasons.append({
+                        "layer": page_trace.layer_index,
+                        "decode_step": page_trace.decode_step,
+                        "operation": page_trace.operation,
+                        "page_index": page_trace.page_index,
+                        "reason": page_trace.fallback_reason,
+                    })
+            if trace.dense_tail_trace and trace.dense_tail_trace.fallback_used:
+                if trace.dense_tail_trace.fallback_reason:
+                    fallback_reasons.append({
+                        "layer": trace.dense_tail_trace.layer_index,
+                        "decode_step": trace.dense_tail_trace.decode_step,
+                        "operation": trace.dense_tail_trace.operation,
+                        "page_index": None,
+                        "reason": trace.dense_tail_trace.fallback_reason,
+                    })
     total_full_fallbacks = sum(
         r.kernel_stats.get("full_attention_fallbacks", 0) for r in results
     )
@@ -451,7 +477,7 @@ def _compute_aggregate(
         compressed_page_fallback_calls=total_page_fallbacks,
         dense_tail_fallback_calls=total_tail_fallbacks,
         full_attention_fallback_calls=total_full_fallbacks,
-        fallback_reasons=[],
+        fallback_reasons=fallback_reasons,
         numerical_failure_reasons=numerical_failures,
         dense_perplexity=dense_ppl,
         candidate_perplexity=candidate_ppl,

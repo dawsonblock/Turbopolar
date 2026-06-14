@@ -375,6 +375,7 @@ def make_turbo_caches(
     use_qjl: bool = False,
     execution_mode: Optional[ExecutionMode] = None,
     trace_validation_mode: Optional[TraceValidationMode] = None,
+    experiment_id: str = "",
 ) -> List[TurboPolarFastCache]:
     """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
     if head_dim != 128:
@@ -395,5 +396,5 @@ def make_turbo_caches(
         execution_mode=execution_mode if execution_mode is not None else ExecutionMode.DEVELOPMENT_AUTO,
         trace_validation_mode=trace_validation_mode if trace_validation_mode is not None else TraceValidationMode.SYNCHRONOUS_EVIDENCE,
     )
-    shared_collector = ExecutionTraceCollector()
+    shared_collector = ExecutionTraceCollector(experiment_id=experiment_id)
     return [TurboPolarFastCache(config, trace_collector=shared_collector) for _ in range(num_layers)]

@@ -74,6 +74,12 @@ class ExecutionTraceCollector:
 
     _traces: List[AttentionExecutionTrace] = field(default_factory=list)
     _provisional: List[AttentionExecutionTrace] = field(default_factory=list)
+    experiment_id: str = ""
+
+    def __post_init__(self):
+        # Initialize experiment_id if not provided
+        if not hasattr(self, 'experiment_id'):
+            self.experiment_id = ""
 
     def record(self, trace: AttentionExecutionTrace) -> None:
         self._traces.append(trace)

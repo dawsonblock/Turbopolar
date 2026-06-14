@@ -1,8 +1,8 @@
 # TurboPolar Development Status
 
-**Branch:** `main`  
+**Branch:** `repair/r8-strict-evidence`  
 **Version:** `0.3.0.dev0`  
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-13
 
 ## Status summary
 
@@ -17,6 +17,25 @@ evidence fields. However, real-model long-context, speed, memory, and
 comparative-value evidence remains incomplete. Native Apple Silicon benchmark
 artifacts are still required to prove the quantitative thresholds in
 `rfsn_v11/promotion/gate.py`.
+
+**Recent improvements (repair-r8-strict-evidence):**
+
+- Memory worker now correctly measures baseline, model-load, prefill, and decode peak memory separately
+- Dense-history audit properly checks runtime partial buffers instead of non-existent storage attributes  
+- Fallback statistics are read from singleton bridge statistics once
+- Cartesian cache has MLX-LM-compatible `update_and_fetch()` interface with comprehensive tests
+- Cartesian baseline correctly compares both candidates against dense (not Turbo-vs-Cartesian)
+- Fused perplexity delta now uses absolute value to prevent bypass via negative differences
+- Experiment IDs are propagated through adapter → attention → cache → trace collector
+- Fallback reasons are extracted from execution traces and included in reports
+- Promotion gate validates trace artifact path and file existence
+- Provenance hash includes execution mode, trace mode, page capacity, Python bindings, and storage-layout code
+- Evidence kind field distinguishes "experimental" from "synthetic_dry_run"
+- SpeedReport includes execution_mode, fallback_calls, and raw_timing_hash fields
+- Promotion gate requires strict execution and zero fallbacks in speed evidence
+- Promotion gate requires 16K context coverage for speed and baseline evidence
+- Native test validation includes skipped test tracking and exact test ID verification
+
 Promotion is blocked until reproducible artifacts independently prove:
 
 1. **Correctness:** fused compressed attention produces acceptably close logits to dense attention during actual autoregressive decode.

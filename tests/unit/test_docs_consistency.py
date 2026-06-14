@@ -4,7 +4,6 @@ Verify that README, STATUS, and code agree on promotion state, supported
 configuration, and required contexts.
 """
 
-import ast
 import pathlib
 
 from rfsn_v11.candidates.turbo_polar_config import validate_supported_configuration, TurboPolarConfig

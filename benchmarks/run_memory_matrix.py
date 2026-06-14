@@ -130,7 +130,10 @@ def main():
             "logical_kv_ratio": logical_kv_ratio,
             "persistent_storage_ratio": persistent_storage_ratio,
             "peak_device_memory_ratio": peak_device_memory_ratio,
-            "hidden_dense_cache_detected": turbo.get("retained_dense_k_history", False),
+            "hidden_dense_cache_detected": (
+                turbo.get("retained_dense_k_history", False) or
+                turbo.get("retained_dense_v_history", False)
+            ),
             "fallback_count": turbo.get("fallback_count", 0),
         }
         records.append(record)

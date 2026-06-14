@@ -7,10 +7,8 @@ import pytest
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
-from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 
 
 def _make_config():

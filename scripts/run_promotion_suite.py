@@ -697,6 +697,7 @@ def _synthetic_evidence() -> PromotionEvidence:
             required_metal_tests=list(REQUIRED_METAL_TESTS),
             metal_tests_present=list(REQUIRED_METAL_TESTS),
             metal_tests_passed=list(REQUIRED_METAL_TESTS),
+            metal_tests_skipped=[],
         ),
         teacher_forced_report=TeacherForcedReport(
             model="dry-run/model",
@@ -736,6 +737,8 @@ def _synthetic_evidence() -> PromotionEvidence:
             full_attention_fallback_calls=0,
             fallback_reasons=[],
             actual_fused_positions=128,
+            trace_artifact_path="dry_run_trace.json",
+            trace_artifact_hash="dry_run_hash",
         ),
         speed_report=SpeedReport(
             model="dry-run/model",
@@ -745,6 +748,9 @@ def _synthetic_evidence() -> PromotionEvidence:
             min_ratio_at_4096_plus=0.98,
             max_ratio_at_4096_plus=1.10,
             median_ratio_at_8192_plus=1.05,
+            execution_mode="metal_strict",
+            fallback_calls=0,
+            raw_timing_hash="dry_run_hash",
         ),
         memory_report=MemoryReport(
             contexts_evaluated=required_contexts,
@@ -768,6 +774,7 @@ def _synthetic_evidence() -> PromotionEvidence:
             model_revision="dry-run",
             tokenizer_revision="dry-run",
             turbopolar_config_hash="dry-run",
+            evidence_kind="synthetic_dry_run",
         ),
     )
 

@@ -1,7 +1,7 @@
 """Typed teacher-forced quality evidence schema for TurboPolar promotion."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass

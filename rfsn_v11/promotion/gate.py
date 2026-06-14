@@ -4,6 +4,7 @@ No other component may declare promotion. All required evidence must be present
 and passing; missing evidence results in INCOMPLETE/FAILED.
 """
 
+from pathlib import Path
 from typing import List
 
 from rfsn_v11.promotion.schema import (
@@ -19,6 +20,7 @@ class PromotionGate:
 
     # Locked until the strict no-fallback Metal suite passes end-to-end.
     # A correct fallback result does not prove the Metal implementation works.
+    # This must remain True until all evidence systems are scientifically trustworthy.
     PROMOTION_LOCKED = True
 
     # Correctness thresholds
@@ -106,6 +108,16 @@ class PromotionGate:
         failed = self.REQUIRED_NATIVE_METAL_TESTS - passed
         if failed:
             reasons.append(f"Required Metal tests did not pass: {sorted(failed)}")
+        
+        # Validate exact native test node IDs and skipped status
+        kr = evidence.kernel_report
+        if kr.metal_tests_skipped:
+            reasons.append(f"Native Metal tests were skipped: {sorted(kr.metal_tests_skipped)}")
+        
+        # Ensure all required test IDs are present
+        missing_ids = self.REQUIRED_NATIVE_METAL_TESTS - set(kr.metal_tests_present)
+        if missing_ids:
+            reasons.append(f"Native Metal test IDs missing from report: {sorted(missing_ids)}")
 
         # Teacher-forced quality
         tf = evidence.teacher_forced_report
@@ -138,7 +150,7 @@ class PromotionGate:
             or tf.mean_perplexity_delta > self.MAX_PPL_DELTA
         ):
             reasons.append(
-                f"Teacher-forced perplexity delta {tf.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
+                f"Teacher-forced absolute perplexity delta {tf.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
             )
         if tf.any_nans_or_infs:
             reasons.append("Teacher-forced run contained NaNs or infinities.")
@@ -174,10 +186,18 @@ class PromotionGate:
             or fd.mean_perplexity_delta > self.MAX_PPL_DELTA
         ):
             reasons.append(
-                f"Fused decode perplexity delta {fd.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
+                f"Fused decode absolute perplexity delta {fd.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
             )
         if fd.any_nans_or_infs:
             reasons.append("Fused decode run contained NaNs or infinities.")
+
+        # Trace artifact validation
+        if not fd.trace_artifact_path:
+            reasons.append("Fused decode trace artifact path is missing.")
+        elif not Path(fd.trace_artifact_path).exists():
+            reasons.append(f"Fused decode trace artifact file does not exist: {fd.trace_artifact_path}")
+        if not fd.trace_artifact_hash:
+            reasons.append("Fused decode trace artifact hash is missing.")
 
         # Strict Metal execution verification.
         if fd.execution_mode is None:
@@ -236,6 +256,30 @@ class PromotionGate:
             reasons.append(
                 f"Speed ratio at 4096+ minimum {sr.min_ratio_at_4096_plus} < {self.MAX_REGRESSION_AT_4096_PLUS}"
             )
+        
+        # Require strict execution and zero fallbacks in speed evidence
+        if sr.execution_mode is None:
+            reasons.append("Speed evidence execution_mode is missing.")
+        elif sr.execution_mode != "metal_strict":
+            reasons.append(
+                f"Speed evidence execution_mode='{sr.execution_mode}' != 'metal_strict'; "
+                "only strict Metal runs are eligible for promotion."
+            )
+        if sr.fallback_calls != 0:
+            reasons.append(
+                f"Speed evidence fallback_calls={sr.fallback_calls}; fallback occurred in strict mode."
+            )
+        if not sr.raw_timing_hash:
+            reasons.append("Speed evidence raw_timing_hash is missing.")
+        
+        # Require baseline contexts through 16K
+        if 16384 not in sr.contexts_evaluated:
+            reasons.append("Speed evidence missing required 16K context length.")
+        
+        # Baseline comparison must include 16K
+        bc = evidence.baseline_comparison_report
+        if bc and 16384 not in bc.contexts_evaluated:
+            reasons.append("Baseline comparison missing required 16K context length.")
         if (
             sr.max_ratio_at_4096_plus is None
             or sr.max_ratio_at_4096_plus < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT

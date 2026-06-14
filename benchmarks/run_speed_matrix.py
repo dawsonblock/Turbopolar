@@ -218,7 +218,7 @@ def benchmark_length_forced(
 
     The ``turbo_first`` flag alternates which path is measured first.
     """
-    from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
+    from rfsn_v11.kernels.turbo_polar.execution import TraceValidationMode
 
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
