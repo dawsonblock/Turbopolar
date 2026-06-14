@@ -326,7 +326,7 @@ class TestTraceArtifactParsing:
 
     def test_negative_page_index_fails(self):
         """Negative page_index must fail."""
-        msg = "page_index cannot be negative"
+        msg = "field 'page_index' cannot be negative"
         with pytest.raises(TraceArtifactError, match=msg):
             parse_trace_artifact([{
                 "experiment_id": "test",
@@ -720,7 +720,11 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
-                cache_tokens_after=2048,  # 2048/64=32 blocks, (32+15)//16=2 pages
+                cache_tokens_after=2048,
+                cache_tokens_before=2047,
+                decode_ordinal=0,
+                cache_offset_before=2047,
+                partial_tail_length=0,  # 2048/64=32 blocks, (32+15)//16=2 pages
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -1010,16 +1014,22 @@ class TestTraceTopologyValidation:
                 experiment_id="test",
                 context_length=2048,
                 fixture_id="fixture-001",
-                decode_step=0,
+                decode_step=2048,
+                decode_ordinal=0,
+                cache_offset_before=2048,
+                cache_tokens_before=2048,
+                cache_tokens_after=2048,  # 2048/64=32 blocks, (32+15)//16=2 pages
+                partial_tail_length=0,
                 layer_index=0,
                 expected_page_count=2,
-                cache_tokens_after=2048,  # 2048/64=32 blocks, (32+15)//16=2 pages
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
                         context_length=2048,
                         fixture_id="fixture-001",
-                        decode_step=0,
+                        decode_step=2048,
+                        decode_ordinal=0,
+                        cache_offset_before=2048,
                         layer_index=0,
                         operation="compressed_page",
                         page_index=0,
@@ -1030,16 +1040,16 @@ class TestTraceTopologyValidation:
                         fallback_used=False,
                         fallback_reason=None,
                         output_evaluated=True,
-                        expected_tokens=128,
-                        processed_tokens=128,
-                        decode_ordinal=0,
-                        cache_offset_before=0,
+                        expected_tokens=1024,
+                        processed_tokens=1024,
                     ),
                     ParsedOperationTrace(
                         experiment_id="test",
                         context_length=2048,
                         fixture_id="fixture-001",
-                        decode_step=0,
+                        decode_step=2048,
+                        decode_ordinal=0,
+                        cache_offset_before=2048,
                         layer_index=0,
                         operation="compressed_page",
                         page_index=1,
@@ -1050,10 +1060,8 @@ class TestTraceTopologyValidation:
                         fallback_used=False,
                         fallback_reason=None,
                         output_evaluated=True,
-                        expected_tokens=128,
-                        processed_tokens=128,
-                        decode_ordinal=0,
-                        cache_offset_before=0,
+                        expected_tokens=1024,
+                        processed_tokens=1024,
                     ),
                 ),
                 dense_tail_operation=None,
