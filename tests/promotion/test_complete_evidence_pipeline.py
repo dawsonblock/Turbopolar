@@ -127,13 +127,18 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                             f"trial_{trial_idx}",
                         ),
                         "execution_mode": (
-                            "metal_strict" if mode == "turbo" else "reference"
+                            "metal_strict" if mode == "turbo"
+                            else "reference"
                         ),
                         "prefill_seconds": 0.1,
                         "token_latencies_ms": [1.0] * 128,
                         "first_token_ms": 1.0,
-                        "throughput_tps": 1000.0 if mode == "turbo" else 800.0,
-                        "compressed_page_dispatches": 10 if mode == "turbo" else 0,
+                        "throughput_tps": (
+                            1000.0 if mode == "turbo" else 800.0
+                        ),
+                        "compressed_page_dispatches": (
+                            10 if mode == "turbo" else 0
+                        ),
                         "dense_tail_dispatches": 1 if mode == "turbo" else 0,
                         "fallback_calls": 0,
                     }
@@ -147,7 +152,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
 
     def _create_full_evidence(self) -> PromotionEvidence:
         """Create complete promotion evidence with real artifacts."""
-        teacher_path, teacher_hash = self._create_teacher_metrics_artifact()
+        teacher_path, teacher_hash = (
+            self._create_teacher_metrics_artifact()
+        )
         trace_path, trace_hash = self._create_fused_trace_artifact()
         speed_path, speed_hash = self._create_speed_trials_artifact()
 
@@ -182,7 +189,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 argmax_agreement=1.0,
                 mean_perplexity_delta=0.01,
                 any_nans_or_infs=False,
-                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                contexts_evaluated=list(
+                    PromotionGate.REQUIRED_CONTEXTS
+                ),
                 execution_mode="metal_strict",
                 model_layer_count=32,
                 compressed_page_metal_calls=10,
@@ -222,7 +231,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
             baseline_comparison_report=BaselineComparisonReport(
                 cartesian_int8_baseline_implemented=True,
                 turbo_polar_wins_on_speed=True,
-                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                contexts_evaluated=list(
+                    PromotionGate.REQUIRED_CONTEXTS
+                ),
             ),
             provenance=BenchmarkProvenance(
                 git_tree_state=GitTreeState.CLEAN,
@@ -238,7 +249,7 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
 
     def test_complete_evidence_returns_review_required_when_locked(self):
         """Complete valid evidence should return REVIEW_REQUIRED when promotion is locked.
-        
+
         Note: This test demonstrates that the gate correctly validates artifacts.
         Creating truly valid artifacts requires full benchmark runs, so this test
         primarily verifies the lock behavior and artifact validation pipeline.
