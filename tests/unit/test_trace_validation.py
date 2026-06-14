@@ -696,9 +696,14 @@ class TestTraceTopologyValidation:
                 expected_page_count=2,
                 page_operations=tuple(),
                 dense_tail_operation=None,
+                decode_ordinal=0,
+                cache_offset_before=0,
+                cache_tokens_before=0,
+                cache_tokens_after=0,
+                partial_tail_length=0,
             )
         ]
-        msg = "missing trace for decode_step"
+        msg = "missing trace for decode_ordinal"
         with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
