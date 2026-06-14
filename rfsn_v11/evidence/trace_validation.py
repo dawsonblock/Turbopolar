@@ -550,6 +550,16 @@ def validate_trace_topology(
             continue
 
         context_traces = topology_stats["traces_by_context"][context]
+        
+        # Check for duplicate (context, decode_ordinal, layer_index) traces
+        trace_keys = [(t.context_length, t.decode_ordinal, t.layer_index) for t in context_traces]
+        if len(trace_keys) != len(set(trace_keys)):
+            duplicates = [k for k in trace_keys if trace_keys.count(k) > 1]
+            failures.append(
+                f"Context {context}: duplicate attention traces for same identity: {set(duplicates)}"
+            )
+        
+        # Build trace index after duplicate check
         trace_index = {
             (t.decode_ordinal, t.layer_index): t for t in context_traces
         }
@@ -563,15 +573,38 @@ def validate_trace_topology(
                         f"Context {context}: missing trace for decode_ordinal={decode_ordinal}, layer_index={layer_index}"
                     )
 
+        # Require exact trace identity set equality - reject out-of-range traces
+        actual_keys = set(trace_index.keys())
+        expected_keys = {
+            (d, l)
+            for d in range(requested_positions_per_context)
+            for l in range(model_layer_count)
+        }
+        if actual_keys != expected_keys:
+            extra_keys = actual_keys - expected_keys
+            missing_keys = expected_keys - actual_keys
+            if extra_keys:
+                failures.append(
+                    f"Context {context}: out-of-range traces: {extra_keys} "
+                    f"(expected 0-{requested_positions_per_context-1} decode_ordinal, 0-{model_layer_count-1} layer_index)"
+                )
+            if missing_keys:
+                failures.append(
+                    f"Context {context}: missing traces: {missing_keys}"
+                )
+
         # Validate page indices and counts for each trace
         for trace in context_traces:
             page_indices = [op.page_index for op in trace.page_operations if op.page_index is not None]
             
-            # Check page count matches expected
-            if len(page_indices) != trace.expected_page_count:
+            # Derive expected page count from cache state, not artifact claim
+            BLOCK_SIZE = 64
+            expected_pages_from_cache = trace.cache_tokens_before // BLOCK_SIZE
+            if len(page_indices) != expected_pages_from_cache:
                 failures.append(
                     f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}: "
-                    f"page count {len(page_indices)} != expected {trace.expected_page_count}"
+                    f"page count {len(page_indices)} != expected from cache state {expected_pages_from_cache} "
+                    f"(cache_tokens_before={trace.cache_tokens_before}, artifact claimed {trace.expected_page_count})"
                 )
 
             # Check for duplicate page indices
@@ -617,6 +650,82 @@ def validate_trace_topology(
                     if context not in topology_stats["fallback_operations_by_context"]:
                         topology_stats["fallback_operations_by_context"][context] = 0
                     topology_stats["fallback_operations_by_context"][context] += 1
+
+                # Cross-check: operation context_length matches parent
+                if op.context_length != trace.context_length:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation context_length {op.context_length} != parent {trace.context_length}"
+                    )
+
+                # Cross-check: operation fixture_id matches parent
+                if op.fixture_id != trace.fixture_id:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation fixture_id {op.fixture_id} != parent {trace.fixture_id}"
+                    )
+
+                # Cross-check: operation layer_index matches parent
+                if op.layer_index != trace.layer_index:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation layer_index {op.layer_index} != parent {trace.layer_index}"
+                    )
+
+                # Cross-check: operation decode_step matches parent
+                if op.decode_step != trace.decode_step:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation decode_step {op.decode_step} != parent {trace.decode_step}"
+                    )
+
+                # Cross-check: operation decode_ordinal matches parent
+                if op.decode_ordinal != trace.decode_ordinal:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation decode_ordinal {op.decode_ordinal} != parent {trace.decode_ordinal}"
+                    )
+
+                # Cross-check: operation cache_offset_before matches parent
+                if op.cache_offset_before != trace.cache_offset_before:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, page={op.page_index}: "
+                        f"operation cache_offset_before {op.cache_offset_before} != parent {trace.cache_offset_before}"
+                    )
+
+            # Cross-check dense tail operation if present
+            if trace.dense_tail_operation:
+                op = trace.dense_tail_operation
+                if op.context_length != trace.context_length:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation context_length {op.context_length} != parent {trace.context_length}"
+                    )
+                if op.fixture_id != trace.fixture_id:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation fixture_id {op.fixture_id} != parent {trace.fixture_id}"
+                    )
+                if op.layer_index != trace.layer_index:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation layer_index {op.layer_index} != parent {trace.layer_index}"
+                    )
+                if op.decode_step != trace.decode_step:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation decode_step {op.decode_step} != parent {trace.decode_step}"
+                    )
+                if op.decode_ordinal != trace.decode_ordinal:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation decode_ordinal {op.decode_ordinal} != parent {trace.decode_ordinal}"
+                    )
+                if op.cache_offset_before != trace.cache_offset_before:
+                    failures.append(
+                        f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, dense_tail: "
+                        f"operation cache_offset_before {op.cache_offset_before} != parent {trace.cache_offset_before}"
+                    )
                     failures.append(
                         f"Context {context}, step={trace.decode_ordinal}, layer={trace.layer_index}, "
                         f"page={op.page_index}: fallback used: {op.fallback_reason}"

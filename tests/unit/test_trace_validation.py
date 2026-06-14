@@ -722,6 +722,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
+                cache_tokens_before=128,  # Should expect 2 pages (128 / 64 = 2)
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -745,7 +746,7 @@ class TestTraceTopologyValidation:
                 dense_tail_operation=None,
             )
         ]
-        msg = "page count 1 != expected 2"
+        msg = "page count 1 != expected from cache state 2"
         with pytest.raises(TraceTopologyError, match=msg):
             validate_trace_topology(
                 traces,
@@ -764,6 +765,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
+                cache_tokens_before=128,
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -782,6 +784,8 @@ class TestTraceTopologyValidation:
                         output_evaluated=True,
                         expected_tokens=128,
                         processed_tokens=128,
+                        decode_ordinal=0,
+                        cache_offset_before=0,
                     ),
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -800,6 +804,8 @@ class TestTraceTopologyValidation:
                         output_evaluated=True,
                         expected_tokens=128,
                         processed_tokens=128,
+                        decode_ordinal=0,
+                        cache_offset_before=0,
                     ),
                 ),
                 dense_tail_operation=None,
@@ -883,6 +889,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=1,
+                cache_tokens_before=64,
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -901,12 +908,14 @@ class TestTraceTopologyValidation:
                         output_evaluated=True,
                         expected_tokens=128,
                         processed_tokens=128,
+                        decode_ordinal=0,
+                        cache_offset_before=0,
                     ),
                 ),
                 dense_tail_operation=None,
             )
         ]
-        with pytest.raises(TraceTopologyError, match="fallback used"):
+        with pytest.raises(TraceTopologyError, match="Metal not executed"):
             validate_trace_topology(
                 traces,
                 model_layer_count=1,
@@ -1006,6 +1015,7 @@ class TestTraceTopologyValidation:
                 decode_step=0,
                 layer_index=0,
                 expected_page_count=2,
+                cache_tokens_before=128,  # 128 / 64 = 2 pages
                 page_operations=(
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -1024,6 +1034,8 @@ class TestTraceTopologyValidation:
                         output_evaluated=True,
                         expected_tokens=128,
                         processed_tokens=128,
+                        decode_ordinal=0,
+                        cache_offset_before=0,
                     ),
                     ParsedOperationTrace(
                         experiment_id="test",
@@ -1042,6 +1054,8 @@ class TestTraceTopologyValidation:
                         output_evaluated=True,
                         expected_tokens=128,
                         processed_tokens=128,
+                        decode_ordinal=0,
+                        cache_offset_before=0,
                     ),
                 ),
                 dense_tail_operation=None,
