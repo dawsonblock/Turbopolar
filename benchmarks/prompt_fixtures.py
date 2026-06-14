@@ -20,6 +20,8 @@ CATEGORY_LENGTHS: List[Tuple[str, int]] = [
     ("long", 1024),
     ("stress", 2048),
     ("stress", 4096),
+    ("stress", 8192),  # P0: Add for 8K context + 129 tokens
+    ("stress", 16384),  # P0: Add for 16K context + 129 tokens
 ]
 
 
