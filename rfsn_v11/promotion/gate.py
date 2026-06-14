@@ -25,11 +25,34 @@ from rfsn_v11.promotion.schema import (
 
 
 def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[Dict[str, float]]:
-    """Recompute teacher-forced summary from position-level metrics."""
+    """Recompute teacher-forced summary from position-level metrics.
+    
+    Handles two formats:
+    1. Legacy format: {"positions": [...]}
+    2. TeacherForcedEvidence format: {"context_results": {context: {"positions": [...]}}}
+    """
     try:
-        positions = raw_metrics.get("positions", [])
-        if not positions:
-            return None
+        # Try TeacherForcedEvidence format first
+        if "context_results" in raw_metrics:
+            context_results = raw_metrics.get("context_results", {})
+            if not context_results:
+                return None
+            
+            positions = []
+            for context, result in context_results.items():
+                if not isinstance(result, dict):
+                    continue
+                context_positions = result.get("positions", [])
+                if isinstance(context_positions, list):
+                    positions.extend(context_positions)
+            
+            if not positions:
+                return None
+        else:
+            # Try legacy format
+            positions = raw_metrics.get("positions", [])
+            if not positions:
+                return None
         
         cosines = []
         top5_overlaps = []
@@ -55,7 +78,7 @@ def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[D
             if argmax is not None:
                 argmax_agreements.append(1 if argmax else 0)
             
-            ppl = pos.get("perplexity_delta")
+            ppl = pos.get("perplexity_delta") or pos.get("kl_divergence")
             if ppl is not None:
                 ppl_deltas.append(abs(ppl))
             
@@ -90,8 +113,81 @@ def _recompute_teacher_forced_summary(raw_metrics: Dict[str, Any]) -> Optional[D
 
 
 def _recompute_speed_ratios(raw_timing: Dict[str, Any]) -> Optional[Dict[str, float]]:
-    """Recompute speed ratios from raw timing trials."""
+    """Recompute speed ratios from raw timing trials.
+    
+    Handles two formats:
+    1. Legacy format: {"trials": {"context": [{"latencies": [], "turbo_time_ms": ..., "baseline_time_ms": ...}]}}
+    2. Benchmark format: {"trial_results": [{"context_length": ..., "mode": "dense/turbo", "per_token_ms": [...], ...}]}
+    """
     try:
+        # Try benchmark format first (run_speed_matrix.py output)
+        if "trial_results" in raw_timing:
+            trial_results = raw_timing.get("trial_results", [])
+            if not trial_results:
+                return None
+            
+            context_ratios_4096_plus = []
+            context_ratios_8192_plus = []
+            
+            # Group trials by context and mode
+            context_trials: Dict[int, Dict[str, List[Dict]]] = {}
+            for trial in trial_results:
+                if not isinstance(trial, dict):
+                    continue
+                context = trial.get("context_length")
+                mode = trial.get("mode")
+                if context is None or mode is None:
+                    continue
+                
+                if context not in context_trials:
+                    context_trials[context] = {"dense": [], "turbo": []}
+                context_trials[context][mode].append(trial)
+            
+            # Compute ratios for each context
+            for context, modes in context_trials.items():
+                dense_trials = modes.get("dense", [])
+                turbo_trials = modes.get("turbo", [])
+                
+                if not dense_trials or not turbo_trials:
+                    continue
+                
+                # Average latencies across trials
+                dense_avg = sum(
+                    sum(t.get("per_token_ms", [])) / len(t.get("per_token_ms", []))
+                    for t in dense_trials if t.get("per_token_ms")
+                ) / len(dense_trials)
+                
+                turbo_avg = sum(
+                    sum(t.get("per_token_ms", [])) / len(t.get("per_token_ms", []))
+                    for t in turbo_trials if t.get("per_token_ms")
+                ) / len(turbo_trials)
+                
+                if turbo_avg > 0:
+                    ratio = dense_avg / turbo_avg
+                    
+                    if context >= 4096:
+                        context_ratios_4096_plus.append(ratio)
+                    if context >= 8192:
+                        context_ratios_8192_plus.append(ratio)
+            
+            if not context_ratios_4096_plus:
+                return None
+            
+            min_ratio_4096_plus = min(context_ratios_4096_plus)
+            max_ratio_4096_plus = max(context_ratios_4096_plus)
+            
+            if context_ratios_8192_plus:
+                median_ratio_8192_plus = sorted(context_ratios_8192_plus)[len(context_ratios_8192_plus) // 2]
+            else:
+                median_ratio_8192_plus = 0
+            
+            return {
+                "min_ratio_4096_plus": min_ratio_4096_plus,
+                "max_ratio_4096_plus": max_ratio_4096_plus,
+                "median_ratio_8192_plus": median_ratio_8192_plus,
+            }
+        
+        # Try legacy format
         trials = raw_timing.get("trials", {})
         if not trials:
             return None
@@ -291,7 +387,12 @@ class PromotionGate:
                 else:
                     # Recompute summary from position records
                     recomputed = _recompute_teacher_forced_summary(raw_metrics)
-                    if recomputed is not None:
+                    if recomputed is None:
+                        reasons.append(
+                            "Teacher-forced raw metrics could not be recomputed; "
+                            "expected positions array or context_results with nested positions"
+                        )
+                    else:
                         # Compare with report values
                         if abs(recomputed["mean_cosine"] - (tf.mean_logit_cosine or 0)) > 0.001:
                             reasons.append(
@@ -578,27 +679,79 @@ class PromotionGate:
                     reasons.append("Speed raw timing must be a JSON object")
                 else:
                     # P1-26: Require five trials and 128 latency values per context
-                    trials = raw_timing.get("trials", {})
-                    for context in self.REQUIRED_CONTEXTS:
-                        if context not in trials:
-                            reasons.append(f"Speed raw timing missing context {context}")
-                            continue
-                        context_trials = trials[context]
-                        if not isinstance(context_trials, list) or len(context_trials) < self.MIN_TRIALS_PER_CONTEXT:
-                            reasons.append(
-                                f"Context {context}: has {len(context_trials) if isinstance(context_trials, list) else 0} trials "
-                                f"< required {self.MIN_TRIALS_PER_CONTEXT}"
-                            )
-                        for trial_idx, trial in enumerate(context_trials):
-                            if not isinstance(trial, dict):
-                                reasons.append(f"Context {context} trial {trial_idx}: not a dict")
+                    # Handle both benchmark format (trial_results) and legacy format (trials)
+                    if "trial_results" in raw_timing:
+                        # Benchmark format from run_speed_matrix.py
+                        trial_results = raw_timing.get("trial_results", [])
+                        if not isinstance(trial_results, list):
+                            reasons.append("Speed trial_results must be a list")
+                        else:
+                            # Group by context and mode
+                            context_mode_counts: Dict[int, Dict[str, int]] = {}
+                            for trial in trial_results:
+                                if not isinstance(trial, dict):
+                                    continue
+                                context = trial.get("context_length")
+                                mode = trial.get("mode")
+                                if context is None or mode is None:
+                                    continue
+                                
+                                if context not in context_mode_counts:
+                                    context_mode_counts[context] = {"dense": 0, "turbo": 0}
+                                context_mode_counts[context][mode] += 1
+                            
+                            # Validate trial counts
+                            for context in self.REQUIRED_CONTEXTS:
+                                if context not in context_mode_counts:
+                                    reasons.append(f"Speed raw timing missing context {context}")
+                                    continue
+                                
+                                dense_count = context_mode_counts[context].get("dense", 0)
+                                turbo_count = context_mode_counts[context].get("turbo", 0)
+                                
+                                if dense_count < self.MIN_TRIALS_PER_CONTEXT:
+                                    reasons.append(
+                                        f"Context {context}: has {dense_count} dense trials "
+                                        f"< required {self.MIN_TRIALS_PER_CONTEXT}"
+                                    )
+                                if turbo_count < self.MIN_TRIALS_PER_CONTEXT:
+                                    reasons.append(
+                                        f"Context {context}: has {turbo_count} turbo trials "
+                                        f"< required {self.MIN_TRIALS_PER_CONTEXT}"
+                                    )
+                                
+                                # Validate latency counts
+                                for trial in trial_results:
+                                    if trial.get("context_length") == context:
+                                        latencies = trial.get("per_token_ms", [])
+                                        if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
+                                            reasons.append(
+                                                f"Context {context} trial: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
+                                                f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                                            )
+                    else:
+                        # Legacy format
+                        trials = raw_timing.get("trials", {})
+                        for context in self.REQUIRED_CONTEXTS:
+                            if context not in trials:
+                                reasons.append(f"Speed raw timing missing context {context}")
                                 continue
-                            latencies = trial.get("latencies", [])
-                            if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
+                            context_trials = trials[context]
+                            if not isinstance(context_trials, list) or len(context_trials) < self.MIN_TRIALS_PER_CONTEXT:
                                 reasons.append(
-                                    f"Context {context} trial {trial_idx}: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
-                                    f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                                    f"Context {context}: has {len(context_trials) if isinstance(context_trials, list) else 0} trials "
+                                    f"< required {self.MIN_TRIALS_PER_CONTEXT}"
                                 )
+                            for trial_idx, trial in enumerate(context_trials):
+                                if not isinstance(trial, dict):
+                                    reasons.append(f"Context {context} trial {trial_idx}: not a dict")
+                                    continue
+                                latencies = trial.get("latencies", [])
+                                if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
+                                    reasons.append(
+                                        f"Context {context} trial {trial_idx}: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
+                                        f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
+                                    )
                     
                     # P1-25: Recompute speed ratios from raw timing
                     recomputed = _recompute_speed_ratios(raw_timing)
