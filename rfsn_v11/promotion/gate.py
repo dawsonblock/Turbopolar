@@ -47,6 +47,8 @@ def _recompute_teacher_forced_summary(
 
             positions = []
             total_positions = 0
+            prompt_perplexity_deltas = []
+            
             for prompt in prompts:
                 if not isinstance(prompt, dict):
                     continue
@@ -54,8 +56,17 @@ def _recompute_teacher_forced_summary(
                 if isinstance(prompt_positions, list):
                     positions.extend(prompt_positions)
                     total_positions += len(prompt_positions)
+                
+                # Collect prompt-level perplexity delta
+                ppl_delta = prompt.get("perplexity_delta")
+                if ppl_delta is not None:
+                    prompt_perplexity_deltas.append(ppl_delta)
 
             if not positions:
+                return None
+
+            # Require total_positions > 0
+            if total_positions == 0:
                 return None
 
             # Store total position count for validation
@@ -67,20 +78,28 @@ def _recompute_teacher_forced_summary(
                 return None
 
             positions = []
+            total_positions = 0
             for context, result in context_results.items():
                 if not isinstance(result, dict):
                     continue
                 context_positions = result.get("positions", [])
                 if isinstance(context_positions, list):
                     positions.extend(context_positions)
+                    total_positions += len(context_positions)
 
-            if not positions:
+            if not positions or total_positions == 0:
                 return None
+            
+            raw_metrics["_computed_total_positions"] = total_positions
         else:
             # Try legacy format
             positions = raw_metrics.get("positions", [])
             if not positions:
                 return None
+            total_positions = len(positions)
+            if total_positions == 0:
+                return None
+            raw_metrics["_computed_total_positions"] = total_positions
 
         cosines = []
         top5_overlaps = []
@@ -127,10 +146,11 @@ def _recompute_teacher_forced_summary(
         mean_top10 = sum(top10_overlaps) / len(top10_overlaps) if top10_overlaps else 0
         argmax_agreement = sum(argmax_agreements) / len(argmax_agreements) if argmax_agreements else 0
         
-        # Perplexity delta is not available at position level, only at prompt level
-        # Return None for position-level perplexity delta recomputation
-        # The gate should use the prompt-level perplexity_delta from the report instead
+        # Use prompt-level perplexity delta with normalized formula
+        # relative_delta = abs(candidate_perplexity / dense_perplexity - 1.0)
         mean_ppl_delta = None
+        if prompt_perplexity_deltas:
+            mean_ppl_delta = sum(prompt_perplexity_deltas) / len(prompt_perplexity_deltas)
         
         return {
             "mean_cosine": mean_cosine,
@@ -141,6 +161,7 @@ def _recompute_teacher_forced_summary(
             "argmax_agreement": argmax_agreement,
             "mean_ppl_delta": mean_ppl_delta,
             "any_nan_or_inf": any_nan_or_inf,
+            "total_positions": total_positions,
         }
     except (KeyError, TypeError, ZeroDivisionError):
         return None
@@ -574,10 +595,18 @@ class PromotionGate:
             # Fail if recomputation is impossible
             if recomputed is None:
                 reasons.append("Teacher-forced raw metrics recomputation failed - cannot verify summary fields.")
-
-            # Require nonzero total position count
-            if tf.total_positions == 0:
-                reasons.append("Teacher-forced total_positions is zero - no positions were evaluated.")
+            else:
+                # Validate recomputed total positions
+                recomputed_total = recomputed.get("total_positions", 0)
+                if recomputed_total == 0:
+                    reasons.append("Teacher-forced recomputed total_positions is zero - no positions were evaluated.")
+                
+                # Validate that report total matches recomputed total
+                if tf.total_positions != recomputed_total:
+                    reasons.append(
+                        f"Teacher-forced report total_positions ({tf.total_positions}) != "
+                        f"recomputed total_positions ({recomputed_total})"
+                    )
 
         # Fused decode quality
         fd = evidence.fused_decode_report
