@@ -724,12 +724,26 @@ def _build_provenance(
     output_dir: Path,
     config: TurboPolarConfig,
     token_fixtures: Optional[Path] = None,
+    model_revision: Optional[str] = None,
+    tokenizer_revision: Optional[str] = None,
 ) -> BenchmarkProvenance:
     prompt_suite = BENCHMARKS_DIR / "exact_token_fixtures.jsonl"
+    
+    # P0: Use provided revisions or default to unknown
+    # For promotion, these must be provided via command-line arguments
+    model_rev = model_revision if model_revision else "unknown"
+    tokenizer_rev = tokenizer_revision if tokenizer_revision else "unknown"
+    
+    # TODO: Implement automatic revision extraction:
+    # - If model is HF repo ID: use huggingface_hub to get commit SHA
+    # - If model is local path: use git to get commit SHA
+    # - Same for tokenizer
+    # This requires external dependencies and should be added as a separate task
+    
     return capture_provenance(
         model_repo_id=model,
-        model_revision="unknown",
-        tokenizer_revision="unknown",
+        model_revision=model_rev,
+        tokenizer_revision=tokenizer_rev,
         turbopolar_config=config,
         prompt_suite_path=prompt_suite,
         benchmark_command=" ".join(sys.argv),
@@ -881,6 +895,16 @@ def main():
         default=None,
         help="Path to exact token fixtures JSONL file (P1-28)",
     )
+    parser.add_argument(
+        "--model-revision",
+        default=None,
+        help="Immutable model revision (git commit SHA or HF commit SHA) - required for promotion",
+    )
+    parser.add_argument(
+        "--tokenizer-revision",
+        default=None,
+        help="Immutable tokenizer revision (git commit SHA or HF commit SHA) - required for promotion",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -948,7 +972,7 @@ def main():
         else:
             baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
-        provenance = _build_provenance(args.model, artifact_dir, config, args.token_fixtures)
+        provenance = _build_provenance(args.model, artifact_dir, config, args.token_fixtures, args.model_revision, args.tokenizer_revision)
 
         evidence = PromotionEvidence(
             kernel_report=kernel_report,
