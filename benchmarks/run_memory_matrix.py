@@ -47,13 +47,23 @@ def _measure_mode(
         raise RuntimeError(
             f"memory_worker failed for length={length} mode={mode}: {result.stderr}"
         )
-    # The worker prints the JSON result to stdout.
-    lines = [ln for ln in result.stdout.splitlines() if ln.strip().startswith("{")]
-    if not lines:
-        raise RuntimeError(
-            f"memory_worker produced no JSON for length={length} mode={mode}"
-        )
-    return json.loads(lines[-1])
+    # The worker prints the JSON result to stdout; try full output first.
+    stdout = result.stdout.strip()
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        pass
+    # Fallback: find the first line that looks like JSON object start.
+    for ln in stdout.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("{"):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+    raise RuntimeError(
+        f"memory_worker produced no valid JSON for length={length} mode={mode}"
+    )
 
 
 def main():

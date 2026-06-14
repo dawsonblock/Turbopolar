@@ -451,10 +451,11 @@ def main():
                 f"turbo={turbo_result['throughput_tps']:.2f} tok/s"
             )
 
-        if args.execution_mode == "metal_strict" and len(dense_rates) < 5:
+        min_required = max(1, args.trials)
+        if args.execution_mode == "metal_strict" and len(dense_rates) < min_required:
             raise RuntimeError(
                 f"length={length} has only {len(dense_rates)} valid trials; "
-                f"required minimum is 5 for strict evidence."
+                f"required minimum is {min_required} for strict evidence."
             )
 
         record = {

@@ -238,6 +238,45 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     )
 
 
+def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedReport:
+    """Quick-mode teacher-forced: skip very long contexts to keep runtime reasonable."""
+    _run_benchmark(
+        "run_dense_vs_turbopolar.py",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "teacher_forced"),
+        "--context-lengths",
+        "512",
+        "2048",
+        "4096",
+        "--max-tokens",
+        "4096",
+        "--num-decode",
+        "32",
+        "--skip-decode-speed",
+        timeout=1800,
+    )
+    report = _load_json(output_dir / "teacher_forced" / "report.json")
+    agg = report.get("aggregate", {})
+    return TeacherForcedReport(
+        model=model,
+        evaluated_contexts=list(report.get("evaluated_contexts", [])),
+        total_positions=int(report.get("total_positions", 0)),
+        mean_logit_cosine=agg.get("mean_logit_cosine"),
+        p05_logit_cosine=agg.get("p05_logit_cosine"),
+        min_logit_cosine=agg.get("min_logit_cosine"),
+        argmax_agreement=agg.get("argmax_agreement"),
+        mean_top5_overlap=agg.get("mean_top5_overlap"),
+        mean_top10_overlap=agg.get("mean_top10_overlap"),
+        mean_perplexity_delta=agg.get("mean_perplexity_delta"),
+        any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
+        raw_metrics_path=str(output_dir / "teacher_forced" / "report.json"),
+        raw_metrics_hash="",
+        notes=list(report.get("notes", [])) + ["Quick mode: 512-4096 contexts only, 32 decode tokens."],
+    )
+
+
 def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
     _run_benchmark(
         "run_fused_forced_decode.py",
@@ -291,6 +330,61 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         fallback_calls=agg.get("fallback_calls", 0),
         first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
         actual_fused_positions=agg.get("actual_fused_positions"),
+    )
+
+
+def _fused_decode_report_quick(model: str, output_dir: Path) -> FusedDecodeReport:
+    _run_benchmark(
+        "run_fused_forced_decode.py",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "fused_decode"),
+        "--contexts",
+        "512",
+        "2048",
+        "4096",
+        "--forced-decode-tokens",
+        "129",
+        "--execution-mode",
+        "metal_strict",
+        timeout=1800,
+    )
+    report = _load_json(output_dir / "fused_decode" / "report.json")
+    agg = report.get("aggregate", {})
+    contexts = report.get("contexts_evaluated", [])
+    return FusedDecodeReport(
+        model=model,
+        contexts_evaluated=contexts,
+        requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
+        positions_per_context=dict(agg.get("positions_per_context", {})),
+        failed_positions_per_context=dict(agg.get("failed_positions_per_context", {})),
+        compressed_page_dispatches_per_context=dict(agg.get("compressed_page_dispatches_per_context", {})),
+        dense_tail_dispatches_per_context=dict(agg.get("dense_tail_dispatches_per_context", {})),
+        fallback_calls_per_context=dict(agg.get("fallback_calls_per_context", {})),
+        trace_artifact_path=report.get("trace_artifact_path", ""),
+        trace_artifact_hash=report.get("trace_artifact_hash", ""),
+        mean_logit_cosine=agg.get("mean_logit_cosine"),
+        p05_logit_cosine=agg.get("p05_logit_cosine"),
+        min_logit_cosine=agg.get("min_logit_cosine"),
+        mean_top5_overlap=agg.get("mean_top5_overlap"),
+        mean_top10_overlap=agg.get("mean_top10_overlap"),
+        argmax_agreement=agg.get("mean_top1_agreement"),
+        mean_perplexity_delta=agg.get("mean_perplexity_delta"),
+        any_nans_or_infs=agg.get("any_nans_or_infs", True),
+        execution_mode=agg.get("execution_mode"),
+        compressed_page_metal_calls=agg.get("compressed_page_metal_calls"),
+        dense_tail_metal_calls=agg.get("dense_tail_metal_calls"),
+        merge_metal_calls=agg.get("merge_metal_calls"),
+        finalization_metal_calls=agg.get("finalization_metal_calls"),
+        compressed_page_fallback_calls=agg.get("compressed_page_fallback_calls"),
+        dense_tail_fallback_calls=agg.get("dense_tail_fallback_calls"),
+        full_attention_fallback_calls=agg.get("full_attention_fallback_calls"),
+        fallback_reasons=agg.get("fallback_reasons"),
+        fallback_calls=agg.get("fallback_calls", 0),
+        first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
+        actual_fused_positions=agg.get("actual_fused_positions"),
+        notes=["Quick mode: 512-4096 contexts only."],
     )
 
 
@@ -354,6 +448,60 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     )
 
 
+def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
+    _run_benchmark(
+        "run_speed_matrix.py",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir / "speed_matrix"),
+        "--lengths",
+        "512",
+        "1024",
+        "2048",
+        "4096",
+        "--num-decode",
+        "64",
+        "--trials",
+        "3",
+        "--execution-mode",
+        "metal_strict",
+        timeout=1800,
+    )
+    report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
+    records = report.get("records", [])
+    contexts = [r["length"] for r in records]
+    speedups = [r.get("speedup") for r in records if r.get("speedup") is not None]
+
+    def _ratios_at(min_len: int):
+        vals = [
+            r["speedup"]
+            for r in records
+            if r["length"] >= min_len and r.get("speedup") is not None
+        ]
+        if not vals:
+            return None, None, None
+        return min(vals), max(vals), float(sorted(vals)[len(vals) // 2])
+
+    min_4096, max_4096, _ = _ratios_at(4096)
+    _, _, median_8192 = _ratios_at(8192)
+
+    min_valid_trials = min(
+        (r.get("valid_trials", 0) for r in records),
+        default=0,
+    )
+
+    return SpeedReport(
+        model=model,
+        contexts_evaluated=contexts,
+        trials_per_context=min_valid_trials,
+        median_ratio=float(sorted(speedups)[len(speedups) // 2]) if speedups else None,
+        min_ratio_at_4096_plus=min_4096,
+        max_ratio_at_4096_plus=max_4096,
+        median_ratio_at_8192_plus=median_8192,
+    )
+
+
 def _memory_report(model: str, output_dir: Path) -> MemoryReport:
     _run_benchmark(
         "run_memory_matrix.py",
@@ -378,6 +526,39 @@ def _memory_report(model: str, output_dir: Path) -> MemoryReport:
     contexts = [r["length"] for r in records]
 
     long_records = [r for r in records if r["length"] >= 8192]
+    long_record = long_records[-1] if long_records else (records[-1] if records else {})
+
+    hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
+
+    return MemoryReport(
+        contexts_evaluated=contexts,
+        logical_kv_ratio=long_record.get("logical_kv_ratio"),
+        persistent_storage_ratio=long_record.get("persistent_storage_ratio"),
+        peak_device_memory_ratio_at_8192_plus=long_record.get(
+            "peak_device_memory_ratio"
+        ),
+        hidden_dense_cache_detected=hidden_dense,
+    )
+
+
+def _memory_report_quick(model: str, output_dir: Path) -> MemoryReport:
+    _run_benchmark(
+        "run_memory_matrix.py",
+        "--model",
+        model,
+        "--lengths",
+        "512",
+        "2048",
+        "4096",
+        "--output-dir",
+        str(output_dir / "memory_matrix"),
+        timeout=900,
+    )
+    report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
+    records = report.get("records", [])
+    contexts = [r["length"] for r in records]
+
+    long_records = [r for r in records if r["length"] >= 4096]
     long_record = long_records[-1] if long_records else (records[-1] if records else {})
 
     hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
@@ -431,6 +612,42 @@ def _baseline_comparison_report(
         turbo_polar_wins_on_speed=agg.get("turbo_polar_wins_on_speed"),
         recommendation=agg.get("recommendation", ""),
         notes=list(agg.get("notes", [])),
+    )
+
+
+def _baseline_comparison_report_quick(
+    model: str, output_dir: Path
+) -> BaselineComparisonReport:
+    _run_benchmark(
+        "run_cartesian_int8_baseline.py",
+        "--model",
+        model,
+        "--lengths",
+        "512",
+        "1024",
+        "2048",
+        "4096",
+        "--num-decode",
+        "32",
+        "--execution-mode",
+        "metal_strict",
+        "--output-dir",
+        str(output_dir / "cartesian_baseline"),
+        timeout=1800,
+    )
+    report = _load_json(output_dir / "cartesian_baseline" / "report.json")
+    agg = report.get("baseline_comparison_report", {})
+    return BaselineComparisonReport(
+        model=model,
+        contexts_evaluated=report.get("contexts_evaluated", []),
+        cartesian_int8_baseline_implemented=bool(
+            agg.get("cartesian_int8_baseline_implemented", False)
+        ),
+        turbo_polar_wins_on_quality=agg.get("turbo_polar_wins_on_quality"),
+        turbo_polar_wins_on_memory=agg.get("turbo_polar_wins_on_memory"),
+        turbo_polar_wins_on_speed=agg.get("turbo_polar_wins_on_speed"),
+        recommendation=agg.get("recommendation", ""),
+        notes=list(agg.get("notes", [])) + ["Quick mode: 512-4096 contexts, 32 decode tokens."],
     )
 
 
@@ -583,6 +800,11 @@ def main():
         action="store_true",
         help="Use synthetic evidence instead of running real benchmarks",
     )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run a reduced benchmark set for fast pipeline validation (fewer contexts, fewer trials)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -621,19 +843,34 @@ def main():
         evidence.provenance.git_tree_state = GitTreeState.CLEAN
     else:
         print("Step 2/5: teacher-forced benchmark...")
-        teacher_report = _teacher_forced_report(args.model, artifact_dir)
+        if args.quick:
+            teacher_report = _teacher_forced_report_quick(args.model, artifact_dir)
+        else:
+            teacher_report = _teacher_forced_report(args.model, artifact_dir)
 
         print("Step 3/5: fused decode benchmark...")
-        fused_report = _fused_decode_report(args.model, artifact_dir)
+        if args.quick:
+            fused_report = _fused_decode_report_quick(args.model, artifact_dir)
+        else:
+            fused_report = _fused_decode_report(args.model, artifact_dir)
 
         print("Step 4/5: speed matrix benchmark...")
-        speed_report = _speed_report(args.model, artifact_dir)
+        if args.quick:
+            speed_report = _speed_report_quick(args.model, artifact_dir)
+        else:
+            speed_report = _speed_report(args.model, artifact_dir)
 
         print("Step 5/5: memory benchmark...")
-        memory_report = _memory_report(args.model, artifact_dir)
+        if args.quick:
+            memory_report = _memory_report_quick(args.model, artifact_dir)
+        else:
+            memory_report = _memory_report(args.model, artifact_dir)
 
         print("Step 6/5: Cartesian int8 baseline comparison...")
-        baseline_report = _baseline_comparison_report(args.model, artifact_dir)
+        if args.quick:
+            baseline_report = _baseline_comparison_report_quick(args.model, artifact_dir)
+        else:
+            baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
         provenance = _build_provenance(args.model, artifact_dir, config)
 
