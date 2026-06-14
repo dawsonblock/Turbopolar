@@ -738,6 +738,15 @@ class PromotionGate:
         # Provenance
         pv = evidence.provenance
 
+        # P1-29: Require token fixtures hash for reproducibility
+        if not pv.token_fixtures_hash:
+            reasons.append("Token fixtures hash is missing; exact fixtures required for reproducibility.")
+        elif len(pv.token_fixtures_hash) < 32:  # At least half of SHA-256 hex
+            reasons.append(
+                f"Token fixtures hash '{pv.token_fixtures_hash}' is too short; "
+                "full SHA-256 hash required for reproducibility."
+            )
+
         # P1-30: Require immutable model and tokenizer revisions
         if not pv.model_revision:
             reasons.append("Model revision is empty; immutable git commit hash required.")

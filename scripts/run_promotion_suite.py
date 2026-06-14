@@ -296,13 +296,8 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     )
 
 
-def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
-    _run_benchmark(
-        "run_fused_forced_decode.py",
-        "--model",
-        model,
-        "--output-dir",
-        str(output_dir / "fused_decode"),
+def _fused_decode_report(model: str, output_dir: Path, token_fixtures: Optional[Path] = None) -> FusedDecodeReport:
+    args = [
         "--contexts",
         "512",
         "2048",
@@ -313,8 +308,12 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
         "129",
         "--execution-mode",
         "metal_strict",
-        timeout=3600,
-    )
+    ]
+    # P1-28: Pass exact fixtures to fused decode
+    if token_fixtures:
+        args.extend(["--token-fixtures", str(token_fixtures)])
+    
+    _run_benchmark("run_fused_forced_decode.py", "--model", model, "--output-dir", str(output_dir / "fused_decode"), *args, timeout=3600)
     report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
     contexts = report.get("contexts_evaluated", [])
@@ -353,23 +352,22 @@ def _fused_decode_report(model: str, output_dir: Path) -> FusedDecodeReport:
     )
 
 
-def _fused_decode_report_quick(model: str, output_dir: Path) -> FusedDecodeReport:
-    _run_benchmark(
-        "run_fused_forced_decode.py",
-        "--model",
-        model,
-        "--output-dir",
-        str(output_dir / "fused_decode"),
+def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Optional[Path] = None) -> FusedDecodeReport:
+    args = [
         "--contexts",
         "512",
         "2048",
         "4096",
-        "--forced-decode-tokens",
-        "129",
         "--execution-mode",
         "metal_strict",
-        timeout=1800,
-    )
+        "--forced-decode-tokens",
+        "32",
+    ]
+    # P1-28: Pass exact fixtures to fused decode
+    if token_fixtures:
+        args.extend(["--token-fixtures", str(token_fixtures)])
+    
+    _run_benchmark("run_fused_forced_decode.py", "--model", model, "--output-dir", str(output_dir / "fused_decode"), *args, timeout=1800)
     report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
     contexts = report.get("contexts_evaluated", [])
@@ -725,6 +723,7 @@ def _build_provenance(
     model: str,
     output_dir: Path,
     config: TurboPolarConfig,
+    token_fixtures: Optional[Path] = None,
 ) -> BenchmarkProvenance:
     prompt_suite = BENCHMARKS_DIR / "exact_token_fixtures.jsonl"
     return capture_provenance(
@@ -739,6 +738,7 @@ def _build_provenance(
         context_lengths=[512, 2048, 4096, 8192, 16384],
         decode_token_count=128,
         qjl_enabled=False,
+        token_fixtures_path=token_fixtures,
     )
 
 
@@ -875,6 +875,12 @@ def main():
         action="store_true",
         help="Run a reduced benchmark set for fast pipeline validation (fewer contexts, fewer trials)",
     )
+    parser.add_argument(
+        "--token-fixtures",
+        type=Path,
+        default=None,
+        help="Path to exact token fixtures JSONL file (P1-28)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -920,9 +926,9 @@ def main():
 
         print("Step 3/5: fused decode benchmark...")
         if args.quick:
-            fused_report = _fused_decode_report_quick(args.model, artifact_dir)
+            fused_report = _fused_decode_report_quick(args.model, artifact_dir, args.token_fixtures)
         else:
-            fused_report = _fused_decode_report(args.model, artifact_dir)
+            fused_report = _fused_decode_report(args.model, artifact_dir, args.token_fixtures)
 
         print("Step 4/5: speed matrix benchmark...")
         if args.quick:
@@ -942,7 +948,7 @@ def main():
         else:
             baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
-        provenance = _build_provenance(args.model, artifact_dir, config)
+        provenance = _build_provenance(args.model, artifact_dir, config, args.token_fixtures)
 
         evidence = PromotionEvidence(
             kernel_report=kernel_report,

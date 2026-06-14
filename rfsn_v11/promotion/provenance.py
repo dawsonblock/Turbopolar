@@ -73,6 +73,7 @@ def capture_provenance(
     context_lengths: list[int],
     decode_token_count: int,
     qjl_enabled: bool,
+    token_fixtures_path: Optional[Path] = None,
     evidence_kind: str = "experimental",
 ) -> BenchmarkProvenance:
     """Build a BenchmarkProvenance record from the current environment."""
@@ -128,6 +129,11 @@ def capture_provenance(
 
     prompt_suite_hash = _file_sha256(prompt_suite_path)
     
+    # P1-29: Hash actual token arrays if provided
+    token_fixtures_hash = ""
+    if token_fixtures_path:
+        token_fixtures_hash = _file_sha256(token_fixtures_path)
+    
     # Hash Python bindings and storage-layout code
     integration_dir = Path(__file__).parents[1] / "integrations" / "mlx_lm"
     storage_dir = Path(__file__).parents[1] / "generation"
@@ -162,6 +168,7 @@ def capture_provenance(
         model_revision=model_revision,
         tokenizer_revision=tokenizer_revision,
         prompt_suite_hash=prompt_suite_hash,
+        token_fixtures_hash=token_fixtures_hash,
         turbopolar_config_hash=config_hash,
         turbopolar_config=config_dict,
         benchmark_command=benchmark_command,

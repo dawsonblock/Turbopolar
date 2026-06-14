@@ -296,6 +296,7 @@ class BenchmarkProvenance:
     model_revision: str = ""
     tokenizer_revision: str = ""
     prompt_suite_hash: str = ""
+    token_fixtures_hash: str = ""  # P1-29: Hash of actual token arrays
     turbopolar_config_hash: str = ""
     turbopolar_config: Dict[str, Any] = field(default_factory=dict)
     benchmark_command: str = ""
@@ -330,6 +331,7 @@ class BenchmarkProvenance:
             model_revision=data.get("model_revision", ""),
             tokenizer_revision=data.get("tokenizer_revision", ""),
             prompt_suite_hash=data.get("prompt_suite_hash", ""),
+            token_fixtures_hash=data.get("token_fixtures_hash", ""),
             turbopolar_config_hash=data.get("turbopolar_config_hash", ""),
             turbopolar_config=dict(data.get("turbopolar_config", {})),
             benchmark_command=data.get("benchmark_command", ""),
