@@ -84,8 +84,12 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 all_kernel_tests_passed=True,
                 all_integration_tests_passed=True,
                 cpu_metal_agreement_verified=True,
-                metal_tests_present=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
-                metal_tests_passed=list(PromotionGate.REQUIRED_NATIVE_METAL_TESTS),
+                metal_tests_present=list(
+                    PromotionGate.REQUIRED_NATIVE_METAL_TESTS
+                ),
+                metal_tests_passed=list(
+                    PromotionGate.REQUIRED_NATIVE_METAL_TESTS
+                ),
             ),
             teacher_forced_report=TeacherForcedReport(
                 mean_logit_cosine=0.999,
@@ -120,9 +124,15 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 fallback_reasons=[],
                 actual_fused_positions=128,
                 requested_fused_positions_per_context=128,
-                positions_per_context={ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS},
-                failed_positions_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
-                fallback_calls_per_context={ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS},
+                positions_per_context={
+                    ctx: 128 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
+                failed_positions_per_context={
+                    ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
+                fallback_calls_per_context={
+                    ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
                 trace_artifact_path=str(self.fused_trace_path),
                 trace_artifact_hash=self.fused_trace_hash,
             ),
@@ -141,12 +151,16 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
                 persistent_storage_ratio=1.80,
                 peak_device_memory_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
-                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                contexts_evaluated=list(
+                    PromotionGate.REQUIRED_CONTEXTS
+                ),
             ),
             baseline_comparison_report=BaselineComparisonReport(
                 cartesian_int8_baseline_implemented=True,
                 turbo_polar_wins_on_speed=True,
-                contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
+                contexts_evaluated=list(
+                    PromotionGate.REQUIRED_CONTEXTS
+                ),
             ),
             provenance=BenchmarkProvenance(
                 git_tree_state=GitTreeState.DIRTY if dirty else GitTreeState.CLEAN,

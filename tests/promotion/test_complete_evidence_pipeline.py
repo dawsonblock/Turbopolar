@@ -113,7 +113,7 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 "trial_results": []
             }
         }
-        
+
         # Add trials for each required context
         for context in [512, 2048, 4096, 8192, 16384]:
             for mode in ["dense", "turbo"]:
@@ -122,8 +122,13 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                         "context_length": context,
                         "mode": mode,
                         "trial_index": trial_idx,
-                        "execution_order": (f"{context}_{mode}", f"trial_{trial_idx}"),
-                        "execution_mode": "metal_strict" if mode == "turbo" else "reference",
+                        "execution_order": (
+                            f"{context}_{mode}",
+                            f"trial_{trial_idx}",
+                        ),
+                        "execution_mode": (
+                            "metal_strict" if mode == "turbo" else "reference"
+                        ),
                         "prefill_seconds": 0.1,
                         "token_latencies_ms": [1.0] * 128,
                         "first_token_ms": 1.0,
