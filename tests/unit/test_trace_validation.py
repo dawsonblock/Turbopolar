@@ -624,7 +624,7 @@ class TestRegressionFixtures:
     def test_duplicate_page_fixture_fails(self):
         """Duplicate page fixture should parse but fail topology validation."""
         path = "tests/fixtures/evidence/duplicate_page.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         result = parse_trace_artifact(raw)
         assert len(result) == 1
@@ -634,7 +634,7 @@ class TestRegressionFixtures:
     def test_fallback_trace_fixture_succeeds_parsing(self):
         """Fallback trace should parse successfully."""
         path = "tests/fixtures/evidence/fallback_trace.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         result = parse_trace_artifact(raw)
         assert len(result) == 1
@@ -645,7 +645,7 @@ class TestRegressionFixtures:
     def test_unevaluated_trace_fixture_succeeds_parsing(self):
         """Unevaluated trace should parse successfully."""
         path = "tests/fixtures/evidence/unevaluated_trace.json"
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         result = parse_trace_artifact(raw)
         assert len(result) == 1
@@ -1201,6 +1201,8 @@ class TestExactFixtureManifest:
 
     def test_manifest_creation(self):
         """Manifest should organize fixtures by context length."""
+        ctx_path = "/data/contexts/512/prose-01.npy"
+        cont_path = "/data/continuations/512/prose-01.npy"
         manifest = ExactFixtureManifest(
             model_id="test/model",
             model_revision="abc123",
@@ -1210,8 +1212,8 @@ class TestExactFixtureManifest:
                     FixtureEntry(
                         fixture_id="prose-512-01",
                         category="natural_prose",
-                        context_tokens_path="/data/contexts/512/prose-01.npy",
-                        continuation_tokens_path="/data/continuations/512/prose-01.npy",
+                        context_tokens_path=ctx_path,
+                        continuation_tokens_path=cont_path,
                         context_sha256="abc123",
                         continuation_sha256="def456",
                     )
