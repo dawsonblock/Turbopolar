@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import mlx.core as mx
-
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.promotion.schema import BenchmarkProvenance, GitTreeState
 
@@ -92,10 +90,16 @@ def capture_provenance(
             _run(["git", "diff", "HEAD"]).encode()
         ).hexdigest()[:16]
 
+    mlx_version = ""
+    try:
+        import mlx.core as mx
+        mlx_version = mx.__version__
+    except Exception:
+        pass
+
     mlx_lm_version = ""
     try:
         import mlx_lm
-
         mlx_lm_version = mlx_lm.__version__
     except Exception:
         pass
@@ -149,7 +153,7 @@ def capture_provenance(
         git_tree_state=git_tree_state,
         git_diff_hash=git_diff_hash,
         python_version=platform.python_version(),
-        mlx_version=mx.__version__,
+        mlx_version=mlx_version,
         mlx_lm_version=mlx_lm_version,
         macos_version=_macos_version(),
         chip_model=_chip_model(),
