@@ -91,8 +91,20 @@ def load_text_prompts(path: Path) -> List[str]:
     return prompts
 
 
-def load_token_fixtures(path: Path) -> List[Dict[str, Any]]:
-    """Load exact-token fixtures from a JSONL file."""
+def load_token_fixtures(path: Path, vocab_size: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Load exact-token fixtures from a JSONL file.
+    
+    Args:
+        path: Path to the JSONL fixture file.
+        vocab_size: Optional vocabulary size for validation. If provided, validates
+            that all token IDs are within the valid range [0, vocab_size).
+    
+    Returns:
+        List of fixture dicts with category, length, and tokens keys.
+    
+    Raises:
+        ValueError: If vocab_size is provided and any token ID exceeds vocab_size - 1.
+    """
     fixtures = []
     with open(path) as f:
         for line in f:
@@ -101,6 +113,17 @@ def load_token_fixtures(path: Path) -> List[Dict[str, Any]]:
                 continue
             obj = json.loads(line)
             if isinstance(obj, dict) and "tokens" in obj:
+                tokens = [int(t) for t in obj["tokens"]]
+                
+                # Validate token IDs against vocabulary size
+                if vocab_size is not None:
+                    max_token = max(tokens) if tokens else 0
+                    if max_token >= vocab_size:
+                        raise ValueError(
+                            f"Fixture {obj.get('category', 'unknown')} contains token ID {max_token} "
+                            f"which exceeds vocabulary size {vocab_size}"
+                        )
+                
                 fixtures.append(obj)
     return fixtures
 
@@ -108,11 +131,21 @@ def load_token_fixtures(path: Path) -> List[Dict[str, Any]]:
 def normalize_prompts(
     tokenizer,
     source: Path,
+    vocab_size: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Load prompts from *source* and normalize each entry to ``{category, tokens, text}``.
 
     Text entries (legacy) are encoded with ``tokenizer``; token fixtures are used
     verbatim.  The first fixture's category is ``default`` for plain text entries.
+    
+    Args:
+        tokenizer: Tokenizer with encode/decode methods.
+        source: Path to JSONL file with prompts or token fixtures.
+        vocab_size: Optional vocabulary size for validation. If provided, validates
+            that all token IDs are within the valid range [0, vocab_size).
+    
+    Raises:
+        ValueError: If vocab_size is provided and any token ID exceeds vocab_size - 1.
     """
     normalized: List[Dict[str, Any]] = []
     with open(source) as f:
@@ -123,6 +156,16 @@ def normalize_prompts(
             obj = json.loads(line)
             if isinstance(obj, dict) and "tokens" in obj:
                 tokens = [int(t) for t in obj["tokens"]]
+                
+                # Validate token IDs against vocabulary size
+                if vocab_size is not None:
+                    max_token = max(tokens) if tokens else 0
+                    if max_token >= vocab_size:
+                        raise ValueError(
+                            f"Fixture {obj.get('category', 'unknown')} contains token ID {max_token} "
+                            f"which exceeds vocabulary size {vocab_size}"
+                        )
+                
                 normalized.append(
                     {
                         "category": obj.get("category", "default"),
@@ -135,6 +178,16 @@ def normalize_prompts(
             elif isinstance(obj, dict):
                 text = obj.get("prompt", obj.get("text", ""))
                 tokens = tokenizer.encode(text)
+                
+                # Validate token IDs against vocabulary size
+                if vocab_size is not None:
+                    max_token = max(tokens) if tokens else 0
+                    if max_token >= vocab_size:
+                        raise ValueError(
+                            f"Encoded text contains token ID {max_token} "
+                            f"which exceeds vocabulary size {vocab_size}"
+                        )
+                
                 normalized.append(
                     {
                         "category": "default",
@@ -144,6 +197,16 @@ def normalize_prompts(
                 )
             elif isinstance(obj, str):
                 tokens = tokenizer.encode(obj)
+                
+                # Validate token IDs against vocabulary size
+                if vocab_size is not None:
+                    max_token = max(tokens) if tokens else 0
+                    if max_token >= vocab_size:
+                        raise ValueError(
+                            f"Encoded text contains token ID {max_token} "
+                            f"which exceeds vocabulary size {vocab_size}"
+                        )
+                
                 normalized.append(
                     {
                         "category": "default",

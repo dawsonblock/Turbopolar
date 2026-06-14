@@ -231,6 +231,13 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
     
+    # Calculate total_positions from nested prompt position_metrics
+    # BenchmarkReport doesn't have a top-level total_positions field
+    total_positions = sum(
+        len(prompt.get("position_metrics", []))
+        for prompt in report.get("prompts", [])
+    )
+    
     # Calculate full SHA-256 of the raw metrics file
     raw_metrics_path = output_dir / "teacher_forced" / "report.json"
     import hashlib
@@ -247,7 +254,7 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
-        total_positions=int(report.get("total_positions", 0)),
+        total_positions=total_positions,
         mean_logit_cosine=agg.get("mean_logit_cosine"),
         p05_logit_cosine=agg.get("p05_logit_cosine"),
         min_logit_cosine=agg.get("min_logit_cosine"),
@@ -284,6 +291,13 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
     
+    # Calculate total_positions from nested prompt position_metrics
+    # BenchmarkReport doesn't have a top-level total_positions field
+    total_positions = sum(
+        len(prompt.get("position_metrics", []))
+        for prompt in report.get("prompts", [])
+    )
+    
     # Calculate full SHA-256 of the raw metrics file
     raw_metrics_path = output_dir / "teacher_forced" / "report.json"
     import hashlib
@@ -300,7 +314,7 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
-        total_positions=int(report.get("total_positions", 0)),
+        total_positions=total_positions,
         mean_logit_cosine=agg.get("mean_logit_cosine"),
         p05_logit_cosine=agg.get("p05_logit_cosine"),
         min_logit_cosine=agg.get("min_logit_cosine"),
@@ -487,14 +501,19 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     # Use the unified schema format for the raw timing file
     import hashlib
     import json
-    from dataclasses import asdict
+    from dataclasses import asdict, is_dataclass
 
     raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
 
     # Extract the speed_evidence if available, otherwise use trial_results
     if "speed_evidence" in report:
         # Convert SpeedEvidence dataclass to dict for JSON serialization
-        speed_evidence_dict = asdict(report["speed_evidence"])
+        # After JSON deserialization, speed_evidence is already a dict
+        speed_evidence = report["speed_evidence"]
+        if is_dataclass(speed_evidence):
+            speed_evidence_dict = asdict(speed_evidence)
+        else:
+            speed_evidence_dict = speed_evidence
         raw_timing_data = {
             "schema_version": 1,
             "speed_evidence": speed_evidence_dict,
@@ -581,14 +600,19 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
     # Use the unified schema format for the raw timing file
     import hashlib
     import json
-    from dataclasses import asdict
+    from dataclasses import asdict, is_dataclass
 
     raw_timing_path = output_dir / "speed_matrix" / "raw_timing.json"
 
     # Extract the speed_evidence if available, otherwise use trial_results
     if "speed_evidence" in report:
         # Convert SpeedEvidence dataclass to dict for JSON serialization
-        speed_evidence_dict = asdict(report["speed_evidence"])
+        # After JSON deserialization, speed_evidence is already a dict
+        speed_evidence = report["speed_evidence"]
+        if is_dataclass(speed_evidence):
+            speed_evidence_dict = asdict(speed_evidence)
+        else:
+            speed_evidence_dict = speed_evidence
         raw_timing_data = {
             "schema_version": 1,
             "speed_evidence": speed_evidence_dict,
@@ -987,7 +1011,7 @@ def main():
     parser.add_argument(
         "--token-fixtures",
         type=Path,
-        default=None,
+        default=BENCHMARKS_DIR / "exact_token_fixtures.jsonl",
         help="Path to exact token fixtures JSONL file (P1-28)",
     )
     parser.add_argument(

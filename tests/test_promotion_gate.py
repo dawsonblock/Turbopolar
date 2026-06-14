@@ -3,12 +3,14 @@ import mlx.core as mx
 import numpy as np
 import json
 from pathlib import Path
+from dataclasses import asdict
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.candidates.turbo_polar_adapter import TurboPolarOfflineEvaluator
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
+from rfsn_v11.evidence.speed import SpeedEvidence, SpeedTrialResult
 
 
 class TestTurboPolarPromotionGate(unittest.TestCase):
@@ -256,6 +258,63 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
         self.assertEqual(telemetry["partial_tokens"], 1)
         self.assertEqual(telemetry["total_blocks"], 1)
         self.assertGreaterEqual(telemetry["compression_ratio"], 0.0)
+
+    def test_speed_evidence_serialization(self):
+        """Test that SpeedEvidence can be serialized to JSON and deserialized correctly."""
+        # Create a sample SpeedEvidence instance
+        trial_result = SpeedTrialResult(
+            context_length=512,
+            mode="turbo",
+            trial=1,
+            prefill_seconds=0.1,
+            first_token_ms=5.0,
+            per_token_ms=[4.0, 4.5, 5.0],
+            throughput_tps=250.0,
+            page_dispatches=10,
+            tail_dispatches=2,
+            fallbacks=0,
+        )
+        
+        speed_evidence = SpeedEvidence(
+            model_id="test-model",
+            execution_mode="metal_strict",
+            evaluated_contexts=[512, 1024],
+            trials_per_context=3,
+            trial_results=[trial_result],
+            dense_decode_tok_s={512: [0.004, 0.0045, 0.005]},
+            turbo_decode_tok_s={512: [0.003, 0.0035, 0.004]},
+            median_ratio=1.25,
+        )
+        
+        # Test serialization with asdict
+        speed_evidence_dict = asdict(speed_evidence)
+        self.assertIsInstance(speed_evidence_dict, dict)
+        self.assertEqual(speed_evidence_dict["model_id"], "test-model")
+        self.assertEqual(len(speed_evidence_dict["trial_results"]), 1)
+        
+        # Test JSON serialization
+        json_str = json.dumps(speed_evidence_dict)
+        self.assertIsInstance(json_str, str)
+        
+        # Test deserialization
+        deserialized_dict = json.loads(json_str)
+        self.assertEqual(deserialized_dict["model_id"], "test-model")
+        self.assertEqual(deserialized_dict["execution_mode"], "metal_strict")
+        
+        # Test that the dict can be used in a report structure
+        report = {
+            "schema_version": 1,
+            "speed_evidence": deserialized_dict,
+        }
+        
+        # Verify the report can be serialized
+        report_json = json.dumps(report)
+        self.assertIsInstance(report_json, str)
+        
+        # Verify the report can be deserialized
+        report_deserialized = json.loads(report_json)
+        self.assertIn("speed_evidence", report_deserialized)
+        self.assertEqual(report_deserialized["speed_evidence"]["model_id"], "test-model")
 
 
 if __name__ == "__main__":

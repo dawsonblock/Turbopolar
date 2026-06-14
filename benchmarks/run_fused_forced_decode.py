@@ -553,7 +553,7 @@ def main():
     parser.add_argument(
         "--token-fixtures",
         type=Path,
-        default=None,
+        default=Path(__file__).parent / "exact_token_fixtures.jsonl",
         help="Exact-token fixtures (JSONL with 'tokens' and 'category' fields).",
     )
     parser.add_argument(

@@ -14,6 +14,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -588,7 +589,7 @@ def main():
 
     report = {
         "schema_version": 1,
-        "speed_evidence": speed_evidence,
+        "speed_evidence": asdict(speed_evidence),
         # Keep legacy fields for backward compatibility
         "model": str(args.model),
         "mlx_version": mx.__version__,

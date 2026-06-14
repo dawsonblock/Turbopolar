@@ -9,6 +9,7 @@ The fused decode benchmark needs context + 129 continuation tokens:
 - 16384 + 129 = 16513 tokens
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,11 +48,16 @@ def main():
                 if line:
                     existing_fixtures.append(json.loads(line))
 
-    # Generate new fixtures
-    new_fixtures = []
+    # Generate fixtures, replacing existing ones by category
+    existing_by_category = {f["category"]: f for f in existing_fixtures}
+    all_fixtures = []
+    
     for category, length in required_lengths.items():
-        # Use category-specific seed for determinism
-        seed = hash(category) % (2 ** 32)
+        # Use SHA-256 based seed for cross-process determinism
+        seed = int.from_bytes(
+            hashlib.sha256(category.encode()).digest()[:4],
+            "big",
+        )
         tokens = generate_deterministic_tokens(length, seed)
 
         fixture = {
@@ -59,19 +65,21 @@ def main():
             "length": length,
             "tokens": tokens,
         }
-        new_fixtures.append(fixture)
+        all_fixtures.append(fixture)
         print(f"Generated {category}: {length} tokens")
-
-    # Append new fixtures to existing ones
-    all_fixtures = existing_fixtures + new_fixtures
+    
+    # Add any existing fixtures that are not in required_lengths
+    for existing_fixture in existing_fixtures:
+        if existing_fixture["category"] not in required_lengths:
+            all_fixtures.append(existing_fixture)
 
     # Write back
     with open(FIXTURES_PATH, "w") as f:
         for fixture in all_fixtures:
             f.write(json.dumps(fixture) + "\n")
 
-    print(f"\nExtended {FIXTURES_PATH} with {len(new_fixtures)} new fixtures")
-    print(f"Total fixtures: {len(all_fixtures)}")
+    print(f"\nWrote {len(all_fixtures)} fixtures to {FIXTURES_PATH}")
+    print(f"Generated {len(required_lengths)} fixtures, preserved {len(all_fixtures) - len(required_lengths)} existing fixtures")
 
 
 if __name__ == "__main__":
