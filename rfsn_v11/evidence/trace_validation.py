@@ -196,6 +196,131 @@ class ParsedAttentionTrace:
     partial_tail_length: int = 0
 
 
+def validate_trace_invariants(
+    traces: list[ParsedOperationTrace | ParsedAttentionTrace],
+) -> list[str]:
+    """Validate invariants across a collection of trace entries.
+
+    Args:
+        traces: List of parsed trace entries to validate
+
+    Returns:
+        List of error messages. Empty list means all invariants are satisfied.
+    """
+    errors = []
+    
+    if not traces:
+        return errors
+    
+    # Check experiment ID consistency
+    experiment_ids = {t.experiment_id for t in traces}
+    if len(experiment_ids) > 1:
+        errors.append(
+            f"Inconsistent experiment IDs: {sorted(experiment_ids)}"
+        )
+    
+    # Check decode ordinal monotonicity
+    decode_ordinals = [t.decode_ordinal for t in traces]
+    if decode_ordinals != sorted(decode_ordinals):
+        errors.append("Decode ordinals are not monotonically increasing")
+    
+    # Check for gaps in decode ordinals
+    if decode_ordinals:
+        expected_ordinals = range(min(decode_ordinals), max(decode_ordinals) + 1)
+        if set(decode_ordinals) != set(expected_ordinals):
+            errors.append(f"Gap in decode ordinals: expected {list(expected_ordinals)}, got {decode_ordinals}")
+    
+    # Check cache offset monotonicity for operation traces
+    operation_traces = [t for t in traces if isinstance(t, ParsedOperationTrace)]
+    cache_offsets = [t.cache_offset_before for t in operation_traces]
+    if cache_offsets != sorted(cache_offsets):
+        errors.append("Cache offsets are not monotonically increasing")
+    
+    # Validate attention trace specific invariants
+    attention_traces = [t for t in traces if isinstance(t, ParsedAttentionTrace)]
+    for trace in attention_traces:
+        # Cache tokens should not decrease
+        if trace.cache_tokens_after < trace.cache_tokens_before:
+            errors.append(
+                f"Cache tokens decreased in trace {trace.experiment_id}: "
+                f"{trace.cache_tokens_before} -> {trace.cache_tokens_after}"
+            )
+        
+        # Page count should match operations
+        if len(trace.page_operations) != trace.expected_page_count:
+            errors.append(
+                f"Page count mismatch in trace {trace.experiment_id}: "
+                f"expected {trace.expected_page_count}, got {len(trace.page_operations)}"
+            )
+    
+    return errors
+
+
+def validate_single_trace_invariants(trace: ParsedOperationTrace | ParsedAttentionTrace) -> list[str]:
+    """Validate invariants for a single trace entry.
+
+    Args:
+        trace: Single trace entry to validate
+
+    Returns:
+        List of error messages. Empty list means all invariants are satisfied.
+    """
+    errors = []
+    
+    # Validate context length
+    if trace.context_length <= 0:
+        errors.append(f"Context length must be positive, got {trace.context_length}")
+    
+    if isinstance(trace, ParsedOperationTrace):
+        # Validate operation trace invariants
+        if trace.layer_index < 0:
+            errors.append(f"Layer index must be non-negative, got {trace.layer_index}")
+        
+        if trace.decode_step < 0:
+            errors.append(f"Decode step must be non-negative, got {trace.decode_step}")
+        
+        # If metal was requested but not executed without fallback, that's an error
+        if trace.metal_requested and not trace.metal_executed and not trace.fallback_used:
+            errors.append(
+                f"Metal requested but not executed without fallback: "
+                f"experiment {trace.experiment_id}"
+            )
+        
+        # If fallback was used, there must be a reason
+        if trace.fallback_used and not trace.fallback_reason:
+            errors.append(
+                f"Fallback used but no reason provided: "
+                f"experiment {trace.experiment_id}"
+            )
+    
+    elif isinstance(trace, ParsedAttentionTrace):
+        # Validate attention trace invariants
+        if trace.layer_index < 0:
+            errors.append(f"Layer index must be non-negative, got {trace.layer_index}")
+        
+        if trace.decode_step < 0:
+            errors.append(f"Decode step must be non-negative, got {trace.decode_step}")
+        
+        if trace.expected_page_count < 0:
+            errors.append(f"Expected page count must be non-negative, got {trace.expected_page_count}")
+        
+        # Cache tokens should not decrease
+        if trace.cache_tokens_after < trace.cache_tokens_before:
+            errors.append(
+                f"Cache tokens decreased in trace {trace.experiment_id}: "
+                f"{trace.cache_tokens_before} -> {trace.cache_tokens_after}"
+            )
+        
+        # Page count should match operations
+        if len(trace.page_operations) != trace.expected_page_count:
+            errors.append(
+                f"Page count mismatch in trace {trace.experiment_id}: "
+                f"expected {trace.expected_page_count}, got {len(trace.page_operations)}"
+            )
+    
+    return errors
+
+
 def _validate_string_field(
     operation: dict[str, Any],
     field_name: str,
