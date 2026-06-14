@@ -238,6 +238,8 @@ class TurboPolarKVCacheRuntime:
     def append(self, k_new: mx.array, v_new: mx.array):
         self._validate_append_inputs(k_new, v_new)
 
+        # OPTIMIZATION: Skip finite validation in production for performance
+        # Only validate if explicitly enabled and at audit intervals
         if self.config.validate_finite_inputs:
             self._validate_finite(k_new, v_new)
         elif (
@@ -249,16 +251,24 @@ class TurboPolarKVCacheRuntime:
         B, H, T_new, D = k_new.shape
         L = self.config.block_size
 
-        # Append tokens one at a time into the fixed tail buffer.
-        for t in range(T_new):
-            token_k = k_new[:, :, t : t + 1, :]
-            token_v = v_new[:, :, t : t + 1, :]
-            index = self.partial_length
-            self.partial_k_buffer[:, :, index : index + 1, :] = token_k
-            self.partial_v_buffer[:, :, index : index + 1, :] = token_v
-            self.partial_length += 1
-            self.actual_seq_len += 1
-
+        # OPTIMIZATION: Process tokens in batches instead of one at a time
+        # This reduces Python loop overhead and improves performance
+        t = 0
+        while t < T_new:
+            # Calculate how many tokens we can process before hitting block boundary
+            space_in_buffer = L - self.partial_length
+            tokens_to_process = min(T_new - t, space_in_buffer)
+            
+            if tokens_to_process > 0:
+                # Copy tokens in batch
+                end_idx = self.partial_length + tokens_to_process
+                self.partial_k_buffer[:, :, self.partial_length:end_idx, :] = k_new[:, :, t:t+tokens_to_process, :]
+                self.partial_v_buffer[:, :, self.partial_length:end_idx, :] = v_new[:, :, t:t+tokens_to_process, :]
+                self.partial_length += tokens_to_process
+                self.actual_seq_len += tokens_to_process
+                t += tokens_to_process
+            
+            # Flush when buffer is full
             if self.partial_length >= L:
                 self._flush_tail_block()
 
@@ -272,9 +282,8 @@ class TurboPolarKVCacheRuntime:
         # past partial_length is never attended to because attention kernels receive
         # only the slice [:partial_length].
         self.partial_length = 0
-        # Zero the buffer to ensure no old tail data is visible after reset.
-        self.partial_k_buffer = mx.zeros_like(self.partial_k_buffer)
-        self.partial_v_buffer = mx.zeros_like(self.partial_v_buffer)
+        # OPTIMIZATION: Don't zero the buffer - it's unnecessary since we only use [:partial_length]
+        # This saves a significant amount of time, especially for large buffers
 
     def _flush_block(self, k_block: mx.array, v_block: mx.array):
         B, H, L, D = k_block.shape
