@@ -23,12 +23,16 @@ class TurboPolarLlamaAttention(nn.Module):
         turbo_config: TurboPolarConfig,
         layer_index: int,
         experiment_id: str = "",
+        adapter: Optional[Any] = None,
     ):
         super().__init__()
         self.original_attention = original_attention
         self.turbo_config = turbo_config
         self.layer_index = layer_index
         self.experiment_id = experiment_id
+        self.adapter = adapter
+        # Track decode ordinal for this layer
+        self._decode_ordinal = 0
         # Capture the bound instance method so we can call it later.
         self._original_call = original_attention.__call__
 
@@ -58,10 +62,21 @@ class TurboPolarLlamaAttention(nn.Module):
             queries = attn.rope(queries, offset=cache.offset)
             keys = attn.rope(keys, offset=cache.offset)
 
+            # Get fixture info from adapter if available
+            fixture_id = self.adapter.fixture_id if self.adapter else self.experiment_id
+            initial_context_length = self.adapter.initial_context_length if self.adapter else 0
+            
+            # Increment and use decode ordinal
+            decode_ordinal = self._decode_ordinal
+            self._decode_ordinal += 1
+
             output = cache.decode_attention(
                 queries, keys, values, attn.scale, mask=mask,
                 layer_index=self.layer_index,
                 decode_step=cache.offset,
+                decode_ordinal=decode_ordinal,
+                initial_context_length=initial_context_length,
+                fixture_id=fixture_id,
                 experiment_id=self.experiment_id,
             )
             # output: [B, H_q, D] -> [B, L, H_q * D]

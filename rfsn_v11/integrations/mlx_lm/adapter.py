@@ -32,6 +32,9 @@ class TurboPolarLlamaAdapter:
         self._model: Optional[Any] = None
         self._original_attentions: Dict[int, Any] = {}
         self._wrapped_layer_count = 0
+        # Fixture information for trace identity
+        self.fixture_id: str = ""
+        self.initial_context_length: int = 0
 
     @property
     def wrapped_layer_count(self) -> int:
@@ -40,6 +43,19 @@ class TurboPolarLlamaAdapter:
     @property
     def is_installed(self) -> bool:
         return self._installed
+
+    def set_fixture_info(self, fixture_id: str, initial_context_length: int) -> None:
+        """Set fixture information for trace identity."""
+        self.fixture_id = fixture_id
+        self.initial_context_length = initial_context_length
+        # Reset decode ordinals in all wrapped attention modules
+        if self._model:
+            layers = self._model.layers if hasattr(self._model, "layers") else self._model.model.layers
+            for layer in layers:
+                attention = getattr(layer, "attention", getattr(layer, "self_attn", None))
+                # Check if it's a TurboPolarLlamaAttention by checking for _decode_ordinal attribute
+                if hasattr(attention, "_decode_ordinal"):
+                    attention._decode_ordinal = 0
 
     def install(self, model: Any) -> None:
         """Wrap every Llama attention module in ``model`` for TurboPolar decode.
@@ -92,6 +108,7 @@ class TurboPolarLlamaAdapter:
                     turbo_config=self.turbo_config,
                     layer_index=i,
                     experiment_id=self.experiment_id,
+                    adapter=self,
                 )
                 if hasattr(layer, "attention"):
                     layer.attention = wrapped

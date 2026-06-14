@@ -238,6 +238,10 @@ def benchmark_forced_decode_fixture(
 
     context_mx = mx.array(context_tokens)[None, :]
 
+    # Set fixture info for trace identity
+    fixture_id = f"fixture_{len(context_tokens)}"
+    adapter.set_fixture_info(fixture_id, len(context_tokens))
+
     # Prefill both paths.
     dense_prefill = model(context_mx, cache=dense_cache)
     adapter.install(model)
