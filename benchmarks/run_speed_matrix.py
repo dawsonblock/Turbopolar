@@ -415,7 +415,8 @@ def main():
         )
     )
 
-    normalized = normalize_prompts(tokenizer, args.token_fixtures)
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    normalized = normalize_prompts(tokenizer, args.token_fixtures, vocab_size=vocab_size)
     if not normalized:
         raise ValueError(f"No token fixtures found in {args.token_fixtures}")
     base_tokens = normalized[0]["tokens"]

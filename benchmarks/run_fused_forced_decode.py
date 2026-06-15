@@ -612,7 +612,8 @@ def main():
     adapter = TurboPolarLlamaAdapter(turbo_config)
 
     prompt_source = args.token_fixtures
-    normalized = normalize_prompts(tokenizer, prompt_source) if prompt_source else []
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    normalized = normalize_prompts(tokenizer, prompt_source, vocab_size=vocab_size) if prompt_source else []
     if not normalized:
         print(
             "No token fixtures provided; generating synthetic deterministic sequences."
