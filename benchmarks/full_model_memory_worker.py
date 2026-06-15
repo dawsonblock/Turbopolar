@@ -11,11 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import mlx.core as mx
-import numpy as np
-from mlx_lm import load
-from mlx_lm.models.cache import KVCache
-
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
@@ -86,6 +81,11 @@ def run_memory_worker(
     Returns:
         Dict with memory measurements and cache-specific stats.
     """
+    import mlx.core as mx
+    import numpy as np
+    from mlx_lm import load
+    from mlx_lm.models.cache import KVCache
+
     mx.random.seed(seed)
     np.random.seed(seed)
 

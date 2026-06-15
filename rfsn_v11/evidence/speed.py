@@ -63,22 +63,43 @@ class RawSpeedArtifact:
 
         trials = []
         for trial_data in trials_data:
+            # Support both canonical and legacy field names for round-trip
+            method = trial_data.get("method", trial_data.get("mode", "unknown"))
+            trial_index = trial_data.get("trial_index", trial_data.get("trial", 0))
+            latencies = trial_data.get(
+                "token_latencies_ms",
+                trial_data.get("per_token_ms", [])
+            )
+            fallback_calls = trial_data.get(
+                "fallback_calls",
+                trial_data.get("fallbacks", 0)
+            )
+            compressed_page_dispatches = trial_data.get(
+                "compressed_page_dispatches",
+                trial_data.get("page_dispatches", 0)
+            )
+            dense_tail_dispatches = trial_data.get(
+                "dense_tail_dispatches",
+                trial_data.get("tail_dispatches", 0)
+            )
+            execution_mode = trial_data.get("execution_mode", "unknown")
+
             trial = RawSpeedTrial(
                 context_length=trial_data.get("context_length", 0),
-                method=trial_data.get("mode", "unknown"),
-                trial_index=trial_data.get("trial", 0),
+                method=method,
+                trial_index=trial_index,
                 execution_order=(
-                    f"{trial_data.get('context_length', 0)}_{trial_data.get('mode', 'unknown')}",
-                    f"trial_{trial_data.get('trial', 0)}"
+                    f"{trial_data.get('context_length', 0)}_{method}",
+                    f"trial_{trial_index}"
                 ),
-                execution_mode=trial_data.get("execution_mode", "unknown"),
+                execution_mode=execution_mode,
                 prefill_seconds=trial_data.get("prefill_seconds", 0.0),
-                token_latencies_ms=tuple(trial_data.get("per_token_ms", [])),
+                token_latencies_ms=tuple(latencies),
                 first_token_ms=trial_data.get("first_token_ms", 0.0),
                 throughput_tps=trial_data.get("throughput_tps", 0.0),
-                compressed_page_dispatches=trial_data.get("page_dispatches", 0),
-                dense_tail_dispatches=trial_data.get("tail_dispatches", 0),
-                fallback_calls=trial_data.get("fallbacks", 0),
+                compressed_page_dispatches=compressed_page_dispatches,
+                dense_tail_dispatches=dense_tail_dispatches,
+                fallback_calls=fallback_calls,
             )
             trials.append(trial)
 
@@ -177,6 +198,7 @@ class SpeedTrialResult:
     context_length: int = 0
     mode: str = ""
     trial: int = 0
+    execution_mode: str = ""
     prefill_seconds: float = 0.0
     first_token_ms: float = 0.0
     per_token_ms: List[float] = field(default_factory=list)

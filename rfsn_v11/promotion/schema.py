@@ -343,6 +343,8 @@ class BenchmarkProvenance:
             decode_token_count=int(data.get("decode_token_count", 0)),
             qjl_enabled=bool(data.get("qjl_enabled", False)),
             metal_kernel_source_hash=data.get("metal_kernel_source_hash", ""),
+            kernel_binding_hash=data.get("kernel_binding_hash", ""),
+            execution_mode=data.get("execution_mode", ""),
             evidence_kind=data.get("evidence_kind", "experimental"),
         )
 

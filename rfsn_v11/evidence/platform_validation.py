@@ -1,6 +1,7 @@
 """Platform validation for native Apple Silicon benchmarks."""
 
 import platform
+import re
 from typing import List, Optional
 
 from rfsn_v11.evidence.provenance import ProvenanceEvidence
@@ -9,6 +10,9 @@ from rfsn_v11.evidence.provenance import ProvenanceEvidence
 def validate_apple_silicon_platform(provenance: ProvenanceEvidence) -> List[str]:
     """Validate that benchmark was run on Apple Silicon platform.
 
+    Uses capability-based validation instead of a hardcoded chip allowlist
+    so newer chips (M4, M5, etc.) are accepted automatically.
+
     Args:
         provenance: Provenance evidence to validate
 
@@ -16,49 +20,50 @@ def validate_apple_silicon_platform(provenance: ProvenanceEvidence) -> List[str]
         List of validation error messages. Empty list means validation passed.
     """
     errors = []
-    
-    # Check macOS version
+
+    # Check macOS version is present
     if not provenance.macos_version:
         errors.append("macOS version is required for Apple Silicon validation")
-    
-    # Check chip model
+
+    # Check chip model is present
     if not provenance.chip_model:
         errors.append("Chip model is required for Apple Silicon validation")
-    
-    # Validate chip model is Apple Silicon
-    apple_silicon_chips = [
-        "M1", "M1 Pro", "M1 Max", "M1 Ultra",
-        "M2", "M2 Pro", "M2 Max", "M2 Ultra",
-        "M3", "M3 Pro", "M3 Max", "M3 Ultra",
-    ]
-    
-    if provenance.chip_model and provenance.chip_model not in apple_silicon_chips:
-        errors.append(
-            f"Chip model '{provenance.chip_model}' is not recognized as Apple Silicon. "
-            f"Expected one of: {apple_silicon_chips}"
+
+    # Validate chip model indicates Apple Silicon using capability pattern
+    # Accepts: "Apple M1", "M1 Pro", "M2 Max", "M3 Ultra", "M4", etc.
+    if provenance.chip_model:
+        chip = provenance.chip_model
+        is_apple_silicon = (
+            chip.startswith("Apple M") or
+            re.match(r"^M\d+( Pro| Max| Ultra)?$", chip) is not None
         )
-    
+        if not is_apple_silicon:
+            errors.append(
+                f"Chip model '{chip}' does not indicate Apple Silicon. "
+                "Expected 'Apple M*' or 'M*' pattern."
+            )
+
     # Check Metal kernel source hash is present
     if not provenance.metal_kernel_source_hash:
         errors.append("Metal kernel source hash is required for Apple Silicon validation")
-    
+
     # Check kernel binding hash is present
     if not provenance.kernel_binding_hash:
         errors.append("Kernel binding hash is required for Apple Silicon validation")
-    
+
     # Validate hash lengths
     if provenance.metal_kernel_source_hash and len(provenance.metal_kernel_source_hash) != 64:
         errors.append(
             f"Metal kernel source hash must be 64 characters, "
             f"got {len(provenance.metal_kernel_source_hash)}"
         )
-    
+
     if provenance.kernel_binding_hash and len(provenance.kernel_binding_hash) != 64:
         errors.append(
             f"Kernel binding hash must be 64 characters, "
             f"got {len(provenance.kernel_binding_hash)}"
         )
-    
+
     return errors
 
 

@@ -269,5 +269,79 @@ class TestRawSpeedSchema(unittest.TestCase):
         self.assertTrue(any("prefill_seconds" in error for error in errors))
 
 
+    def test_canonical_round_trip(self):
+        """Canonical dataclass → dict → from_dict must preserve all fields."""
+        from dataclasses import asdict
+
+        original = RawSpeedArtifact(
+            schema_version=1,
+            trials=(
+                RawSpeedTrial(
+                    context_length=512,
+                    method="turbo",
+                    trial_index=2,
+                    execution_order=("512_turbo", "trial_2"),
+                    execution_mode="metal_strict",
+                    prefill_seconds=0.1,
+                    token_latencies_ms=(1.0,) * REQUIRED_TOKEN_LATENCIES,
+                    first_token_ms=1.5,
+                    throughput_tps=100.0,
+                    compressed_page_dispatches=10,
+                    dense_tail_dispatches=1,
+                    fallback_calls=0,
+                ),
+            ),
+        )
+        # Serialize via asdict (what run_speed_matrix.py uses)
+        d = asdict(original)
+        # Deserialize via canonical from_dict
+        restored = RawSpeedArtifact.from_dict(d)
+
+        self.assertEqual(restored.schema_version, original.schema_version)
+        self.assertEqual(len(restored.trials), len(original.trials))
+        rt = restored.trials[0]
+        ot = original.trials[0]
+        self.assertEqual(rt.context_length, ot.context_length)
+        self.assertEqual(rt.method, ot.method)
+        self.assertEqual(rt.trial_index, ot.trial_index)
+        self.assertEqual(rt.execution_mode, ot.execution_mode)
+        self.assertEqual(rt.prefill_seconds, ot.prefill_seconds)
+        self.assertEqual(rt.first_token_ms, ot.first_token_ms)
+        self.assertEqual(rt.throughput_tps, ot.throughput_tps)
+        self.assertEqual(rt.compressed_page_dispatches, ot.compressed_page_dispatches)
+        self.assertEqual(rt.dense_tail_dispatches, ot.dense_tail_dispatches)
+        self.assertEqual(rt.fallback_calls, ot.fallback_calls)
+
+    def test_legacy_format_still_parses(self):
+        """Legacy benchmark format with 'mode', 'trial', 'per_token_ms' still works."""
+        legacy = {
+            "schema_version": 1,
+            "trial_results": [
+                {
+                    "context_length": 512,
+                    "mode": "turbo",
+                    "trial": 2,
+                    "execution_mode": "metal_strict",
+                    "prefill_seconds": 0.1,
+                    "per_token_ms": [1.0] * REQUIRED_TOKEN_LATENCIES,
+                    "first_token_ms": 1.5,
+                    "throughput_tps": 100.0,
+                    "page_dispatches": 10,
+                    "tail_dispatches": 1,
+                    "fallbacks": 0,
+                },
+            ],
+        }
+        artifact = RawSpeedArtifact.from_dict(legacy)
+        self.assertEqual(len(artifact.trials), 1)
+        t = artifact.trials[0]
+        self.assertEqual(t.method, "turbo")
+        self.assertEqual(t.trial_index, 2)
+        self.assertEqual(t.execution_mode, "metal_strict")
+        self.assertEqual(t.compressed_page_dispatches, 10)
+        self.assertEqual(t.dense_tail_dispatches, 1)
+        self.assertEqual(t.fallback_calls, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

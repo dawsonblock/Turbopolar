@@ -65,6 +65,8 @@ class TestPlatformValidation(unittest.TestCase):
             "M1", "M1 Pro", "M1 Max", "M1 Ultra",
             "M2", "M2 Pro", "M2 Max", "M2 Ultra",
             "M3", "M3 Pro", "M3 Max", "M3 Ultra",
+            "M4", "M4 Pro", "M4 Max", "M4 Ultra",
+            "Apple M1", "Apple M2 Pro", "Apple M4 Max",
         ]
         for chip in valid_chips:
             provenance = ProvenanceEvidence(
