@@ -100,7 +100,7 @@ def _make_turbo_config(
         split_dim=0,
         execution_mode=execution_mode,
         trace_validation_mode=trace_validation_mode,
-        hybrid_threshold=4096,
+        hybrid_threshold=0,  # DISABLED: Use safe compressed-only path
     )
 
 
