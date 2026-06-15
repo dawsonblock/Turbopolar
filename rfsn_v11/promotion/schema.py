@@ -306,6 +306,8 @@ class BenchmarkProvenance:
     decode_token_count: int = 0
     qjl_enabled: bool = False
     metal_kernel_source_hash: str = ""
+    kernel_binding_hash: str = ""
+    execution_mode: str = ""
     evidence_kind: str = "experimental"  # "experimental" | "synthetic_dry_run"
 
     @classmethod

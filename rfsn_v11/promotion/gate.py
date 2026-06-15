@@ -8,6 +8,11 @@ import json
 import numpy as np
 from typing import List, Dict, Any, Optional
 
+from rfsn_v11.evidence.platform_validation import (
+    validate_apple_silicon_platform,
+    validate_metal_execution_mode,
+)
+from rfsn_v11.evidence.provenance import validate_provenance_immutable_fields
 from rfsn_v11.evidence.speed import RawSpeedArtifact, validate_speed_trials
 from rfsn_v11.evidence.trace_validation import (
     EvidenceValidationError,
@@ -1049,6 +1054,21 @@ class PromotionGate:
             reasons.append("Model provenance incomplete.")
         if not pv.turbopolar_config_hash:
             reasons.append("TurboPolar config hash missing.")
+
+        # Integrate canonical provenance validator
+        provenance_errors = validate_provenance_immutable_fields(pv)
+        for err in provenance_errors:
+            reasons.append(f"Provenance: {err}")
+
+        # Integrate platform validator for Apple Silicon benchmarks
+        platform_errors = validate_apple_silicon_platform(pv)
+        for err in platform_errors:
+            reasons.append(f"Platform: {err}")
+
+        # Integrate Metal execution mode validator
+        metal_errors = validate_metal_execution_mode(pv)
+        for err in metal_errors:
+            reasons.append(f"Execution: {err}")
 
         # Explicit promotion decision ordering
         # 1. Hard quantitative/artifact failures -> FAILED
