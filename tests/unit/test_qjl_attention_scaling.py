@@ -9,6 +9,8 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder
 from rfsn_v11.quant.qjl.score_estimate import qjl_dot_estimate
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestQJLAttentionScaling(unittest.TestCase):
     """QJL estimator returns an unscaled dot product; callers apply attention_scale once."""

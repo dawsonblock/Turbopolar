@@ -5,7 +5,6 @@ another page's current shape.
 """
 
 import mlx.core as mx
-import pytest
 
 from rfsn_v11.generation.paged_storage import (
     PagedPolarKStorage,
@@ -21,6 +20,8 @@ from rfsn_v11.quant.polar.encoder import PolarQuantEncoder
 from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
+import pytest
+pytest.importorskip("mlx")
 
 def _make_encoder():
     config = TurboPolarConfig(

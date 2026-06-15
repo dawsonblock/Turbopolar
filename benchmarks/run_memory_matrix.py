@@ -178,7 +178,7 @@ def main():
         persistent_storage_ratio = (
             dense_kv_bytes / turbo_allocated if turbo_allocated > 0 else 0.0
         )
-        peak_device_memory_ratio = (
+        dense_to_turbo_peak_ratio = (
             dense_total_peak / turbo_total_peak
             if turbo_total_peak > 0 else 0.0
         )
@@ -192,7 +192,7 @@ def main():
             "turbo_total_peak_bytes": turbo_total_peak,
             "logical_kv_ratio": logical_kv_ratio,
             "persistent_storage_ratio": persistent_storage_ratio,
-            "peak_device_memory_ratio": peak_device_memory_ratio,
+            "dense_to_turbo_peak_ratio": dense_to_turbo_peak_ratio,
             "hidden_dense_cache_detected": (
                 turbo.get("retained_dense_k_history", False) or
                 turbo.get("retained_dense_v_history", False)
@@ -208,7 +208,7 @@ def main():
             f"  length={length:5d} "
             f"logical_ratio={record['logical_kv_ratio']:.3f}x "
             f"allocated_ratio={record['persistent_storage_ratio']:.3f}x "
-            f"peak_ratio={record['peak_device_memory_ratio']:.3f}x "
+            f"dense_to_turbo_peak_ratio={record['dense_to_turbo_peak_ratio']:.3f}x "
             f"({elapsed:.2f}s)"
         )
 

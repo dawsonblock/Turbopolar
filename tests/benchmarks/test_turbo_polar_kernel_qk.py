@@ -2,7 +2,6 @@ import unittest
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.quant.polar.encoder import PolarQuantEncoder
@@ -10,6 +9,8 @@ from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder
 from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 
+import pytest
+pytest.importorskip("mlx")
 
 @pytest.mark.native_metal_required
 class TestTurboPolarKernelQK(unittest.TestCase):

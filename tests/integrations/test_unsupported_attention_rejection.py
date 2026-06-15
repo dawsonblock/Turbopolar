@@ -7,6 +7,8 @@ import mlx.core as mx
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 
+import pytest
+pytest.importorskip("mlx")
 
 def _is_standard_causal_mask(mask, seq_len, cache_len):
     """Return True only if mask is None; all explicit masks are unsupported."""

@@ -2,67 +2,72 @@
 """Memory benchmark for TurboPolar vs dense KV cache.
 
 Measures logical, allocated, and peak-device-memory savings at a range of
-sequence lengths using the truthful accounting exposed by
-``TurboPolarKVCacheRuntime``.
+sequence lengths using isolated subprocess workers to avoid allocator
+cross-contamination between dense and Turbo measurements.
 """
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict
 
-import mlx.core as mx
-
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
-from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
 
-def _dense_peak_bytes(B: int, H: int, T: int, D: int) -> int:
-    """Allocate dense fp16 K+V and return the peak MLX bytes observed."""
-    mx.reset_peak_memory()
-    k = mx.zeros((B, H, T, D), dtype=mx.float16)
-    v = mx.zeros((B, H, T, D), dtype=mx.float16)
-    mx.eval(k, v)
-    return int(mx.get_peak_memory())
+def _run_worker(length: int, seed: int, config_dict: dict, mode: str) -> Dict[str, Any]:
+    """Run memory_worker.py in a fresh subprocess for one mode."""
+    worker = Path(__file__).parent / "memory_worker.py"
+    payload = json.dumps({"length": length, "seed": seed, "config": config_dict, "mode": mode})
+    result = subprocess.run(
+        [sys.executable, str(worker)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"memory_worker {mode} failed: {result.stderr}")
+    return json.loads(result.stdout)
 
 
-def _measure_length(length: int, config: TurboPolarConfig) -> Dict[str, Any]:
-    B, H, D = 1, config.num_kv_heads, config.head_dim
-    runtime = TurboPolarKVCacheRuntime(config)
+def _measure_length(length: int, config: TurboPolarConfig, seed: int) -> Dict[str, Any]:
+    config_dict = {
+        k: v for k, v in asdict(config).items()
+        if not k.startswith("_")
+    }
 
-    k = mx.random.normal((B, H, length, D), dtype=mx.float16)
-    v = mx.random.normal((B, H, length, D), dtype=mx.float16)
+    turbo_result = _run_worker(length, seed, config_dict, "turbo")
+    dense_result = _run_worker(length, seed, config_dict, "dense")
 
-    turbo_peak = runtime.measure_append_peak_memory(k, v)
-    stats = runtime.get_memory_stats()
-    dense_equivalent = stats.dense_equivalent_bytes
-
-    dense_peak = _dense_peak_bytes(B, H, length, D)
+    turbo_peak = turbo_result["peak_device_memory_bytes"]
+    dense_peak = dense_result["peak_device_memory_bytes"]
+    dense_equivalent = turbo_result["dense_equivalent_bytes"]
 
     return {
         "length": length,
         "logical_kv_ratio": (
-            dense_equivalent / stats.logical_payload_bytes
-            if stats.logical_payload_bytes > 0
+            dense_equivalent / turbo_result["logical_payload_bytes"]
+            if turbo_result.get("logical_payload_bytes", 0) > 0
             else 0.0
         ),
         "persistent_storage_ratio": (
-            dense_equivalent / stats.allocated_capacity_bytes
-            if stats.allocated_capacity_bytes > 0
+            dense_equivalent / turbo_result["allocated_capacity_bytes"]
+            if turbo_result.get("allocated_capacity_bytes", 0) > 0
             else 0.0
         ),
-        "peak_device_memory_ratio": (
+        "dense_to_turbo_peak_ratio": (
             dense_peak / turbo_peak if turbo_peak > 0 else 0.0
         ),
         "dense_equivalent_bytes": dense_equivalent,
-        "logical_payload_bytes": stats.logical_payload_bytes,
-        "allocated_capacity_bytes": stats.allocated_capacity_bytes,
+        "logical_payload_bytes": turbo_result.get("logical_payload_bytes", 0),
+        "allocated_capacity_bytes": turbo_result.get("allocated_capacity_bytes", 0),
         "dense_peak_bytes": dense_peak,
         "turbo_peak_bytes": turbo_peak,
     }
@@ -85,8 +90,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    mx.random.seed(args.seed)
-
     config = TurboPolarConfig(
         num_q_heads=32,
         num_kv_heads=8,
@@ -102,13 +105,13 @@ def main():
     print(f"Benchmarking lengths: {args.lengths}")
     for length in sorted(args.lengths):
         t0 = time.perf_counter()
-        record = _measure_length(length, config)
+        record = _measure_length(length, config, args.seed)
         elapsed = time.perf_counter() - t0
         records.append(record)
         print(
             f"  length={length:5d} logical_ratio={record['logical_kv_ratio']:.3f}x "
             f"allocated_ratio={record['persistent_storage_ratio']:.3f}x "
-            f"peak_ratio={record['peak_device_memory_ratio']:.3f}x "
+            f"dense_to_turbo_peak_ratio={record['dense_to_turbo_peak_ratio']:.3f}x "
             f"({elapsed:.2f}s)"
         )
 

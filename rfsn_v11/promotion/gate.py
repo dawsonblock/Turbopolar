@@ -457,7 +457,7 @@ def _recompute_memory_ratios(
     Returns a dict with:
       - logical_kv_ratio (worst across 8192+ contexts)
       - persistent_storage_ratio (worst across 8192+ contexts)
-      - peak_device_memory_ratio (worst across 8192+ contexts)
+      - dense_to_turbo_peak_ratio (worst across 8192+ contexts)
       - contexts_evaluated
       - fallback_calls (total across all contexts)
       - fixture_identities (list of per-context fixture info)
@@ -552,7 +552,7 @@ def _recompute_memory_ratios(
         if long_ratios["logical"]:
             logical_kv_ratio = min(long_ratios["logical"])
             persistent_storage_ratio = min(long_ratios["persistent"])
-            peak_device_memory_ratio = min(long_ratios["peak"])
+            dense_to_turbo_peak_ratio = min(long_ratios["peak"])
         else:
             # Fallback to last record if no long contexts
             last = records[-1]
@@ -567,14 +567,14 @@ def _recompute_memory_ratios(
             persistent_storage_ratio = (
                 dense_kv / turbo_allocated if turbo_allocated > 0 else 0.0
             )
-            peak_device_memory_ratio = (
+            dense_to_turbo_peak_ratio = (
                 dense_peak / turbo_peak if turbo_peak > 0 else 0.0
             )
 
         return {
             "logical_kv_ratio": logical_kv_ratio,
             "persistent_storage_ratio": persistent_storage_ratio,
-            "peak_device_memory_ratio": peak_device_memory_ratio,
+            "dense_to_turbo_peak_ratio": dense_to_turbo_peak_ratio,
             "contexts_evaluated": contexts,
             "fallback_calls": fallback_calls,
             "fixture_identities": fixture_identities,
@@ -1362,18 +1362,18 @@ class PromotionGate:
                 f"{self.PERSISTENT_STORAGE_RATIO}"
             )
         mr_peak_ok = _require_finite_number(
-            "Memory peak_device_memory_ratio_at_8192_plus",
-            mr.peak_device_memory_ratio_at_8192_plus,
+            "Memory dense_to_turbo_peak_ratio_at_8192_plus",
+            mr.dense_to_turbo_peak_ratio_at_8192_plus,
             reasons,
         )
         if (
             mr_peak_ok
-            and mr.peak_device_memory_ratio_at_8192_plus
+            and mr.dense_to_turbo_peak_ratio_at_8192_plus
             < self.PEAK_MEMORY_RATIO_8192
         ):
             reasons.append(
-                f"Peak memory ratio at 8192+ "
-                f"{mr.peak_device_memory_ratio_at_8192_plus} < "
+                f"Dense-to-Turbo peak ratio at 8192+ "
+                f"{mr.dense_to_turbo_peak_ratio_at_8192_plus} < "
                 f"{self.PEAK_MEMORY_RATIO_8192}"
             )
         if mr.hidden_dense_cache_detected:
@@ -1469,16 +1469,16 @@ class PromotionGate:
                                 "Memory persistent_storage_ratio does not "
                                 "match raw matrix recomputation."
                             )
-                        if (mr.peak_device_memory_ratio_at_8192_plus
+                        if (mr.dense_to_turbo_peak_ratio_at_8192_plus
                                 is not None
-                                and recomputed["peak_device_memory_ratio"]
+                                and recomputed["dense_to_turbo_peak_ratio"]
                                 is not None
                                 and abs(
-                                    mr.peak_device_memory_ratio_at_8192_plus
-                                    - recomputed["peak_device_memory_ratio"]
+                                    mr.dense_to_turbo_peak_ratio_at_8192_plus
+                                    - recomputed["dense_to_turbo_peak_ratio"]
                                 ) > tolerance):
                             reasons.append(
-                                "Memory peak_device_memory_ratio_at_8192+ "
+                                "Memory dense_to_turbo_peak_ratio_at_8192+ "
                                 "does not match raw matrix recomputation."
                             )
             except Exception as e:

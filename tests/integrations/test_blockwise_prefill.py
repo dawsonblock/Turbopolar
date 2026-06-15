@@ -4,11 +4,12 @@ Compares token-loop append against vectorized append_many for correctness.
 """
 
 import mlx.core as mx
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
+import pytest
+pytest.importorskip("mlx")
 
 def _make_config():
     return TurboPolarConfig(

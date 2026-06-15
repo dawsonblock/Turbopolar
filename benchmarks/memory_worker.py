@@ -37,6 +37,7 @@ def main():
     length = int(cfg.get("length", 0))
     seed = int(cfg.get("seed", 42))
     config_dict = cfg.get("config", {})
+    mode = cfg.get("mode", "turbo")
 
     if length <= 0:
         print("length must be positive", file=sys.stderr)
@@ -44,36 +45,48 @@ def main():
 
     mx.random.seed(seed)
     config = TurboPolarConfig(**config_dict)
-    runtime = TurboPolarKVCacheRuntime(config)
-
     B, H, D = 1, config.num_kv_heads, config.head_dim
-    k = mx.random.normal((B, H, length, D), dtype=mx.float16)
-    v = mx.random.normal((B, H, length, D), dtype=mx.float16)
 
-    mx.reset_peak_memory()
-    runtime.append_many(k, v)
-    runtime._eval_state()
-    peak = int(mx.get_peak_memory())
+    if mode == "dense":
+        k = mx.zeros((B, H, length, D), dtype=mx.float16)
+        v = mx.zeros((B, H, length, D), dtype=mx.float16)
+        mx.reset_peak_memory()
+        mx.eval(k, v)
+        peak = int(mx.get_peak_memory())
+        result = {
+            "length": length,
+            "peak_device_memory_bytes": peak,
+            "dense_equivalent_bytes": int(B * H * length * D * 2 * 2),
+        }
+    else:
+        runtime = TurboPolarKVCacheRuntime(config)
+        k = mx.random.normal((B, H, length, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, length, D), dtype=mx.float16)
 
-    stats = runtime.get_memory_stats()
-    audit = runtime.audit_cache_residency()
+        mx.reset_peak_memory()
+        runtime.append_many(k, v)
+        runtime._eval_state()
+        peak = int(mx.get_peak_memory())
 
-    result = {
-        "length": length,
-        "peak_device_memory_bytes": peak,
-        "logical_payload_bytes": stats.logical_payload_bytes,
-        "allocated_capacity_bytes": stats.allocated_capacity_bytes,
-        "dense_equivalent_bytes": stats.dense_equivalent_bytes,
-        "dense_tail_bytes": stats.dense_tail_bytes,
-        "metadata_bytes": stats.metadata_bytes,
-        "logical_kv_ratio": stats.logical_compression_ratio,
-        "persistent_storage_ratio": stats.allocated_compression_ratio,
-        "dense_tail_tokens": audit.dense_tail_tokens,
-        "materialized_compressed_history_present": audit.materialized_compressed_history_present,
-        "hidden_dense_cache_detected": (
-            audit.dense_full_k_history_present or audit.dense_full_v_history_present
-        ),
-    }
+        stats = runtime.get_memory_stats()
+        audit = runtime.audit_cache_residency()
+
+        result = {
+            "length": length,
+            "peak_device_memory_bytes": peak,
+            "logical_payload_bytes": stats.logical_payload_bytes,
+            "allocated_capacity_bytes": stats.allocated_capacity_bytes,
+            "dense_equivalent_bytes": stats.dense_equivalent_bytes,
+            "dense_tail_bytes": stats.dense_tail_bytes,
+            "metadata_bytes": stats.metadata_bytes,
+            "logical_kv_ratio": stats.logical_compression_ratio,
+            "persistent_storage_ratio": stats.allocated_compression_ratio,
+            "dense_tail_tokens": audit.dense_tail_tokens,
+            "materialized_compressed_history_present": audit.materialized_compressed_history_present,
+            "hidden_dense_cache_detected": (
+                audit.dense_full_k_history_present or audit.dense_full_v_history_present
+            ),
+        }
     print(json.dumps(result))
 
 

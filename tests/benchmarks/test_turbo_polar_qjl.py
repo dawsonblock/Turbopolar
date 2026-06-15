@@ -8,6 +8,8 @@ from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.quant.qjl.encoder import QJLResidualEncoder
 from rfsn_v11.quant.qjl.score_estimate import qjl_dot_estimate
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestTurboPolarQJL(unittest.TestCase):
     def setUp(self):

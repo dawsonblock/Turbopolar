@@ -2,11 +2,12 @@ import unittest
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
+import pytest
+pytest.importorskip("mlx")
 
 @pytest.mark.native_metal_required
 class TestTurboPolarFastAttention(unittest.TestCase):

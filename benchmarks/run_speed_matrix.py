@@ -453,10 +453,11 @@ def main():
             turbo_result = result["turbo"]
 
             # Strict validation: discard if fallback > 0.
+            execution_order = ("turbo", "dense") if (trial % 2 == 1) else ("dense", "turbo")
             if args.execution_mode == "metal_strict":
                 if turbo_result.get("fallbacks", 0) > 0:
                     print(
-                        f"  length={length} trial={trial + 1}/{args.trials} "
+                        f"  length={length} trial={trial}/{args.trials} "
                         f"DISCARDED: {turbo_result['fallbacks']} fallback(s)"
                     )
                     continue
@@ -467,7 +468,8 @@ def main():
             trial_records.append({
                 "context_length": length,
                 "mode": "dense",
-                "trial": trial + 1,
+                "trial": trial,
+                "execution_order": execution_order,
                 "execution_mode": args.execution_mode,
                 "prefill_seconds": dense_result["prefill_seconds"],
                 "first_token_ms": dense_result["first_token_ms"],
@@ -480,7 +482,8 @@ def main():
             trial_records.append({
                 "context_length": length,
                 "mode": "turbo",
-                "trial": trial + 1,
+                "trial": trial,
+                "execution_order": execution_order,
                 "execution_mode": args.execution_mode,
                 "prefill_seconds": turbo_result["prefill_seconds"],
                 "first_token_ms": turbo_result["first_token_ms"],
@@ -492,7 +495,7 @@ def main():
             })
 
             print(
-                f"  length={length} trial={trial + 1}/{args.trials} "
+                f"  length={length} trial={trial}/{args.trials} "
                 f"dense={dense_result['throughput_tps']:.2f} tok/s "
                 f"turbo={turbo_result['throughput_tps']:.2f} tok/s"
             )
@@ -571,6 +574,7 @@ def main():
             context_length=trial["context_length"],
             mode=trial["mode"],
             trial=trial["trial"],
+            execution_order=tuple(trial.get("execution_order", ("", ""))),
             execution_mode=trial["execution_mode"],
             prefill_seconds=trial["prefill_seconds"],
             first_token_ms=trial["first_token_ms"],

@@ -8,6 +8,8 @@ import numpy as np
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 
+import pytest
+pytest.importorskip("mlx")
 
 def _dense_attention(q, k, v, scale):
     """Reference causal attention over dense K/V history.

@@ -12,6 +12,9 @@ from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.evidence.speed import SpeedEvidence, SpeedTrialResult
 
+import pytest
+pytest.importorskip("mlx")
+
 # Minimum compression ratio required for promotion.
 # Honest best-case ratio with fp16 radii, packed angles, and int8 V
 # is ~1.66-1.72x. Gate is set to a defensible 1.65x until lower-precision

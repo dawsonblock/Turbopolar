@@ -16,6 +16,8 @@ from benchmarks.run_fused_forced_decode import (
 from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 
+import pytest
+pytest.importorskip("mlx")
 
 class _FakeTokenizer:
     def __init__(self, vocab_size=100):

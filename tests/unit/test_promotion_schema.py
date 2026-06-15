@@ -172,7 +172,7 @@ class TestPromotionSchema(unittest.TestCase):
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
                 logical_kv_ratio=1.90,
                 persistent_storage_ratio=1.80,
-                peak_device_memory_ratio_at_8192_plus=1.25,
+                dense_to_turbo_peak_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
             ),
             baseline_comparison_report=BaselineComparisonReport(
@@ -258,7 +258,7 @@ class TestPromotionSchema(unittest.TestCase):
                 contexts_evaluated=[512, 2048, 4096, 8192, 16384],
                 logical_kv_ratio=1.90,
                 persistent_storage_ratio=1.80,
-                peak_device_memory_ratio_at_8192_plus=1.25,
+                dense_to_turbo_peak_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
             ),
             baseline_comparison_report=BaselineComparisonReport(

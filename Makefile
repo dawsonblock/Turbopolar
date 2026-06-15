@@ -1,4 +1,4 @@
-.PHONY: all install install-dev install-bench test test-fast compile lint clean smoke status \
+.PHONY: all install install-dev install-bench test test-fast test-portable test-native compile lint clean smoke status \
         bench fused-bench speed-matrix memory-bench cartesian-bench promote release
 
 all: install-dev test
@@ -17,6 +17,13 @@ test:
 
 test-fast:
 	pytest tests/ -v --tb=short -x
+
+test-portable:
+	pytest tests/ -v --tb=short
+
+test-native:
+	@python -c "import mlx.core as mx; assert mx.metal.is_available(), 'Metal not available'" 2>/dev/null || (echo "ERROR: native tests require Apple Silicon with Metal." && exit 1)
+	pytest tests/ -v --tb=short
 
 compile:
 	python -m compileall rfsn_v11 tests scripts benchmarks

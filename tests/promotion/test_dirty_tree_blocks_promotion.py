@@ -149,7 +149,7 @@ class TestDirtyTreeBlocksPromotion(unittest.TestCase):
             memory_report=MemoryReport(
                 logical_kv_ratio=1.90,
                 persistent_storage_ratio=1.80,
-                peak_device_memory_ratio_at_8192_plus=1.25,
+                dense_to_turbo_peak_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
                 contexts_evaluated=list(
                     PromotionGate.REQUIRED_CONTEXTS

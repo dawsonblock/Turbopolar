@@ -285,6 +285,7 @@ class TurboPolarKVCacheRuntime:
             if T_new >= space:
                 self.partial_k_buffer[:, :, self.partial_length:, :] = k_new[:, :, :space, :]
                 self.partial_v_buffer[:, :, self.partial_length:, :] = v_new[:, :, :space, :]
+                self.actual_seq_len += space
                 self._flush_tail_block()
                 self.partial_length = 0
                 t = space

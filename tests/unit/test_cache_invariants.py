@@ -7,6 +7,8 @@ import mlx.core as mx
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestCacheInvariants(unittest.TestCase):
     """Invariants must survive exact 64-token flushes where the tail is reset."""

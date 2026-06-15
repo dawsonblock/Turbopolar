@@ -9,6 +9,8 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.quant.polar.encoder import PolarQuantEncoder
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestInt8RadiusStandaloneDecode(unittest.TestCase):
     """A single-block 4D payload must decode identically to a unified 5D payload."""

@@ -290,7 +290,7 @@ class MemoryReport:
     contexts_evaluated: List[int] = field(default_factory=list)
     logical_kv_ratio: Optional[float] = None
     persistent_storage_ratio: Optional[float] = None
-    peak_device_memory_ratio_at_8192_plus: Optional[float] = None
+    dense_to_turbo_peak_ratio_at_8192_plus: Optional[float] = None
     hidden_dense_cache_detected: bool = True
     fallback_calls: int = 0
     raw_memory_path: str = ""
@@ -307,8 +307,8 @@ class MemoryReport:
             persistent_storage_ratio=_numeric_or_none(
                 data.get("persistent_storage_ratio")
             ),
-            peak_device_memory_ratio_at_8192_plus=_numeric_or_none(
-                data.get("peak_device_memory_ratio_at_8192_plus")
+            dense_to_turbo_peak_ratio_at_8192_plus=_numeric_or_none(
+                data.get("dense_to_turbo_peak_ratio_at_8192_plus")
             ),
             hidden_dense_cache_detected=bool(
                 data.get("hidden_dense_cache_detected", True)

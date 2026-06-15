@@ -5,11 +5,12 @@ These tests pass in both editable and wheel installs.  CI runs them after
 """
 
 import mlx.core as mx
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 
+import pytest
+pytest.importorskip("mlx")
 
 @pytest.mark.packaging
 class TestInstalledWheel:

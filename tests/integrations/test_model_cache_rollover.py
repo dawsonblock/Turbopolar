@@ -10,6 +10,8 @@ import mlx.core as mx
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
+import pytest
+pytest.importorskip("mlx")
 
 def _random_kv(B, H, T, D, dtype=mx.float16):
     k = mx.random.normal((B, H, T, D)).astype(dtype)

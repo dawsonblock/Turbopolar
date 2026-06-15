@@ -1,7 +1,7 @@
-"""MLX-LM-compatible cache that uses fused Metal attention for TurboPolar decode."""
+"""MLX-LM cache with fused Metal attention for TurboPolar decode."""
 
 import dataclasses
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 
@@ -27,21 +27,30 @@ from rfsn_v11.quant.v_quant.encoder import GroupedVQuantizer
 class TurboPolarFastCache:
     """MLX-LM-compatible cache that uses fused Metal attention for decode."""
 
-    def __init__(self, config: TurboPolarConfig, trace_collector: Optional[ExecutionTraceCollector] = None):
+    def __init__(
+        self,
+        config: TurboPolarConfig,
+        trace_collector: Optional[ExecutionTraceCollector] = None,
+    ):
         self.config = config
         self.runtime = TurboPolarKVCacheRuntime(config)
         self.bridge = MetalKernelBridge()
         self.decoder = PolarQuantDecoder()
         self.v_dequantizer = GroupedVQuantizer(group_size=32)
-        # Share the runtime's QJL projector so query signs match key residual sketches.
+        # Share the runtime's QJL projector so query signs match key
+        # residual sketches.
         self.qjl_encoder: Optional[QJLResidualEncoder] = (
             self.runtime.qjl_encoder if config.use_qjl else None
         )
-        self._trace_collector = trace_collector if trace_collector is not None else ExecutionTraceCollector()
+        self._trace_collector = (
+            trace_collector
+            if trace_collector is not None
+            else ExecutionTraceCollector()
+        )
 
     @property
     def offset(self) -> int:
-        """Sequence length; used by mlx_lm RoPE to apply the correct position."""
+        """Sequence length; used by mlx_lm RoPE for correct position."""
         return self.runtime.actual_seq_len
 
     def reset_execution_stats(self):
@@ -84,13 +93,15 @@ class TurboPolarFastCache:
         B, H_q, P = signs.shape
         reshaped = signs.reshape(B, H_q, P // 8, 8)
         powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
-        packed = mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
+        packed = mx.sum(
+            reshaped.astype(mx.uint8) * powers, axis=-1
+        ).astype(mx.uint8)
         return packed
 
     def update_and_fetch(
         self, keys: mx.array, values: mx.array
     ) -> Tuple[mx.array, mx.array]:
-        """Prefill path: append keys/values and return the decompressed full history."""
+        """Prefill: append keys/values and return decompressed full history."""
         original_dtype = keys.dtype
         if keys.dtype != mx.float16:
             keys = keys.astype(mx.float16)
@@ -102,7 +113,9 @@ class TurboPolarFastCache:
             self.runtime.get_blocks_for_attention()
         )
         if block is None:
-            raise RuntimeError("TurboPolar cache returned no blocks after append")
+            raise RuntimeError(
+                "TurboPolar cache returned no blocks after append"
+            )
 
         k_dense = self.decoder.decode_block(block)[:, :, :actual_len, :]
 
@@ -128,7 +141,9 @@ class TurboPolarFastCache:
         q: mx.array, k_new: mx.array, v_new: mx.array, config: TurboPolarConfig
     ):
         if q.ndim != 4 or k_new.ndim != 4 or v_new.ndim != 4:
-            raise ValueError("decode_attention inputs must be 4-D (B, H, T, D)")
+            raise ValueError(
+                "decode_attention inputs must be 4-D (B, H, T, D)"
+            )
         B, H_q, T, D = q.shape
         _, H_kv, T_k, _ = k_new.shape
         _, _, T_v, _ = v_new.shape
@@ -146,11 +161,13 @@ class TurboPolarFastCache:
             )
         if D != config.head_dim:
             raise ValueError(
-                f"decode_attention head_dim {D} does not match config {config.head_dim}"
+                f"decode_attention head_dim {D} does not match "
+                f"config {config.head_dim}"
             )
         if H_q % H_kv != 0:
             raise ValueError(
-                f"decode_attention requires GQA ratio to divide evenly, got {H_q} and {H_kv}"
+                f"decode_attention requires GQA ratio to divide "
+                f"evenly, got {H_q} and {H_kv}"
             )
 
     def decode_attention(
@@ -179,7 +196,8 @@ class TurboPolarFastCache:
             layer_index: layer index for trace collection (optional).
             decode_step: decode step for trace collection (optional).
             decode_ordinal: fixture-local decode ordinal (optional).
-            initial_context_length: initial context length for this fixture (optional).
+            initial_context_length: initial context length for this fixture
+                (optional).
             fixture_id: fixture identifier for trace collection (optional).
             experiment_id: experiment identifier for trace collection.
 
@@ -202,12 +220,15 @@ class TurboPolarFastCache:
 
         view = self.runtime.attention_view()
         if not view.pages and view.partial_k is None:
-            raise RuntimeError("TurboPolar cache returned no blocks after append")
+            raise RuntimeError(
+                "TurboPolar cache returned no blocks after append"
+            )
 
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
-        # Page-based online-softmax attention without full-cache materialization.
+        # Page-based online-softmax attention without full-cache
+        # materialization.
         output, trace = self.bridge.execute_paged_online_attention(
             q_squeezed,
             view.pages,
@@ -219,22 +240,41 @@ class TurboPolarFastCache:
             trace_validation_mode=cfg.trace_validation_mode,
         )
 
-        # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs internally.
-        # In ASYNC_PERFORMANCE mode evaluation is deferred to the caller.
-        synchronous = cfg.trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
-        output_evaluated = cfg.execution_mode is ExecutionMode.METAL_STRICT and synchronous
+        # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs
+        # internally. In ASYNC_PERFORMANCE mode evaluation is deferred.
+        synchronous = (
+            cfg.trace_validation_mode
+            is TraceValidationMode.SYNCHRONOUS_EVIDENCE
+        )
+        output_evaluated = (
+            cfg.execution_mode is ExecutionMode.METAL_STRICT
+            and synchronous
+        )
 
         # Build and store operation-level trace if identity is provided.
         if layer_index is not None and decode_step is not None:
             # Use passed parameters for trace identity fields
-            # If not provided, fall back to derived values (for backward compatibility)
-            context_length = initial_context_length if initial_context_length is not None else (view.total_tokens - 1)
-            fixture_id = fixture_id if fixture_id is not None else experiment_id
-            decode_ordinal = decode_ordinal if decode_ordinal is not None else 0
+            # If not provided, fall back to derived values
+            # (for backward compatibility)
+            context_length = (
+                initial_context_length
+                if initial_context_length is not None
+                else (view.total_tokens - 1)
+            )
+            fixture_id = (
+                fixture_id if fixture_id is not None else experiment_id
+            )
+            decode_ordinal = (
+                decode_ordinal if decode_ordinal is not None else 0
+            )
             cache_offset_before = decode_step
             cache_tokens_before = view.total_tokens - 1  # Before this append
             cache_tokens_after = view.total_tokens  # After this append
-            partial_tail_length = view.partial_k.shape[2] if view.partial_k is not None else 0
+            partial_tail_length = (
+                view.partial_k.shape[2]
+                if view.partial_k is not None
+                else 0
+            )
             
             step_trace = self._build_attention_trace(
                 trace=trace,
@@ -344,8 +384,14 @@ class TurboPolarFastCache:
                 execution_mode=execution_mode,
                 metal_requested=True,
                 metal_executed=dense_tail_metal,
-                fallback_used=not dense_tail_metal and trace.get("fallback_used", False),
-                fallback_reason=trace.get("fallback_reason") if not dense_tail_metal else None,
+                fallback_used=(
+                    not dense_tail_metal and trace.get("fallback_used", False)
+                ),
+                fallback_reason=(
+                    trace.get("fallback_reason")
+                    if not dense_tail_metal
+                    else None
+                ),
                 expected_tokens=view.partial_k.shape[2],
                 processed_tokens=view.partial_k.shape[2],
                 output_evaluated=output_evaluated,
@@ -369,14 +415,19 @@ class TurboPolarFastCache:
 
     def commit_provisional_traces(self, output_evaluated: bool = True) -> None:
         """Commit all provisional traces held by the shared collector."""
-        self._trace_collector.commit_provisional(output_evaluated=output_evaluated)
+        self._trace_collector.commit_provisional(
+            output_evaluated=output_evaluated
+        )
 
     def clear_provisional_traces(self) -> None:
         """Discard all provisional traces without committing them."""
         self._trace_collector.clear_provisional()
 
     def make_mask(
-        self, N: int, return_array: bool = False, window_size: Optional[int] = None
+        self,
+        N: int,
+        return_array: bool = False,
+        window_size: Optional[int] = None,
     ):
         from mlx_lm.models.cache import create_attention_mask
 
@@ -405,7 +456,7 @@ class TurboPolarFastCache:
         scale: float,
         mask: Optional[mx.array] = None,
     ) -> Tuple[int, mx.array]:
-        """Run decode_attention and return (peak MLX allocator bytes, output)."""
+        """Run decode_attention and return (peak allocator bytes, output)."""
         mx.reset_peak_memory()
         output = self.decode_attention(q, k_new, v_new, scale, mask=mask)
         mx.eval(output)
@@ -415,32 +466,67 @@ class TurboPolarFastCache:
 
 def make_turbo_caches(
     num_layers: int,
-    num_q_heads: int,
-    num_kv_heads: int,
-    head_dim: int,
-    use_qjl: bool = False,
+    num_q_heads: Optional[int] = None,
+    num_kv_heads: Optional[int] = None,
+    head_dim: Optional[int] = None,
+    use_qjl: Optional[bool] = None,
     execution_mode: Optional[ExecutionMode] = None,
     trace_validation_mode: Optional[TraceValidationMode] = None,
     experiment_id: str = "",
+    config: Optional[TurboPolarConfig] = None,
 ) -> List[TurboPolarFastCache]:
-    """Create a list of TurboPolarFastCache layers with benchmark-quality defaults."""
-    if head_dim != 128:
-        raise ValueError(
-            f"TurboPolar fused MLX path only supports head_dim=128, got {head_dim}"
+    """Create TurboPolarFastCache layers with benchmark-quality defaults.
+
+    If ``config`` is provided, the exact immutable config is cloned with
+    ``dataclasses.replace()`` for any fields explicitly overridden.
+    Otherwise a new default config is constructed from the individual fields.
+    """
+    if config is not None:
+        overrides: Dict[str, Any] = {}
+        if num_q_heads is not None:
+            overrides["num_q_heads"] = num_q_heads
+        if num_kv_heads is not None:
+            overrides["num_kv_heads"] = num_kv_heads
+        if head_dim is not None:
+            overrides["head_dim"] = head_dim
+        if use_qjl is not None:
+            overrides["use_qjl"] = use_qjl
+        if execution_mode is not None:
+            overrides["execution_mode"] = execution_mode
+        if trace_validation_mode is not None:
+            overrides["trace_validation_mode"] = trace_validation_mode
+        config = dataclasses.replace(config, **overrides)
+    else:
+        if head_dim is None:
+            raise ValueError(
+                "head_dim is required when config is not provided"
+            )
+        config = TurboPolarConfig(
+            num_q_heads=num_q_heads or 32,
+            num_kv_heads=num_kv_heads or 8,
+            head_dim=head_dim,
+            block_size=64,
+            qjl_proj_dim=64,
+            use_qjl=use_qjl if use_qjl is not None else False,
+            storage_mode="kv_quant",
+            use_int8_radii=True,
+            k_angle_bits_deep=8,
+            split_dim=0,
+            execution_mode=(
+                execution_mode
+                if execution_mode is not None
+                else ExecutionMode.DEVELOPMENT_AUTO
+            ),
+            trace_validation_mode=(
+                trace_validation_mode
+                if trace_validation_mode is not None
+                else TraceValidationMode.SYNCHRONOUS_EVIDENCE
+            ),
         )
-    config = TurboPolarConfig(
-        num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        block_size=64,
-        qjl_proj_dim=64,
-        use_qjl=use_qjl,
-        storage_mode="kv_quant",
-        use_int8_radii=True,
-        k_angle_bits_deep=8,
-        split_dim=0,
-        execution_mode=execution_mode if execution_mode is not None else ExecutionMode.DEVELOPMENT_AUTO,
-        trace_validation_mode=trace_validation_mode if trace_validation_mode is not None else TraceValidationMode.SYNCHRONOUS_EVIDENCE,
+    shared_collector = ExecutionTraceCollector(
+        experiment_id=experiment_id
     )
-    shared_collector = ExecutionTraceCollector(experiment_id=experiment_id)
-    return [TurboPolarFastCache(config, trace_collector=shared_collector) for _ in range(num_layers)]
+    return [
+        TurboPolarFastCache(config, trace_collector=shared_collector)
+        for _ in range(num_layers)
+    ]

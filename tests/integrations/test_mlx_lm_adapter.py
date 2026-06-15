@@ -7,6 +7,8 @@ from mlx_lm.models import llama
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm import TurboPolarLlamaAdapter
 
+import pytest
+pytest.importorskip("mlx")
 
 def _tiny_llama_args(**overrides):
     defaults = dict(

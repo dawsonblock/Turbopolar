@@ -9,13 +9,14 @@ import unittest
 import mlx.core as mx
 import mlx_lm.models.llama as llama
 import numpy as np
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.adapter import TurboPolarLlamaAdapter
 from rfsn_v11.integrations.mlx_lm.cache import make_turbo_caches
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 
+import pytest
+pytest.importorskip("mlx")
 
 class _FakeTokenizer:
     def __init__(self, vocab_size=100):

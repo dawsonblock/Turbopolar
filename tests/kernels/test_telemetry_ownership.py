@@ -3,13 +3,14 @@
 MetalKernelBridge is a singleton. Stats must be process-global and read once.
 """
 
-import pytest
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.integrations.mlx_lm.cache import TurboPolarFastCache
 from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode
 
+import pytest
+pytest.importorskip("mlx")
 
 def _make_config():
     return TurboPolarConfig(

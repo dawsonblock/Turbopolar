@@ -139,7 +139,7 @@ class TestPromotionGateNonFiniteSummary(unittest.TestCase):
                 contexts_evaluated=required_contexts,
                 logical_kv_ratio=1.90,
                 persistent_storage_ratio=1.80,
-                peak_device_memory_ratio_at_8192_plus=1.25,
+                dense_to_turbo_peak_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
                 raw_memory_path="/tmp/dummy_memory.json",
                 raw_memory_hash="i" * 64,
@@ -303,9 +303,9 @@ class TestPromotionGateNonFiniteSummary(unittest.TestCase):
 
     def test_memory_peak_ratio_nan_fails(self):
         ev = self._valid_evidence()
-        ev.memory_report.peak_device_memory_ratio_at_8192_plus = float("nan")
+        ev.memory_report.dense_to_turbo_peak_ratio_at_8192_plus = float("nan")
         self._assert_fails(
-            ev, "memory peak_device_memory_ratio_at_8192_plus=NaN"
+            ev, "memory dense_to_turbo_peak_ratio_at_8192_plus=NaN"
         )
 
     # Schema from_dict boolean coercion -----------------------------------

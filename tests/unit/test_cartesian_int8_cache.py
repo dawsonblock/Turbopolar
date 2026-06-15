@@ -7,6 +7,8 @@ import mlx.core as mx
 from benchmarks.cartesian_int8_cache import CartesianInt8Cache
 from rfsn_v11.generation.cartesian_int8_paged_cache import PagedCartesianInt8KVCache
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestCartesianInt8Cache(unittest.TestCase):
     def test_empty_cache(self):

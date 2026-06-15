@@ -5,6 +5,10 @@ from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 
+import pytest
+
+pytest.importorskip("mlx")
+
 
 class TestTurboPolarCacheRuntime(unittest.TestCase):
     """
@@ -28,7 +32,9 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         )
 
     def _assert_cache_shape(self, cache, expected_T):
-        block, quant_v, dense_v, qjl, actual_len = cache.get_blocks_for_attention()
+        block, quant_v, dense_v, qjl, actual_len = (
+            cache.get_blocks_for_attention()
+        )
         self.assertEqual(actual_len, expected_T)
         self.assertIsNotNone(block)
         self.assertIsNotNone(quant_v)
@@ -59,16 +65,24 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         config = self._make_config(gqa_ratio=1)
         cache = TurboPolarKVCacheRuntime(config)
         for _ in range(130):
-            k = mx.random.normal(shape=[1, config.num_kv_heads, 1, config.head_dim])
-            v = mx.random.normal(shape=[1, config.num_kv_heads, 1, config.head_dim])
+            k = mx.random.normal(
+                shape=[1, config.num_kv_heads, 1, config.head_dim]
+            )
+            v = mx.random.normal(
+                shape=[1, config.num_kv_heads, 1, config.head_dim]
+            )
             cache.append(k, v)
         self._assert_cache_shape(cache, 130)
 
     def test_fetch_blocks_roundtrip(self):
         config = self._make_config(gqa_ratio=1)
         cache = TurboPolarKVCacheRuntime(config)
-        k = mx.random.normal(shape=[1, config.num_kv_heads, 64, config.head_dim])
-        v = mx.random.normal(shape=[1, config.num_kv_heads, 64, config.head_dim])
+        k = mx.random.normal(
+            shape=[1, config.num_kv_heads, 64, config.head_dim]
+        )
+        v = mx.random.normal(
+            shape=[1, config.num_kv_heads, 64, config.head_dim]
+        )
         cache.append(k, v)
         block, quant_v, _, _, actual_len = cache.get_blocks_for_attention()
         self.assertEqual(actual_len, 64)
@@ -81,12 +95,17 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
 
     def test_unsupported_configurations_raise(self):
         with self.assertRaises(ValueError):
-            TurboPolarConfig(head_dim=64, block_size=64, num_q_heads=4, num_kv_heads=4)
+            TurboPolarConfig(
+                head_dim=64, block_size=64, num_q_heads=4, num_kv_heads=4
+            )
         with self.assertRaises(ValueError):
-            TurboPolarConfig(head_dim=128, block_size=32, num_q_heads=4, num_kv_heads=4)
+            TurboPolarConfig(
+                head_dim=128, block_size=32, num_q_heads=4, num_kv_heads=4
+            )
         with self.assertRaises(NotImplementedError):
             TurboPolarConfig(
-                head_dim=128, block_size=64, num_q_heads=4, num_kv_heads=4, use_qjl=True
+                head_dim=128, block_size=64, num_q_heads=4,
+                num_kv_heads=4, use_qjl=True
             )
         with self.assertRaises(ValueError):
             TurboPolarConfig(
@@ -148,32 +167,117 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
 
         # Wrong rank
         with self.assertRaises(ValueError):
-            cache.append(mx.random.normal((1, 4, 128)), mx.random.normal((1, 4, 128)))
+            cache.append(
+                mx.random.normal((1, 4, 128)),
+                mx.random.normal((1, 4, 128)),
+            )
 
         # Mismatched k/v shape
         with self.assertRaises(ValueError):
             cache.append(
-                mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 2, 128))
+                mx.random.normal((1, 4, 1, 128)),
+                mx.random.normal((1, 4, 2, 128)),
             )
 
         # Wrong number of KV heads
         with self.assertRaises(ValueError):
             cache.append(
-                mx.random.normal((1, 2, 1, 128)), mx.random.normal((1, 2, 1, 128))
+                mx.random.normal((1, 2, 1, 128)),
+                mx.random.normal((1, 2, 1, 128)),
             )
 
         # Wrong head dimension
         with self.assertRaises(ValueError):
             cache.append(
-                mx.random.normal((1, 4, 1, 64)), mx.random.normal((1, 4, 1, 64))
+                mx.random.normal((1, 4, 1, 64)),
+                mx.random.normal((1, 4, 1, 64)),
             )
 
         # Batch size changes after first append
-        cache.append(mx.random.normal((1, 4, 1, 128)), mx.random.normal((1, 4, 1, 128)))
+        cache.append(
+            mx.random.normal((1, 4, 1, 128)),
+            mx.random.normal((1, 4, 1, 128)),
+        )
         with self.assertRaises(ValueError):
             cache.append(
-                mx.random.normal((2, 4, 1, 128)), mx.random.normal((2, 4, 1, 128))
+                mx.random.normal((2, 4, 1, 128)),
+                mx.random.normal((2, 4, 1, 128)),
             )
+
+    def test_boundary_crossing_prefill_1_then_64(self):
+        """Append 1 token, then append 64; offset must be 65."""
+        config = self._make_config(gqa_ratio=1)
+        cache = TurboPolarKVCacheRuntime(config)
+        k1 = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+        v1 = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+        cache.append(k1, v1)
+        k64 = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        v64 = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        cache.append(k64, v64)
+        self.assertEqual(cache.actual_seq_len, 65)
+
+    def test_boundary_crossing_prefill_63_then_2(self):
+        """Append 63 tokens, then append 2; offset must be 65."""
+        config = self._make_config(gqa_ratio=1)
+        cache = TurboPolarKVCacheRuntime(config)
+        k63 = mx.random.normal((1, 4, 63, 128), dtype=mx.float16)
+        v63 = mx.random.normal((1, 4, 63, 128), dtype=mx.float16)
+        cache.append(k63, v63)
+        k2 = mx.random.normal((1, 4, 2, 128), dtype=mx.float16)
+        v2 = mx.random.normal((1, 4, 2, 128), dtype=mx.float16)
+        cache.append(k2, v2)
+        self.assertEqual(cache.actual_seq_len, 65)
+
+    def test_randomized_append_partitions_match_dense(self):
+        """Random partitions must match total length and block count."""
+        config = self._make_config(gqa_ratio=1)
+        total = 257
+        mx.random.seed(11)
+        k_full = mx.random.normal((1, 4, total, 128), dtype=mx.float16)
+        v_full = mx.random.normal((1, 4, total, 128), dtype=mx.float16)
+
+        # Single-shot reference
+        ref = TurboPolarKVCacheRuntime(config)
+        ref.append_many(k_full, v_full)
+
+        # Randomized partition test
+        for seed in range(20):
+            mx.random.seed(seed)
+            cache = TurboPolarKVCacheRuntime(config)
+            t = 0
+            while t < total:
+                chunk = int(mx.random.randint(1, 32).item())
+                end = min(t + chunk, total)
+                cache.append(k_full[:, :, t:end, :], v_full[:, :, t:end, :])
+                t = end
+            self.assertEqual(
+                cache.actual_seq_len, ref.actual_seq_len,
+                f"seed={seed}: actual_seq_len mismatch"
+            )
+            # RoPE offset must equal true token count
+            self.assertEqual(cache.actual_seq_len, total)
+            # Block count must match
+            self.assertEqual(
+                cache.total_blocks, ref.total_blocks,
+                f"seed={seed}: total_blocks mismatch"
+            )
+
+    def test_append_many_boundary_crossing(self):
+        """append_many must correctly handle pre-existing partial blocks."""
+        config = self._make_config(gqa_ratio=1)
+        cache = TurboPolarKVCacheRuntime(config)
+        # Start with 1 token in partial buffer
+        cache.append_many(
+            mx.random.normal((1, 4, 1, 128), dtype=mx.float16),
+            mx.random.normal((1, 4, 1, 128), dtype=mx.float16),
+        )
+        # Append 64 tokens crossing the boundary
+        cache.append_many(
+            mx.random.normal((1, 4, 64, 128), dtype=mx.float16),
+            mx.random.normal((1, 4, 64, 128), dtype=mx.float16),
+        )
+        self.assertEqual(cache.actual_seq_len, 65)
+        self.assertEqual(cache.partial_length, 1)
 
 
 if __name__ == "__main__":

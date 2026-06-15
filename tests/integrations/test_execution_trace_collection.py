@@ -4,7 +4,6 @@ Verify that decode_attention preserves detailed traces with layer/step/page
 identity, and that strict validation catches missing pages and fallbacks.
 """
 
-import pytest
 import mlx.core as mx
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
@@ -16,6 +15,8 @@ from rfsn_v11.evidence.execution_trace import (
     ExecutionTraceCollector,
 )
 
+import pytest
+pytest.importorskip("mlx")
 
 def _make_config():
     return TurboPolarConfig(

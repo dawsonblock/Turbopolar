@@ -87,19 +87,15 @@ class TestRawSpeedSchema(unittest.TestCase):
         """Validation should pass for a complete valid artifact."""
         trials = []
         for context in REQUIRED_CONTEXTS:
+            order = ("dense", "turbo")
             for mode in ["dense", "turbo"]:
                 for trial_idx in range(REQUIRED_TRIALS_PER_CONTEXT):
                     trial = RawSpeedTrial(
                         context_length=context,
                         method=mode,
-                        trial_index=trial_idx + 1,
-                        execution_order=(
-                            f"{context}_{mode}",
-                            f"trial_{trial_idx + 1}",
-                        ),
-                        execution_mode=(
-                            "metal_strict" if mode == "turbo" else "reference"
-                        ),
+                        trial_index=trial_idx,
+                        execution_order=order,
+                        execution_mode="metal_strict",
                         prefill_seconds=0.1,
                         token_latencies_ms=tuple(
                             [1.0] * REQUIRED_TOKEN_LATENCIES

@@ -89,15 +89,17 @@ class RawSpeedArtifact:
                 trial_data.get("tail_dispatches", 0)
             )
             execution_mode = trial_data.get("execution_mode", "unknown")
+            raw_order = trial_data.get("execution_order")
+            if isinstance(raw_order, (list, tuple)) and len(raw_order) == 2:
+                execution_order = tuple(raw_order)
+            else:
+                execution_order = (method, "unknown")
 
             trial = RawSpeedTrial(
                 context_length=trial_data.get("context_length", 0),
                 method=method,
                 trial_index=trial_index,
-                execution_order=(
-                    f"{trial_data.get('context_length', 0)}_{method}",
-                    f"trial_{trial_index}"
-                ),
+                execution_order=execution_order,
                 execution_mode=execution_mode,
                 prefill_seconds=trial_data.get("prefill_seconds", 0.0),
                 token_latencies_ms=tuple(latencies),
@@ -244,6 +246,23 @@ def validate_speed_trials(artifact: RawSpeedArtifact) -> List[str]:
                     f"missing required trial indices: {sorted(missing)}"
                 )
 
+        # Validate execution order pairing: all trials in a context must share
+        # one of the two valid orderings, and dense/turbo must alternate.
+        orders = set()
+        for trial in dense_trials + turbo_trials:
+            if trial.execution_order not in (("dense", "turbo"), ("turbo", "dense")):
+                errors.append(
+                    f"Context {context}: invalid execution_order "
+                    f"{trial.execution_order} for trial {trial.trial_index}"
+                )
+            else:
+                orders.add(trial.execution_order)
+        if len(orders) > 1:
+            errors.append(
+                f"Context {context}: mixed execution_orders {orders} "
+                f"within the same context"
+            )
+
         # P1-15: Validate dense trial details fully
         for trial in dense_trials:
             errors.extend(
@@ -266,6 +285,7 @@ class SpeedTrialResult:
     context_length: int = 0
     mode: str = ""
     trial: int = 0
+    execution_order: Tuple[str, str] = field(default_factory=lambda: ("", ""))
     execution_mode: str = ""
     prefill_seconds: float = 0.0
     first_token_ms: float = 0.0

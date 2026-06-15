@@ -13,6 +13,8 @@ from benchmarks.run_speed_matrix import (
 )
 from rfsn_v11.integrations.mlx_lm.llama_adapter import TurboPolarLlamaAdapter
 
+import pytest
+pytest.importorskip("mlx")
 
 class TestRunSpeedMatrix(unittest.TestCase):
     @staticmethod

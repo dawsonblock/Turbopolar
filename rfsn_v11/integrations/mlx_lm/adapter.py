@@ -156,14 +156,9 @@ class TurboPolarLlamaAdapter:
     def make_caches(self, num_layers: int) -> List[Any]:
         """Create a TurboPolarFastCache for each layer.
 
-        The config is derived from the adapter's turbo_config but with model head
-        counts injected if they differ.
+        Clones the exact immutable adapter config so no settings are lost.
         """
         return make_turbo_caches(
             num_layers=num_layers,
-            num_q_heads=self.turbo_config.num_q_heads,
-            num_kv_heads=self.turbo_config.num_kv_heads,
-            head_dim=self.turbo_config.head_dim,
-            use_qjl=self.turbo_config.use_qjl,
-            execution_mode=self.turbo_config.execution_mode,
+            config=self.turbo_config,
         )

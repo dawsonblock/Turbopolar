@@ -302,7 +302,7 @@ class TestMemoryMatrixRatios(unittest.TestCase):
         # Ensure persistent_storage_ratio uses dense_kv_bytes /
         # turbo_allocated
         self.assertIn("dense_kv_bytes / turbo_allocated", source)
-        # Ensure peak_device_memory_ratio uses dense_total_peak /
+        # Ensure dense_to_turbo_peak_ratio uses dense_total_peak /
         # turbo_total_peak
         self.assertIn("dense_total_peak / turbo_total_peak", source)
 

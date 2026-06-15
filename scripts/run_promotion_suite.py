@@ -849,15 +849,15 @@ def _memory_report(
             r["persistent_storage_ratio"] for r in long_records
             if r.get("persistent_storage_ratio") is not None
         )
-        peak_device_memory_ratio = min(
-            r["peak_device_memory_ratio"] for r in long_records
-            if r.get("peak_device_memory_ratio") is not None
+        dense_to_turbo_peak_ratio = min(
+            r["dense_to_turbo_peak_ratio"] for r in long_records
+            if r.get("dense_to_turbo_peak_ratio") is not None
         )
     else:
         last = records[-1] if records else {}
         logical_kv_ratio = last.get("logical_kv_ratio")
         persistent_storage_ratio = last.get("persistent_storage_ratio")
-        peak_device_memory_ratio = last.get("peak_device_memory_ratio")
+        dense_to_turbo_peak_ratio = last.get("dense_to_turbo_peak_ratio")
 
     hidden_dense = any(r.get("hidden_dense_cache_detected", True)
                        for r in records)
@@ -868,7 +868,7 @@ def _memory_report(
         contexts_evaluated=contexts,
         logical_kv_ratio=logical_kv_ratio,
         persistent_storage_ratio=persistent_storage_ratio,
-        peak_device_memory_ratio_at_8192_plus=peak_device_memory_ratio,
+        dense_to_turbo_peak_ratio_at_8192_plus=dense_to_turbo_peak_ratio,
         hidden_dense_cache_detected=hidden_dense,
         fallback_calls=total_fallbacks,
         raw_memory_path=str(raw_memory_path),
@@ -921,15 +921,15 @@ def _memory_report_quick(
             r["persistent_storage_ratio"] for r in long_records
             if r.get("persistent_storage_ratio") is not None
         )
-        peak_device_memory_ratio = min(
-            r["peak_device_memory_ratio"] for r in long_records
-            if r.get("peak_device_memory_ratio") is not None
+        dense_to_turbo_peak_ratio = min(
+            r["dense_to_turbo_peak_ratio"] for r in long_records
+            if r.get("dense_to_turbo_peak_ratio") is not None
         )
     else:
         last = records[-1] if records else {}
         logical_kv_ratio = last.get("logical_kv_ratio")
         persistent_storage_ratio = last.get("persistent_storage_ratio")
-        peak_device_memory_ratio = last.get("peak_device_memory_ratio")
+        dense_to_turbo_peak_ratio = last.get("dense_to_turbo_peak_ratio")
 
     hidden_dense = any(r.get("hidden_dense_cache_detected", True)
                        for r in records)
@@ -940,7 +940,7 @@ def _memory_report_quick(
         contexts_evaluated=contexts,
         logical_kv_ratio=logical_kv_ratio,
         persistent_storage_ratio=persistent_storage_ratio,
-        peak_device_memory_ratio_at_8192_plus=peak_device_memory_ratio,
+        dense_to_turbo_peak_ratio_at_8192_plus=dense_to_turbo_peak_ratio,
         hidden_dense_cache_detected=hidden_dense,
         fallback_calls=total_fallbacks,
         raw_memory_path=str(raw_memory_path),
@@ -1332,7 +1332,7 @@ def _synthetic_evidence() -> PromotionEvidence:
             contexts_evaluated=required_contexts,
             logical_kv_ratio=2.0,
             persistent_storage_ratio=2.0,
-            peak_device_memory_ratio_at_8192_plus=1.5,
+            dense_to_turbo_peak_ratio_at_8192_plus=1.5,
             hidden_dense_cache_detected=False,
         ),
         baseline_comparison_report=BaselineComparisonReport(

@@ -7,7 +7,6 @@ and assert that:
 """
 
 import mlx.core as mx
-import pytest
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
@@ -18,6 +17,8 @@ from rfsn_v11.kernels.turbo_polar.metal import (
     MetalKernelBridge,
 )
 
+import pytest
+pytest.importorskip("mlx")
 
 def _decode_dense_reference(cache, q, scale):
     """Decode the cache to produce a dense K/V reference for comparison."""

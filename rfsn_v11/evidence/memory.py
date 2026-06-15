@@ -34,6 +34,6 @@ class MemoryEvidence:
     context_results: List[MemoryContextResult] = field(default_factory=list)
     logical_kv_ratio: Optional[float] = None
     persistent_storage_ratio: Optional[float] = None
-    peak_device_memory_ratio_at_8192_plus: Optional[float] = None
+    dense_to_turbo_peak_ratio_at_8192_plus: Optional[float] = None
     hidden_dense_cache_detected: bool = True
     notes: List[str] = field(default_factory=list)
