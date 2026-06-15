@@ -506,6 +506,10 @@ def _recompute_memory_ratios(
                 hidden_dense_detected = True
 
             # Recompute ratios from byte counts
+            # Guard against zero dense_kv to avoid masking issues
+            if dense_kv == 0:
+                return None
+
             logical_ratio = (
                 dense_kv / turbo_logical if turbo_logical > 0 else 0.0
             )

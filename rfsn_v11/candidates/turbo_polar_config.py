@@ -124,8 +124,8 @@ class TurboPolarConfig:
                 "v_bits must be 8 (4-bit V quantization is not yet implemented)"
             )
 
-        if self.k_angle_bits_level1 not in (4, 8):
-            raise ValueError("k_angle_bits_level1 must be 4 or 8")
+        if self.k_angle_bits_level1 != 8:
+            raise ValueError("k_angle_bits_level1 must be 8")
         if self.k_angle_bits_deep not in (2, 4, 8):
             raise ValueError("k_angle_bits_deep must be 2, 4, or 8")
 

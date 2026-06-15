@@ -169,6 +169,8 @@ class TestExecutionTraceCollection:
 
         # Manually inject a trace with wrong page count to test validation.
         from rfsn_v11.evidence.execution_trace import AttentionExecutionTrace, KernelOperationTrace
+        from rfsn_v11.evidence.trace_validation import validate_trace_topology, TraceTopologyError
+
         cache._trace_collector.record(
             AttentionExecutionTrace(
                 experiment_id="exp",
@@ -206,11 +208,23 @@ class TestExecutionTraceCollection:
             )
         )
 
-        # The collector's own validation won't trigger here because decode_attention
-        # wasn't called. Instead verify the trace structure is sound.
+        # Retrieve traces and run topology validation
         traces = cache.execution_traces()
         assert len(traces) == 1
-        assert traces[0].fallback_count == 0
+
+        # Parse the raw trace for validation
+        from rfsn_v11.evidence.trace_validation import parse_attention_trace
+        parsed = [parse_attention_trace(traces[0].model_dump(), entry_index=0)]
+
+        # Validate topology - should fail due to missing page (expected 2, got 1)
+        with self.assertRaises(TraceTopologyError) as cm:
+            validate_trace_topology(
+                traces=parsed,
+                model_layer_count=1,
+                required_contexts={512},
+                requested_positions_per_context=1,
+            )
+        self.assertIn("page count", str(cm.exception).lower())
 
     def test_commit_provisional_preserves_all_fields(self):
         """Test that commit_provisional preserves all trace identity and topology fields."""

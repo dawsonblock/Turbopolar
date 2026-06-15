@@ -51,7 +51,9 @@ class ProvenanceEvidence:
     notes: List[str] = field(default_factory=list)
 
 
-def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List[str]:
+def validate_provenance_immutable_fields(
+    provenance: ProvenanceEvidence,
+) -> List[str]:
     """Validate that all immutable provenance fields are populated.
 
     Args:
@@ -61,7 +63,7 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
         List of validation error messages. Empty list means validation passed.
     """
     errors = []
-    
+
     # Critical immutable fields that must be present
     required_fields = [
         ("run_id", provenance.run_id),
@@ -73,24 +75,33 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
         ("turbopolar_config_hash", provenance.turbopolar_config_hash),
         ("execution_mode", provenance.execution_mode),
     ]
-    
+
     for field_name, value in required_fields:
         if not value:
             errors.append(f"Required provenance field '{field_name}' is empty")
-    
-    # Hash fields should be valid hex lengths (40 for SHA-1, 64 for SHA-256)
-    hash_fields = [
-        ("git_commit", provenance.git_commit),
+
+    # Hash fields should be valid hex lengths
+    # git_commit can be 40 (SHA-1) or 64 (SHA-256)
+    if provenance.git_commit and len(provenance.git_commit) not in (40, 64):
+        errors.append(
+            f"git_commit must be 40 or 64 characters, "
+            f"got {len(provenance.git_commit)}"
+        )
+
+    # Other hashes must be SHA-256 (64 characters) only
+    sha256_only_fields = [
         ("turbopolar_config_hash", provenance.turbopolar_config_hash),
         ("metal_kernel_source_hash", provenance.metal_kernel_source_hash),
+        ("kernel_binding_hash", provenance.kernel_binding_hash),
     ]
-    
-    for field_name, value in hash_fields:
-        if value and len(value) not in (40, 64):
+
+    for field_name, value in sha256_only_fields:
+        if value and len(value) != 64:
             errors.append(
-                f"Hash field '{field_name}' must be 40 or 64 characters, got {len(value)}"
+                f"Hash field '{field_name}' must be 64 characters "
+                f"(SHA-256), got {len(value)}"
             )
-    
+
     # Git tree state must be valid
     valid_tree_states = ["CLEAN", "DIRTY", "UNKNOWN"]
     if provenance.git_tree_state not in valid_tree_states:
@@ -98,39 +109,44 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
             f"git_tree_state must be one of {valid_tree_states}, "
             f"got '{provenance.git_tree_state}'"
         )
-    
+
     # If tree is dirty, diff_hash must be present
     if provenance.git_tree_state == "DIRTY" and not provenance.git_diff_hash:
         errors.append("git_diff_hash is required when git_tree_state is DIRTY")
-    
+
     # Config hash should match computed hash from config dict
     if provenance.turbopolar_config and provenance.turbopolar_config_hash:
         import hashlib
         import json
+
         config_json = json.dumps(
             provenance.turbopolar_config, sort_keys=True, allow_nan=False
         )
         computed_hash = hashlib.sha256(config_json.encode()).hexdigest()
         if computed_hash != provenance.turbopolar_config_hash:
             errors.append(
-                f"turbopolar_config_hash does not match computed hash from config dict"
+                "turbopolar_config_hash does not match computed "
+                "hash from config dict"
             )
-    
+
     return errors
 
 
-def validate_provenance_evidence_kind(provenance: ProvenanceEvidence, expected_kind: str) -> List[str]:
+def validate_provenance_evidence_kind(
+    provenance: ProvenanceEvidence, expected_kind: str
+) -> List[str]:
     """Validate that evidence kind matches expectation.
 
     Args:
         provenance: Provenance evidence to validate
-        expected_kind: Expected evidence kind (e.g., "experimental", "synthetic_dry_run")
+        expected_kind: Expected evidence kind (e.g., "experimental",
+            "synthetic_dry_run")
 
     Returns:
         List of validation error messages. Empty list means validation passed.
     """
     errors = []
-    
+
     # This would be added to ProvenanceEvidence in a full implementation
     # For now, we validate via notes if present
     for note in provenance.notes:
@@ -141,5 +157,5 @@ def validate_provenance_evidence_kind(provenance: ProvenanceEvidence, expected_k
                     f"Evidence kind mismatch: expected '{expected_kind}', "
                     f"found '{note}'"
                 )
-    
+
     return errors

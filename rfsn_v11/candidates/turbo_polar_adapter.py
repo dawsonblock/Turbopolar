@@ -15,16 +15,6 @@ from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.generation.turbo_polar_cache import TurboPolarKVCacheRuntime
 
 
-class TurboPolarAdapter:
-    """DEPRECATED. Raises RuntimeError on instantiation."""
-
-    def __init__(self, config: TurboPolarConfig):
-        raise RuntimeError(
-            "TurboPolarAdapter is deprecated and structurally broken. "
-            "Use TurboPolarOfflineEvaluator or TurboPolarKVCacheRuntime."
-        )
-
-
 class TurboPolarOfflineEvaluator:
     """
     Offline validation harness with GQA and bit-packed PolarQuant support.
@@ -89,6 +79,12 @@ class TurboPolarOfflineEvaluator:
         output_dir: Path,
     ) -> Dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Validate inputs for NaN/Inf before computing metrics
+        if mx.any(mx.isnan(baseline_logits)) or mx.any(mx.isinf(baseline_logits)):
+            raise ValueError("baseline_logits contains NaN or Inf values")
+        if mx.any(mx.isnan(candidate_logits)) or mx.any(mx.isinf(candidate_logits)):
+            raise ValueError("candidate_logits contains NaN or Inf values")
 
         kl_div = mean_token_kl(baseline_logits, candidate_logits)
         top5_overlap = topk_set_overlap_np(baseline_logits, candidate_logits, k=5)

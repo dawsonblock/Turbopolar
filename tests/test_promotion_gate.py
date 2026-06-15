@@ -12,6 +12,12 @@ from rfsn_v11.kernels.turbo_polar.metal import MetalKernelBridge
 from rfsn_v11.quant.polar.decoder import PolarQuantDecoder
 from rfsn_v11.evidence.speed import SpeedEvidence, SpeedTrialResult
 
+# Minimum compression ratio required for promotion.
+# Honest best-case ratio with fp16 radii, packed angles, and int8 V
+# is ~1.66-1.72x. Gate is set to a defensible 1.65x until lower-precision
+# radii or packed 4-bit V are implemented.
+MIN_COMPRESSION_RATIO = 1.65
+
 
 class TestTurboPolarPromotionGate(unittest.TestCase):
     """
@@ -134,13 +140,11 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             self.assertIsNone(qjl_payload)
 
             telemetry = cache.get_io_telemetry()
-            # Honest best-case ratio with fp16 radii, packed angles, and int8 V
-            # is ~1.66-1.72x. Gate is set to a defensible 1.65x until lower-precision
-            # radii or packed 4-bit V are implemented.
             self.assertGreaterEqual(
                 telemetry["compression_ratio"],
-                1.65,
-                f"Compression ratio {telemetry['compression_ratio']:.2f} fell below 1.65x.",
+                MIN_COMPRESSION_RATIO,
+                f"Compression ratio {telemetry['compression_ratio']:.2f} "
+                f"fell below {MIN_COMPRESSION_RATIO}x.",
             )
 
             num_queries_per_kv = H_q // H_kv

@@ -96,6 +96,9 @@ class TestFastCacheBoundary(unittest.TestCase):
         mae = float(np.mean(np.abs(ref_np - turbo_np)))
         max_err = float(np.max(np.abs(ref_np - turbo_np)))
 
+        # Use a threshold appropriate for compressed path correctness.
+        # This is lower than MEAN_COSINE (0.995) which is for teacher-forced
+        # validation comparing full model outputs, not compressed cache.
         self.assertGreaterEqual(cosine, 0.97, f"cosine too low: {cosine}")
         self.assertLessEqual(mae, 0.10, f"MAE too high: {mae}")
         self.assertLessEqual(max_err, 0.35, f"max error too high: {max_err}")

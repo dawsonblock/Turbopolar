@@ -678,6 +678,21 @@ def validate_trace_topology(
         TraceTopologyError: If topology validation fails
     """
     failures: list[str] = []
+
+    if not traces:
+        return {
+            "failures": ["No traces provided for topology validation"],
+            "topology_stats": {
+                "total_traces": 0,
+                "contexts_found": set(),
+                "traces_by_context": {},
+                "page_operations_by_context": {},
+                "tail_operations_by_context": {},
+                "fallback_operations_by_context": {},
+                "unevaluated_operations_by_context": {},
+            },
+        }
+
     topology_stats = {
         "total_traces": len(traces),
         "contexts_found": set(),
@@ -1058,7 +1073,8 @@ def validate_trace_topology(
 
     if failures:
         raise TraceTopologyError(
-            f"Trace topology validation failed with {len(failures)} errors: " + "; ".join(failures[:10])
+            f"Trace topology validation failed with {len(failures)} errors: "
+            + "; ".join(failures[:10])
         )
 
-    return topology_stats
+    return {"failures": failures, "topology_stats": topology_stats}

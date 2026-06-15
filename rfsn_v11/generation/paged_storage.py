@@ -435,5 +435,10 @@ class PagedQuantVStorage:
 
 def _set_block(dest: mx.array, idx: int, src: mx.array) -> mx.array:
     """Write src into dest[:, :, idx:idx+1, ...] and return the updated array."""
+    if idx < 0 or idx >= dest.shape[2]:
+        raise IndexError(
+            f"Block index {idx} out of range for destination array "
+            f"with shape {dest.shape} (axis 2)"
+        )
     dest[:, :, idx : idx + 1, ...] = src
     return dest
