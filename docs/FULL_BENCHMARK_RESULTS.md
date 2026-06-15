@@ -28,7 +28,7 @@
 **Analysis:**
 - ✅ Logical KV compression target (1.85x) **EXCEEDED** at 1.94x
 - ✅ Peak memory improves at shorter contexts
-- ⚠️ Peak memory near parity at 4096 (needs 8192+ for full validation)
+- ⚠️ Peak memory near parity at 4096; 8192+ shows hard regression (fails gate 9)
 - ✅ Storage memory improves with context length
 
 ### 2. Teacher-Forced Quality Benchmark ✅
@@ -39,8 +39,8 @@
 - **Mean Logit Cosine:** 0.9997 (target: ≥0.995) ✅ **PASS**
 - **P05 Logit Cosine:** Not measured (single trial)
 - **Top-5 Overlap:** 0.983 (target: ≥0.95) ✅ **PASS**
-- **Perplexity Delta:** 0.0326 (target: ≤0.02) ⚠️ **SLIGHTLY EXCEEDS**
-- **Decode Speed:** 35.68 tok/s (turbo) vs 20.12 tok/s (dense) = 1.77x speedup ✅
+- **Perplexity Delta:** 0.0326 (target: ≤0.02) ❌ **FAILS GATE 5** — 63 % overshoot, not a near-miss.
+- **Decode Speed (decompress-on-read wrapper):** 35.68 tok/s (turbo) vs 20.12 tok/s (dense) = 1.77x speedup ⚠️ **NOT the fused-Metal path the gate requires.**
 
 **Detailed Prompt Results:**
 | Prompt | Cosine | Top-5 | PPL Delta | Ratio |
@@ -52,10 +52,10 @@
 | 5 (651 tokens)  | 0.9998 | 0.9766 | 0.0033 | 1.939x |
 
 **Analysis:**
-- ✅ **Quality metrics EXCELLENT** - cosine similarity exceeds targets
+- ✅ **Quality metrics EXCELLENT** — cosine similarity exceeds targets
 - ✅ **Top-5 overlap EXCEEDS target**
-- ⚠️ Perplexity delta slightly exceeds 0.02 target (0.0326)
-- ✅ **Speed improvement observed** (1.77x turbo vs dense)
+- ❌ **Perplexity delta FAILS hard gate 5** — 0.0326 vs. ≤0.02 is a 63 % overshoot, not a slight exceedance
+- ⚠️ **Decompress-on-read wrapper speedup is NOT authoritative** — the gate requires `METAL_STRICT` fused-Metal alternating-trial speed matrix (see below)
 
 ### 3. Speed Matrix Benchmark ⚠️
 
@@ -86,7 +86,7 @@
 | Top-5 overlap | ≥0.95 | 0.983 | ✅ PASS |
 | Top-10 overlap | ≥0.97 | N/A | ⚠️ N/A |
 | Argmax agreement | ≥0.97 | N/A | ⚠️ N/A |
-| Perplexity delta | ≤0.02 | 0.0326 | ⚠️ EXCEEDS |
+| Perplexity delta | ≤0.02 | 0.0326 | ❌ FAILS (63 % overshoot) |
 
 ### Memory Gates
 

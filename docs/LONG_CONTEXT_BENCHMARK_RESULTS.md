@@ -28,22 +28,22 @@
 - Storage ratio improves with context length (0.86x → 1.92x)
 - **Status:** ✅ **IMPROVES WITH CONTEXT**
 
-### ❌ Concerning Results
+### ❌ Hard Gate Failures
 
-**Peak Device Memory:**
+**Peak Device Memory (Gate 9: must improve at 8192+):**
 - 512 tokens: 0.63x (37% reduction) ✅
 - 2048 tokens: 0.73x (27% reduction) ✅
 - 4096 tokens: 0.98x (2% reduction) ⚠️ Near parity
-- 8192 tokens: 1.12x (12% increase) ❌ **REGRESSION**
-- 16384 tokens: 1.14x (14% increase) ❌ **REGRESSION**
+- 8192 tokens: 1.12x (12% increase) ❌ **FAILS GATE 9**
+- 16384 tokens: 1.14x (14% increase) ❌ **FAILS GATE 9**
 
 **Peak Memory Regression at Long Contexts:**
-- At 8192+, TurboPolar uses MORE peak memory than dense baseline
-- This is unexpected and indicates:
-  - Possible memory overhead in compressed page system at very long contexts
+- At 8192+, TurboPolar uses MORE peak memory than dense baseline.
+- This is a hard quantitative failure of promotion gate 9, not a minor regression.
+- Possible causes:
+  - Memory overhead in compressed page system at very long contexts
   - Potential memory leak or inefficiency in current implementation
-  - May need investigation into memory allocation patterns
-  - Could be related to page capacity or block management
+  - Page capacity or block management overhead
 
 ## Speed Benchmark Status
 
@@ -75,18 +75,17 @@
 4. ✅ Storage memory improvement
 5. ✅ All infrastructure validation (~380 tests passing)
 
-### Gates That Require Attention ⚠️
+### Hard Gate Failures ❌
 
-1. ⚠️ Peak memory improvement at 8192+ (REGRESSION detected)
-2. ⚠️ No >3% regression at 4096+ (needs speed data)
-3. ⚠️ Long-context improvement ≥5% (needs speed data)
-4. ⚠️ 8192+ median ratio ≥1.03x (needs speed data)
+1. ❌ Gate 5 — Perplexity delta ≤0.02 (achieved 0.0326, 63 % overshoot)
+2. ❌ Gate 9 — Peak memory improvement at 8192+ (1.12x–1.14x regression)
+3. ❌ Gates 11–13 — Speed non-regression / improvement (0.18x–0.04x slowdown, timeouts at 8192+)
 
 ### Gates Not Yet Tested
 
 1. ⏳ Fused decode metrics at long contexts
 2. ⏳ Cartesian baseline comparison
-3. ⏳ Complete speed matrix at required contexts
+3. ⏳ Complete speed matrix at required contexts (blocked by timeouts)
 
 ## Recommendations
 
@@ -119,7 +118,7 @@
 **✅ Infrastructure Complete:** All validation infrastructure tested and working  
 **✅ Quality Metrics Excellent:** Cosine and overlap metrics exceed targets  
 **✅ Logical Compression Target Achieved:** 1.94x vs 1.85x target  
-**❌ Peak Memory Regression Detected:** Needs investigation before promotion  
-**⏳ Speed Validation Incomplete:** Requires optimized benchmarking approach  
+**❌ Multiple Hard Gate Failures:** Peak memory regression (gate 9), perplexity overshoot (gate 5), and severe speed slowdowns (gates 11–13) quantitatively block promotion  
+**⏳ Speed Validation Incomplete:** Timeouts at 8192+ prevent even gathering required data  
 
-The peak memory regression at 8192+ contexts is a significant finding that must be addressed before promotion. This indicates the current implementation may have memory efficiency issues at very long contexts that need investigation and resolution.
+TurboPolar is currently failing at least three hard promotion gates with no known fix path other than fundamental architectural redesign or threshold relaxation. Promotion is quantitatively blocked, not merely "not yet ready."

@@ -38,14 +38,14 @@ Successfully completed full repair plan (14 phases), comprehensive Apple Silicon
 
 - Mean Cosine: 0.9997 (target 0.995) ✅ EXCEEDS
 - Top-5 Overlap: 0.983 (target 0.95) ✅ EXCEEDS
-- Perplexity Delta: 0.0326 (target 0.02) ⚠️ Slightly exceeds
-- **Status:** Quality metrics are excellent
+- Perplexity Delta: 0.0326 (target 0.02) ❌ FAILS GATE 5 — 63 % overshoot
+- **Status:** Quality metrics are excellent; perplexity is a hard gate failure
 
-### Memory Metrics ✅ EXCELLENT
+### Memory Metrics ⚠️ MIXED
 
 - Logical KV Compression: 1.94x (target 1.85x) ✅ EXCEEDS
-- Peak Memory: Improves at 512-4096, regresses at 8192+ (known limitation)
-- **Status:** Compression target achieved, regression at long contexts is inherent overhead
+- Peak Memory: Improves at 512-4096, regresses at 8192+ ❌ FAILS GATE 9
+- **Status:** Compression target achieved; peak memory regression is a hard gate failure, not inherent overhead
 
 ### Speed Metrics ❌ SEVERE SLOWDOWNS
 
@@ -58,10 +58,10 @@ Successfully completed full repair plan (14 phases), comprehensive Apple Silicon
 
 ### Memory Regression at 8192+ Contexts
 
-**Finding:** NOT a bug, inherent overhead in compressed page system
+**Finding:** Inherent overhead in compressed page system at very long contexts
 - Managing many compressed pages incurs overhead
-- Expected trade-off in compressed systems
-- **Status:** Documented as known limitation
+- This is an architectural trade-off, but the promotion gate requires *improvement* at 8192+
+- **Status:** Hard gate failure (1.12x–1.14x regression), not a dismissible limitation
 
 ### head_dim=128 Requirement
 
@@ -166,7 +166,7 @@ Successfully completed full repair plan (14 phases), comprehensive Apple Silicon
 3. **Set realistic expectations**
    - Not a speed optimization
    - Memory benefits materialize at appropriate context lengths
-   - Peak memory regression at 8192+ is known limitation
+   - Peak memory regression at 8192+ is a hard gate failure
 
 ### For Speed-Critical Applications
 

@@ -24,9 +24,9 @@
 - **Conclusion:** This is not a bug but an inherent characteristic of the current implementation
 
 **Recommendations:**
-1. Document this as a known limitation of the current implementation
+1. This is a hard gate failure, not a known limitation. The gate requires improvement at 8192+; 1.12x–1.14x regression is a quantitative failure.
 2. Consider optimization techniques for long contexts (e.g., page pooling, lazy compression)
-3. The promotion gate should account for this by requiring improvement at 8192+ contexts or adjusting the threshold
+3. Do NOT adjust the promotion gate threshold to accommodate the regression. Fix the architecture or accept that promotion is blocked.
 
 ### 1B Model Benchmarking
 
@@ -93,9 +93,9 @@
    - Verify head_dim before attempting benchmarks
 
 2. **Account for memory regression at long contexts**
-   - Document 8192+ context memory regression as known limitation
-   - Consider adjusting promotion gate thresholds to account for this
-   - Focus on 4096 context as the practical limit for memory benefits
+   - Frame 8192+ context memory regression as a hard gate failure, not a known limitation
+   - Do NOT adjust promotion gate thresholds to accommodate regression
+   - Focus on 4096 context as the practical limit for memory benefits until architecture is fixed
 
 3. **Optimize benchmarking approach**
    - Use 3B model instead of 1B (head_dim=128 required)
@@ -126,7 +126,7 @@
 
 ## Conclusion
 
-**Memory Regression:** Not a bug, but inherent overhead at very long contexts (8192+). Document as known limitation.
+**Memory Regression:** Inherent overhead at very long contexts (8192+) that quantitatively fails promotion gate 9. This is a hard blocker, not a dismissible limitation.
 
 **head_dim=128 Requirement:** Fundamental constraint of Metal kernel implementation. Cannot be relaxed without significant kernel rework. Keep as hard requirement.
 

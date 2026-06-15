@@ -35,12 +35,14 @@ python benchmarks/run_memory_bench.py --lengths 512 2048 4096
 - Achieved: 1.94x across all contexts
 - **Status:** PASS
 
-**⚠️ Peak Device Memory:**
+**❌ Peak Device Memory:**
 - Target: Improvement at 8192+ context
-- 512 tokens: 0.63x (37% reduction)
-- 2048 tokens: 0.73x (27% reduction)
-- 4096 tokens: 0.98x (2% reduction, near parity)
-- **Status:** Needs longer context testing (8192+) to fully validate
+- 512 tokens: 0.63x (37% reduction) ✅
+- 2048 tokens: 0.73x (27% reduction) ✅
+- 4096 tokens: 0.98x (2% reduction, near parity) ⚠️
+- 8192 tokens: 1.12x (12% increase) ❌ FAILS GATE 9
+- 16384 tokens: 1.14x (14% increase) ❌ FAILS GATE 9
+- **Status:** Hard gate failure at 8192+; quantitatively blocks promotion
 
 **✅ Storage Memory:**
 - Storage improves with context length (0.86x → 1.88x)

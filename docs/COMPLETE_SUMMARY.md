@@ -12,7 +12,7 @@
 ✅ **Apple Silicon validation infrastructure complete**  
 ✅ **Quality metrics exceed promotion thresholds**  
 ✅ **Logical KV compression target achieved**  
-⚠️ **Peak memory regression at 8192+ contexts (known limitation)**  
+❌ **Peak memory regression at 8192+ contexts (fails gate 9)**  
 ⚠️ **Speed validation requires compatible model (head_dim=128)**  
 ✅ **380+ tests passing**
 
@@ -42,10 +42,10 @@ All 14 phases successfully completed:
 **Results:**
 - Mean Cosine: 0.9997 (target: ≥0.995) ✅ **EXCEEDS**
 - Top-5 Overlap: 0.983 (target: ≥0.95) ✅ **EXCEEDS**
-- Perplexity Delta: 0.0326 (target: ≤0.02) ⚠️ **SLIGHTLY EXCEEDS**
-- Decode Speed: 35.68 tok/s (turbo) vs 20.12 tok/s (dense) = 1.77x speedup ✅
+- Perplexity Delta: 0.0326 (target: ≤0.02) ❌ **FAILS GATE 5** — 63 % overshoot
+- Decode Speed (decompress-on-read wrapper): 35.68 tok/s (turbo) vs 20.12 tok/s (dense) = 1.77x speedup ⚠️ **NOT the fused-Metal path**
 
-**Status:** Quality metrics excellent, perplexity delta slightly exceeds target
+**Status:** Quality metrics excellent; perplexity delta is a hard gate failure, not a near-miss
 
 ### Memory Benchmark (All Contexts)
 
@@ -57,7 +57,7 @@ All 14 phases successfully completed:
 | 8192    | 1.94x            | 1.12x             | 1.91x         | ❌ Regression |
 | 16384   | 1.94x            | 1.14x             | 1.92x         | ❌ Regression |
 
-**Status:** Logical compression target achieved, peak memory regression at 8192+ is known limitation
+**Status:** Logical compression target achieved; peak memory regression at 8192+ is a hard gate failure, not a known limitation
 
 ### Speed Benchmark (3B Model, head_dim=128)
 
@@ -76,7 +76,7 @@ All 14 phases successfully completed:
 - Caused by inherent overhead in compressed page system at very long contexts
 - Expected trade-off in compressed systems
 - Managing many compressed pages incurs overhead
-- **Recommendation:** Document as known limitation, focus on 4096 context as practical limit
+- **Recommendation:** This is a hard gate failure, not a known limitation. Requires architectural fix or gate threshold relaxation.
 
 ### head_dim=128 Requirement
 
@@ -130,17 +130,17 @@ All 14 phases successfully completed:
 4. ✅ Storage memory improvement
 5. ✅ All infrastructure validation (~380 tests passing)
 
-### Gates With Concerns ⚠️
+### Hard Gate Failures ❌
 
-1. ⚠️ Perplexity delta ≤0.02 (achieved 0.0326, slightly exceeds)
-2. ⚠️ Peak memory improvement at 8192+ (known limitation)
-3. ⚠️ Speed validation incomplete (requires more investigation)
+1. ❌ Gate 5 — Perplexity delta ≤0.02 (achieved 0.0326, 63 % overshoot)
+2. ❌ Gate 9 — Peak memory improvement at 8192+ (1.12x–1.14x regression)
+3. ❌ Gates 11–13 — Speed non-regression / improvement (0.18x–0.04x slowdown)
 
 ### Gates Not Yet Tested ⏳
 
 1. ⏳ Fused decode metrics at long contexts
 2. ⏳ Cartesian baseline comparison
-3. ⏳ Complete speed matrix with 5 trials (requires more time)
+3. ⏳ Complete speed matrix with 5 trials (blocked by timeouts)
 
 ## Recommendations
 
@@ -153,7 +153,7 @@ All 14 phases successfully completed:
 
 2. **Update documentation**
    - Explicitly document head_dim=128 requirement
-   - Document 8192+ context memory regression as known limitation
+   - Frame 8192+ context memory regression as a hard gate failure, not a known limitation
    - Update supported configuration with model compatibility
 
 3. **Optimize benchmarking approach**

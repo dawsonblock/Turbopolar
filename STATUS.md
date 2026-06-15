@@ -133,8 +133,10 @@ See `docs/SUPPORTED_CONFIGURATION.md`. The narrow supported scope is:
 
 ## What is incomplete
 
-- **Quantization tuning:** the default config does not yet hit the 1.85× logical KV compression target required by the promotion gate.
-- **Real-model validation:** the new fused-decode and speed-matrix scripts are wired but have not been validated on a production-scale model.
+- **Peak device memory regression:** at 8192+ context, measured peak memory is 1.12×–1.14× the dense baseline, failing promotion gate 9.
+- **Perplexity delta:** teacher-forced benchmark reports 0.0326 vs. the ≤0.02 gate threshold (63 % overshoot), failing promotion gate 5.
+- **Speed:** speed-matrix benchmarks show severe slowdowns (0.18× at 512, 0.04×–0.06× at longer contexts), failing promotion gates 11–13.
+- **Real-model validation:** the fused-decode and speed-matrix scripts require complete long-context runs on native Apple Silicon.
 
 ## Promotion gates (must all be true)
 

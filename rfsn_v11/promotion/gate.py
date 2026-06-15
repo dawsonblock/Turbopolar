@@ -9,6 +9,28 @@ import math
 import numpy as np
 from typing import List, Dict, Any, Optional
 
+from rfsn_v11.evidence.platform_validation import (
+    validate_apple_silicon_platform,
+    validate_metal_execution_mode,
+)
+from rfsn_v11.evidence.provenance import validate_provenance_immutable_fields
+from rfsn_v11.evidence.speed import RawSpeedArtifact, validate_speed_trials
+from rfsn_v11.evidence.trace_validation import (
+    EvidenceValidationError,
+    TraceArtifactError,
+    TraceTopologyError,
+    parse_trace_artifact,
+    validate_artifact_file,
+    validate_trace_topology,
+)
+from rfsn_v11.promotion.schema import (
+    FusedDecodeReport,
+    GitTreeState,
+    PromotionDecision,
+    PromotionEvidence,
+    PromotionState,
+)
+
 
 def _reject_json_nonfinite(s: str) -> None:
     """Reject NaN/Infinity constants during JSON parsing."""
@@ -39,29 +61,6 @@ def _require_finite_number(
         reasons.append(f"{name} is non-finite: {value}")
         return False
     return True
-
-
-from rfsn_v11.evidence.platform_validation import (
-    validate_apple_silicon_platform,
-    validate_metal_execution_mode,
-)
-from rfsn_v11.evidence.provenance import validate_provenance_immutable_fields
-from rfsn_v11.evidence.speed import RawSpeedArtifact, validate_speed_trials
-from rfsn_v11.evidence.trace_validation import (
-    EvidenceValidationError,
-    TraceArtifactError,
-    TraceTopologyError,
-    parse_trace_artifact,
-    validate_artifact_file,
-    validate_trace_topology,
-)
-from rfsn_v11.promotion.schema import (
-    FusedDecodeReport,
-    GitTreeState,
-    PromotionDecision,
-    PromotionEvidence,
-    PromotionState,
-)
 
 
 def _recompute_teacher_forced_summary(
@@ -156,19 +155,25 @@ def _recompute_teacher_forced_summary(
 
             top5 = pos.get("top5_overlap")
             if top5 is not None:
-                if not isinstance(top5, (int, float)) or not math.isfinite(top5):
+                if not isinstance(top5, (int, float)) or not math.isfinite(
+                    top5
+                ):
                     return None
                 top5_overlaps.append(top5)
 
             top10 = pos.get("top10_overlap")
             if top10 is not None:
-                if not isinstance(top10, (int, float)) or not math.isfinite(top10):
+                if not isinstance(top10, (int, float)) or not math.isfinite(
+                    top10
+                ):
                     return None
                 top10_overlaps.append(top10)
 
             argmax = pos.get("argmax_agreement")
             if argmax is not None:
-                if isinstance(argmax, (int, float)) and not math.isfinite(argmax):
+                if isinstance(argmax, (int, float)) and not math.isfinite(
+                    argmax
+                ):
                     return None
                 argmax_agreements.append(1 if argmax else 0)
 
@@ -772,7 +777,9 @@ class PromotionGate:
                     artifact_name="Teacher-forced raw metrics artifact",
                 )
                 # P1-24: Parse position records and recompute summaries
-                raw_metrics = json.loads(content, parse_constant=_reject_json_nonfinite)
+                raw_metrics = json.loads(
+                    content, parse_constant=_reject_json_nonfinite
+                )
                 if not isinstance(raw_metrics, dict):
                     reasons.append(
                         "Teacher-forced raw metrics must be a JSON object")
@@ -876,7 +883,9 @@ class PromotionGate:
 
                 # Validate that report total matches recomputed total
                 tf_total_ok = _require_finite_number(
-                    "Teacher-forced total_positions", tf.total_positions, reasons
+                    "Teacher-forced total_positions",
+                    tf.total_positions,
+                    reasons,
                 )
                 if tf_total_ok and tf.total_positions != recomputed_total:
                     total_pos = tf.total_positions
@@ -976,7 +985,9 @@ class PromotionGate:
                         fd.trace_artifact_hash,
                         artifact_name="Fused decode trace artifact",
                     )
-                    raw_traces = json.loads(content, parse_constant=_reject_json_nonfinite)
+                    raw_traces = json.loads(
+                        content, parse_constant=_reject_json_nonfinite
+                    )
                     parsed_traces = parse_trace_artifact(raw_traces)
 
                     # Validate trace topology - require model_layer_count to be
@@ -1012,9 +1023,11 @@ class PromotionGate:
                                 fd.compressed_page_dispatches_per_context
                             )
                             report_page_ops = dispatches[context]
-                            trace_page_ops = topology_result.get(
-                                "trace_computed_page_ops", {}
-                            ).get(context, 0)
+                            trace_page_ops = topology_result[
+                                "topology_stats"
+                            ].get("trace_computed_page_ops", {}).get(
+                                context, 0
+                            )
                             if report_page_ops != trace_page_ops:
                                 reasons.append(
                                     f"Context {context}: report "
@@ -1027,9 +1040,11 @@ class PromotionGate:
                                 fd.dense_tail_dispatches_per_context.get(
                                     context, 0)
                             )
-                            trace_tail_ops = topology_result.get(
-                                "trace_computed_tail_ops", {}
-                            ).get(context, 0)
+                            trace_tail_ops = topology_result[
+                                "topology_stats"
+                            ].get("trace_computed_tail_ops", {}).get(
+                                context, 0
+                            )
                             if report_tail_ops != trace_tail_ops:
                                 reasons.append(
                                     f"Context {context}: report "
@@ -1040,9 +1055,11 @@ class PromotionGate:
                             report_fallback_ops = (
                                 fd.fallback_calls_per_context.get(context, 0)
                             )
-                            trace_fallback_ops = topology_result.get(
-                                "trace_computed_fallback_ops", {}
-                            ).get(context, 0)
+                            trace_fallback_ops = topology_result[
+                                "topology_stats"
+                            ].get("trace_computed_fallback_ops", {}).get(
+                                context, 0
+                            )
                             if report_fallback_ops != trace_fallback_ops:
                                 reasons.append(
                                     f"Context {context}: report "
@@ -1053,15 +1070,17 @@ class PromotionGate:
                         # Reconcile trace totals with global bridge totals
                         # (P1-27)
                         total_trace_page_ops = sum(
-                            topology_result.get(
-                                "trace_computed_page_ops", {}).values()
+                            topology_result["topology_stats"].get(
+                                "trace_computed_page_ops", {}
+                            ).values()
                         )
                         total_trace_tail_ops = sum(
-                            topology_result.get(
-                                "trace_computed_tail_ops", {}).values()
+                            topology_result["topology_stats"].get(
+                                "trace_computed_tail_ops", {}
+                            ).values()
                         )
                         total_trace_fallback_ops = sum(
-                            topology_result.get(
+                            topology_result["topology_stats"].get(
                                 "trace_computed_fallback_ops", {}
                             ).values()
                         )
@@ -1217,7 +1236,9 @@ class PromotionGate:
                     artifact_name="Speed raw timing artifact",
                 )
                 # P1-25: Parse speed trials using canonical schema validator
-                raw_timing = json.loads(content, parse_constant=_reject_json_nonfinite)
+                raw_timing = json.loads(
+                    content, parse_constant=_reject_json_nonfinite
+                )
                 if not isinstance(raw_timing, dict):
                     reasons.append("Speed raw timing must be a JSON object")
                 else:
@@ -1375,7 +1396,9 @@ class PromotionGate:
                     mr.raw_memory_hash,
                     artifact_name="Memory raw matrix artifact",
                 )
-                raw_memory = json.loads(content, parse_constant=_reject_json_nonfinite)
+                raw_memory = json.loads(
+                    content, parse_constant=_reject_json_nonfinite
+                )
                 if not isinstance(raw_memory, dict):
                     reasons.append(
                         "Memory raw matrix must be a JSON object"
@@ -1404,9 +1427,12 @@ class PromotionGate:
                             )
                         # Validate fixture identity per context
                         fixture_contexts = {
-                            f["context"] for f in recomputed["fixture_identities"]
+                            f["context"]
+                            for f in recomputed["fixture_identities"]
                         }
-                        if not self.REQUIRED_CONTEXTS.issubset(fixture_contexts):
+                        if not self.REQUIRED_CONTEXTS.issubset(
+                            fixture_contexts
+                        ):
                             missing = self.REQUIRED_CONTEXTS - fixture_contexts
                             reasons.append(
                                 "Memory raw matrix lacks fixture identities "
@@ -1512,11 +1538,14 @@ class PromotionGate:
 
         # Legacy fallback check (global).
         if fd and fd.actual_fused_positions is not None:
-            if _require_finite_number(
+            finite = _require_finite_number(
                 "Fused decode actual_fused_positions",
                 fd.actual_fused_positions,
                 reasons,
-            ) and fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS:
+            )
+            if finite and (
+                fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS
+            ):
                 actual_pos = fd.actual_fused_positions
                 required_pos = self.REQUIRED_FORCED_DECODE_TOKENS
                 reasons.append(
