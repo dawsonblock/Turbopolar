@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from benchmarks.prompt_fixtures import (
+    ExactTokenFixture,
     build_exact_token_fixtures,
+    load_token_fixtures_canonical,
     load_token_fixtures,
     normalize_prompts,
     write_token_fixtures,
@@ -23,17 +25,17 @@ class TestPromptFixtures(unittest.TestCase):
     def test_build_exact_token_fixtures_lengths(self):
         fixtures = build_exact_token_fixtures()
         self.assertEqual(
-            len(fixtures), len(set(f["length"] for f in fixtures))
+            len(fixtures), len(set(f.length for f in fixtures))
         )
         for fx in fixtures:
-            self.assertEqual(len(fx["tokens"]), fx["length"])
+            self.assertEqual(len(fx.tokens), fx.length)
             # Allow both original categories and new fused_* categories
             valid_categories = (
                 "short", "boundary", "medium", "long", "stress",
                 "fused_512", "fused_2048", "fused_4096",
                 "fused_8192", "fused_16384"
             )
-            self.assertIn(fx["category"], valid_categories)
+            self.assertIn(fx.category, valid_categories)
 
     def test_token_fixtures_are_deterministic(self):
         a = build_exact_token_fixtures()
@@ -46,31 +48,33 @@ class TestPromptFixtures(unittest.TestCase):
         )
         path = Path("/tmp/test_turbopolar_fixtures.jsonl")
         write_token_fixtures(fixtures, path)
-        loaded = load_token_fixtures(path)
+        loaded = load_token_fixtures_canonical(path)
         self.assertEqual(len(loaded), 2)
-        self.assertEqual(loaded[0]["length"], 8)
-        self.assertEqual(loaded[1]["length"], 16)
+        self.assertEqual(loaded[0].length, 8)
+        self.assertEqual(loaded[1].length, 16)
         path.unlink()
 
     def test_load_token_fixtures_with_vocab_validation(self):
         # Create fixtures with high token IDs to test validation
         fixtures = [
-            {
-                "category": "test",
-                "length": 8,
-                "tokens": [100, 200, 300, 400, 500, 600, 700, 800]
-            }
+            ExactTokenFixture(
+                fixture_id="test_8",
+                category="test",
+                length=8,
+                tokens=(100, 200, 300, 400, 500, 600, 700, 800),
+                content_hash=ExactTokenFixture._compute_content_hash((100, 200, 300, 400, 500, 600, 700, 800))
+            )
         ]
         path = Path("/tmp/test_turbopolar_vocab_fixtures.jsonl")
         write_token_fixtures(fixtures, path)
 
         # Should succeed with sufficient vocab size
-        loaded = load_token_fixtures(path, vocab_size=1000)
+        loaded = load_token_fixtures_canonical(path, vocab_size=1000)
         self.assertEqual(len(loaded), 1)
 
         # Should fail with insufficient vocab size
         with self.assertRaises(ValueError) as context:
-            load_token_fixtures(path, vocab_size=50)
+            load_token_fixtures_canonical(path, vocab_size=50)
         self.assertIn("exceeds vocabulary size", str(context.exception))
 
         path.unlink()
