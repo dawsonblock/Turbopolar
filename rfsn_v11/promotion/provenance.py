@@ -148,11 +148,12 @@ def compute_speed_workload_hash(
     trial_count: int,
     decode_token_count: int,
     token_fixtures_hash: str,
+    seed: int,
 ) -> str:
     """Compute workload hash for speed benchmark.
 
     Captures the unique configuration of speed benchmark workload.
-    Changes to context lengths, trial count, or fixtures result in
+    Changes to context lengths, trial count, seed, or fixtures result in
     different hash.
     """
     workload = {
@@ -161,6 +162,7 @@ def compute_speed_workload_hash(
         "trial_count": trial_count,
         "decode_token_count": decode_token_count,
         "token_fixtures_hash": token_fixtures_hash,
+        "seed": seed,
     }
     return _hash_jsonable(workload)
 
@@ -169,6 +171,7 @@ def compute_memory_workload_hash(
     context_lengths: List[int],
     forced_decode_count: int,
     token_fixtures_hash: str,
+    seed: int,
 ) -> str:
     """Compute workload hash for memory benchmark.
 
@@ -179,6 +182,7 @@ def compute_memory_workload_hash(
         "context_lengths": sorted(context_lengths),
         "forced_decode_count": forced_decode_count,
         "token_fixtures_hash": token_fixtures_hash,
+        "seed": seed,
     }
     return _hash_jsonable(workload)
 
@@ -187,6 +191,7 @@ def compute_fused_decode_workload_hash(
     context_lengths: List[int],
     continuation_token_count: int,
     token_fixtures_hash: str,
+    seed: int,
 ) -> str:
     """Compute workload hash for fused decode benchmark.
 
@@ -197,6 +202,7 @@ def compute_fused_decode_workload_hash(
         "context_lengths": sorted(context_lengths),
         "continuation_token_count": continuation_token_count,
         "token_fixtures_hash": token_fixtures_hash,
+        "seed": seed,
     }
     return _hash_jsonable(workload)
 
@@ -205,6 +211,7 @@ def compute_cartesian_workload_hash(
     context_lengths: List[int],
     forced_decode_count: int,
     token_fixtures_hash: str,
+    seed: int,
 ) -> str:
     """Compute workload hash for cartesian comparison benchmark.
 
@@ -215,6 +222,7 @@ def compute_cartesian_workload_hash(
         "context_lengths": sorted(context_lengths),
         "forced_decode_count": forced_decode_count,
         "token_fixtures_hash": token_fixtures_hash,
+        "seed": seed,
     }
     return _hash_jsonable(workload)
 
@@ -223,6 +231,7 @@ def compute_teacher_forced_workload_hash(
     context_lengths: List[int],
     forced_decode_count: int,
     token_fixtures_hash: str,
+    seed: int,
 ) -> str:
     """Compute workload hash for teacher-forced benchmark.
 
@@ -233,6 +242,7 @@ def compute_teacher_forced_workload_hash(
         "context_lengths": sorted(context_lengths),
         "forced_decode_count": forced_decode_count,
         "token_fixtures_hash": token_fixtures_hash,
+        "seed": seed,
     }
     return _hash_jsonable(workload)
 

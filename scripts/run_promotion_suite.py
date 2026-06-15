@@ -182,7 +182,8 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
                 module_prefix = cls
             else:
                 parts = cls.split(".")
-                module_prefix = ".".join(parts[:-1]) if len(parts) >= 2 else cls
+                module_prefix = ".".join(
+                    parts[:-1]) if len(parts) >= 2 else cls
         else:
             # Fallback to classname inference (legacy method).
             # For module-level tests, the classname IS the module name.
@@ -289,7 +290,7 @@ def _run_benchmark(
 
 
 def _teacher_forced_report(
-    model: str, output_dir: Path
+    model: str, output_dir: Path, seed: int = 42
 ) -> TeacherForcedReport:
     _run_benchmark(
         "run_dense_vs_turbopolar.py",
@@ -308,11 +309,13 @@ def _teacher_forced_report(
         "--num-decode",
         "128",
         "--skip-decode-speed",
+        "--seed",
+        str(seed),
         timeout=7200,
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
-    
+
     # Calculate total_positions from nested prompt position_metrics
     # BenchmarkReport doesn't have a top-level total_positions field
     total_positions = sum(
@@ -336,7 +339,7 @@ def _teacher_forced_report(
         json.dump(report, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
-    
+
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
@@ -355,8 +358,10 @@ def _teacher_forced_report(
     )
 
 
-def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedReport:
-    """Quick-mode teacher-forced: skip very long contexts to keep runtime reasonable."""
+def _teacher_forced_report_quick(
+    model: str, output_dir: Path, seed: int = 42
+) -> TeacherForcedReport:
+    """Quick-mode teacher-forced: skip very long contexts."""
     _run_benchmark(
         "run_dense_vs_turbopolar.py",
         "--model",
@@ -372,11 +377,13 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         "--num-decode",
         "32",
         "--skip-decode-speed",
+        "--seed",
+        str(seed),
         timeout=1800,
     )
     report = _load_json(output_dir / "teacher_forced" / "report.json")
     agg = report.get("aggregate", {})
-    
+
     # Calculate total_positions from nested prompt position_metrics
     # BenchmarkReport doesn't have a top-level total_positions field
     total_positions = sum(
@@ -400,7 +407,7 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         json.dump(report, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
-    
+
     return TeacherForcedReport(
         model=model,
         evaluated_contexts=list(report.get("evaluated_contexts", [])),
@@ -415,11 +422,17 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         any_nans_or_infs=bool(agg.get("any_nans_or_infs", True)),
         raw_metrics_path=str(raw_metrics_dedicated_path),
         raw_metrics_hash=raw_metrics_hash,
-        notes=list(report.get("notes", [])) + ["Quick mode: 512-4096 contexts only, 32 decode tokens."],
+        notes=(
+            list(report.get("notes", []))
+            + ["Quick mode: 512-4096 contexts only, 32 decode tokens."]
+        ),
     )
 
 
-def _fused_decode_report(model: str, output_dir: Path, token_fixtures: Optional[Path] = None) -> FusedDecodeReport:
+def _fused_decode_report(
+    model: str, output_dir: Path,
+    token_fixtures: Optional[Path] = None, seed: int = 42
+) -> FusedDecodeReport:
     args = [
         "--contexts",
         "512",
@@ -431,12 +444,18 @@ def _fused_decode_report(model: str, output_dir: Path, token_fixtures: Optional[
         "129",
         "--execution-mode",
         "metal_strict",
+        "--seed",
+        str(seed),
     ]
     # P1-28: Pass exact fixtures to fused decode
     if token_fixtures:
         args.extend(["--token-fixtures", str(token_fixtures)])
-    
-    _run_benchmark("run_fused_forced_decode.py", "--model", model, "--output-dir", str(output_dir / "fused_decode"), *args, timeout=3600)
+
+    _run_benchmark(
+        "run_fused_forced_decode.py", "--model", model,
+        "--output-dir", str(output_dir / "fused_decode"),
+        *args, timeout=3600
+    )
     report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
     contexts = report.get("contexts_evaluated", [])
@@ -444,12 +463,17 @@ def _fused_decode_report(model: str, output_dir: Path, token_fixtures: Optional[
         model=model,
         model_layer_count=int(report.get("num_layers", 0)),
         contexts_evaluated=contexts,
-        requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
+        requested_fused_positions_per_context=agg.get(
+            "requested_fused_positions", 0),
         positions_per_context=dict(agg.get("positions_per_context", {})),
-        failed_positions_per_context=dict(agg.get("failed_positions_per_context", {})),
-        compressed_page_dispatches_per_context=dict(agg.get("compressed_page_dispatches_per_context", {})),
-        dense_tail_dispatches_per_context=dict(agg.get("dense_tail_dispatches_per_context", {})),
-        fallback_calls_per_context=dict(agg.get("fallback_calls_per_context", {})),
+        failed_positions_per_context=dict(
+            agg.get("failed_positions_per_context", {})),
+        compressed_page_dispatches_per_context=dict(
+            agg.get("compressed_page_dispatches_per_context", {})),
+        dense_tail_dispatches_per_context=dict(
+            agg.get("dense_tail_dispatches_per_context", {})),
+        fallback_calls_per_context=dict(
+            agg.get("fallback_calls_per_context", {})),
         trace_artifact_path=report.get("trace_artifact_path", ""),
         trace_artifact_hash=report.get("trace_artifact_hash", ""),
         mean_logit_cosine=agg.get("mean_logit_cosine"),
@@ -465,17 +489,22 @@ def _fused_decode_report(model: str, output_dir: Path, token_fixtures: Optional[
         dense_tail_metal_calls=agg.get("dense_tail_metal_calls"),
         merge_metal_calls=agg.get("merge_metal_calls"),
         finalization_metal_calls=agg.get("finalization_metal_calls"),
-        compressed_page_fallback_calls=agg.get("compressed_page_fallback_calls"),
+        compressed_page_fallback_calls=agg.get(
+            "compressed_page_fallback_calls"),
         dense_tail_fallback_calls=agg.get("dense_tail_fallback_calls"),
         full_attention_fallback_calls=agg.get("full_attention_fallback_calls"),
         fallback_reasons=agg.get("fallback_reasons"),
         fallback_calls=agg.get("fallback_calls", 0),
-        first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
+        first_argmax_divergence_step=agg.get(
+            "first_argmax_divergence_position"),
         actual_fused_positions=agg.get("actual_fused_positions"),
     )
 
 
-def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Optional[Path] = None) -> FusedDecodeReport:
+def _fused_decode_report_quick(
+    model: str, output_dir: Path,
+    token_fixtures: Optional[Path] = None, seed: int = 42
+) -> FusedDecodeReport:
     args = [
         "--contexts",
         "512",
@@ -485,12 +514,18 @@ def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Opt
         "metal_strict",
         "--forced-decode-tokens",
         "32",
+        "--seed",
+        str(seed),
     ]
     # P1-28: Pass exact fixtures to fused decode
     if token_fixtures:
         args.extend(["--token-fixtures", str(token_fixtures)])
-    
-    _run_benchmark("run_fused_forced_decode.py", "--model", model, "--output-dir", str(output_dir / "fused_decode"), *args, timeout=1800)
+
+    _run_benchmark(
+        "run_fused_forced_decode.py", "--model", model,
+        "--output-dir", str(output_dir / "fused_decode"),
+        *args, timeout=1800
+    )
     report = _load_json(output_dir / "fused_decode" / "report.json")
     agg = report.get("aggregate", {})
     contexts = report.get("contexts_evaluated", [])
@@ -498,12 +533,17 @@ def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Opt
         model=model,
         model_layer_count=int(report.get("num_layers", 0)),
         contexts_evaluated=contexts,
-        requested_fused_positions_per_context=agg.get("requested_fused_positions", 0),
+        requested_fused_positions_per_context=agg.get(
+            "requested_fused_positions", 0),
         positions_per_context=dict(agg.get("positions_per_context", {})),
-        failed_positions_per_context=dict(agg.get("failed_positions_per_context", {})),
-        compressed_page_dispatches_per_context=dict(agg.get("compressed_page_dispatches_per_context", {})),
-        dense_tail_dispatches_per_context=dict(agg.get("dense_tail_dispatches_per_context", {})),
-        fallback_calls_per_context=dict(agg.get("fallback_calls_per_context", {})),
+        failed_positions_per_context=dict(
+            agg.get("failed_positions_per_context", {})),
+        compressed_page_dispatches_per_context=dict(
+            agg.get("compressed_page_dispatches_per_context", {})),
+        dense_tail_dispatches_per_context=dict(
+            agg.get("dense_tail_dispatches_per_context", {})),
+        fallback_calls_per_context=dict(
+            agg.get("fallback_calls_per_context", {})),
         trace_artifact_path=report.get("trace_artifact_path", ""),
         trace_artifact_hash=report.get("trace_artifact_hash", ""),
         mean_logit_cosine=agg.get("mean_logit_cosine"),
@@ -519,19 +559,22 @@ def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Opt
         dense_tail_metal_calls=agg.get("dense_tail_metal_calls"),
         merge_metal_calls=agg.get("merge_metal_calls"),
         finalization_metal_calls=agg.get("finalization_metal_calls"),
-        compressed_page_fallback_calls=agg.get("compressed_page_fallback_calls"),
+        compressed_page_fallback_calls=agg.get(
+            "compressed_page_fallback_calls"),
         dense_tail_fallback_calls=agg.get("dense_tail_fallback_calls"),
         full_attention_fallback_calls=agg.get("full_attention_fallback_calls"),
         fallback_reasons=agg.get("fallback_reasons"),
         fallback_calls=agg.get("fallback_calls", 0),
-        first_argmax_divergence_step=agg.get("first_argmax_divergence_position"),
+        first_argmax_divergence_step=agg.get(
+            "first_argmax_divergence_position"),
         actual_fused_positions=agg.get("actual_fused_positions"),
         notes=["Quick mode: 512-4096 contexts only."],
     )
 
 
 def _speed_report(
-    model: str, output_dir: Path, token_fixtures: Optional[Path] = None
+    model: str, output_dir: Path,
+    token_fixtures: Optional[Path] = None, seed: int = 42
 ) -> SpeedReport:
     cmd = [
         "run_speed_matrix.py",
@@ -555,6 +598,8 @@ def _speed_report(
         "5",
         "--execution-mode",
         "metal_strict",
+        "--seed",
+        str(seed),
     ]
     if token_fixtures:
         cmd.extend(["--token-fixtures", str(token_fixtures)])
@@ -562,7 +607,9 @@ def _speed_report(
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
-    speedups = [r.get("speedup") for r in records if r.get("speedup") is not None]
+    speedups = [
+        r.get("speedup") for r in records if r.get("speedup") is not None
+    ]
 
     def _ratios_at(min_len: int):
         vals = [
@@ -582,7 +629,7 @@ def _speed_report(
         (r.get("valid_trials", 0) for r in records),
         default=0,
     )
-    
+
     # Calculate total fallback count from trial records
     trial_results = report.get("trial_results", [])
     total_fallbacks = sum(
@@ -590,7 +637,7 @@ def _speed_report(
         for tr in trial_results
         if tr.get("mode") == "turbo"
     )
-    
+
     # Write raw timing data to dedicated file and calculate full SHA-256
     # Use the unified schema format for the raw timing file
     import hashlib
@@ -620,7 +667,8 @@ def _speed_report(
         }
 
     with open(raw_timing_path, "w") as f:
-        json.dump(raw_timing_data, f, sort_keys=True, indent=2, allow_nan=False)
+        json.dump(raw_timing_data, f, sort_keys=True,
+                  indent=2, allow_nan=False)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -628,7 +676,8 @@ def _speed_report(
         model=model,
         contexts_evaluated=contexts,
         trials_per_context=min_valid_trials,
-        median_ratio=float(sorted(speedups)[len(speedups) // 2]) if speedups else None,
+        median_ratio=float(sorted(speedups)[len(
+            speedups) // 2]) if speedups else None,
         min_ratio_at_4096_plus=min_4096,
         max_ratio_at_4096_plus=max_4096,
         median_ratio_at_8192_plus=median_8192,
@@ -640,7 +689,8 @@ def _speed_report(
 
 
 def _speed_report_quick(
-    model: str, output_dir: Path, token_fixtures: Optional[Path] = None
+    model: str, output_dir: Path,
+    token_fixtures: Optional[Path] = None, seed: int = 42
 ) -> SpeedReport:
     cmd = [
         "run_speed_matrix.py",
@@ -659,6 +709,8 @@ def _speed_report_quick(
         "3",
         "--execution-mode",
         "metal_strict",
+        "--seed",
+        str(seed),
     ]
     if token_fixtures:
         cmd.extend(["--token-fixtures", str(token_fixtures)])
@@ -666,7 +718,9 @@ def _speed_report_quick(
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
-    speedups = [r.get("speedup") for r in records if r.get("speedup") is not None]
+    speedups = [
+        r.get("speedup") for r in records if r.get("speedup") is not None
+    ]
 
     def _ratios_at(min_len: int):
         vals = [
@@ -685,7 +739,7 @@ def _speed_report_quick(
         (r.get("valid_trials", 0) for r in records),
         default=0,
     )
-    
+
     # Calculate total fallback count from trial records
     trial_results = report.get("trial_results", [])
     total_fallbacks = sum(
@@ -693,7 +747,7 @@ def _speed_report_quick(
         for tr in trial_results
         if tr.get("mode") == "turbo"
     )
-    
+
     # Write raw timing data to dedicated file and calculate full SHA-256
     # Use the unified schema format for the raw timing file
     import hashlib
@@ -723,7 +777,8 @@ def _speed_report_quick(
         }
 
     with open(raw_timing_path, "w") as f:
-        json.dump(raw_timing_data, f, sort_keys=True, indent=2, allow_nan=False)
+        json.dump(raw_timing_data, f, sort_keys=True,
+                  indent=2, allow_nan=False)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -731,7 +786,8 @@ def _speed_report_quick(
         model=model,
         contexts_evaluated=contexts,
         trials_per_context=min_valid_trials,
-        median_ratio=float(sorted(speedups)[len(speedups) // 2]) if speedups else None,
+        median_ratio=float(sorted(speedups)[len(
+            speedups) // 2]) if speedups else None,
         min_ratio_at_4096_plus=min_4096,
         max_ratio_at_4096_plus=max_4096,
         median_ratio_at_8192_plus=median_8192,
@@ -747,6 +803,7 @@ def _memory_report(
     output_dir: Path,
     token_fixtures: Optional[Path] = None,
     strict: bool = False,
+    seed: int = 42,
 ) -> MemoryReport:
     cmd = [
         "run_memory_matrix.py",
@@ -764,6 +821,8 @@ def _memory_report(
         "16384",
         "--output-dir",
         str(output_dir / "memory_matrix"),
+        "--seed",
+        str(seed),
     ]
     if token_fixtures:
         cmd.extend(["--token-fixtures", str(token_fixtures)])
@@ -800,7 +859,8 @@ def _memory_report(
         persistent_storage_ratio = last.get("persistent_storage_ratio")
         peak_device_memory_ratio = last.get("peak_device_memory_ratio")
 
-    hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
+    hidden_dense = any(r.get("hidden_dense_cache_detected", True)
+                       for r in records)
     total_fallbacks = sum(r.get("fallback_count", 0) for r in records)
 
     return MemoryReport(
@@ -821,6 +881,7 @@ def _memory_report_quick(
     output_dir: Path,
     token_fixtures: Optional[Path] = None,
     strict: bool = False,
+    seed: int = 42,
 ) -> MemoryReport:
     cmd = [
         "run_memory_matrix.py",
@@ -832,6 +893,8 @@ def _memory_report_quick(
         "4096",
         "--output-dir",
         str(output_dir / "memory_matrix"),
+        "--seed",
+        str(seed),
     ]
     if token_fixtures:
         cmd.extend(["--token-fixtures", str(token_fixtures)])
@@ -868,7 +931,8 @@ def _memory_report_quick(
         persistent_storage_ratio = last.get("persistent_storage_ratio")
         peak_device_memory_ratio = last.get("peak_device_memory_ratio")
 
-    hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
+    hidden_dense = any(r.get("hidden_dense_cache_detected", True)
+                       for r in records)
     total_fallbacks = sum(r.get("fallback_count", 0) for r in records)
 
     return MemoryReport(
@@ -885,7 +949,7 @@ def _memory_report_quick(
 
 
 def _baseline_comparison_report(
-    model: str, output_dir: Path
+    model: str, output_dir: Path, seed: int = 42
 ) -> BaselineComparisonReport:
     _run_benchmark(
         "run_cartesian_int8_baseline.py",
@@ -905,6 +969,8 @@ def _baseline_comparison_report(
         "128",
         "--execution-mode",
         "metal_strict",
+        "--seed",
+        str(seed),
         "--output-dir",
         str(output_dir / "cartesian_baseline"),
         timeout=3600,
@@ -926,7 +992,7 @@ def _baseline_comparison_report(
 
 
 def _baseline_comparison_report_quick(
-    model: str, output_dir: Path
+    model: str, output_dir: Path, seed: int = 42
 ) -> BaselineComparisonReport:
     _run_benchmark(
         "run_cartesian_int8_baseline.py",
@@ -941,6 +1007,8 @@ def _baseline_comparison_report_quick(
         "32",
         "--execution-mode",
         "metal_strict",
+        "--seed",
+        str(seed),
         "--output-dir",
         str(output_dir / "cartesian_baseline"),
         timeout=1800,
@@ -957,7 +1025,8 @@ def _baseline_comparison_report_quick(
         turbo_polar_wins_on_memory=agg.get("turbo_polar_wins_on_memory"),
         turbo_polar_wins_on_speed=agg.get("turbo_polar_wins_on_speed"),
         recommendation=agg.get("recommendation", ""),
-        notes=list(agg.get("notes", [])) + ["Quick mode: 512-4096 contexts, 32 decode tokens."],
+        notes=list(agg.get("notes", []))
+        + ["Quick mode: 512-4096 contexts, 32 decode tokens."],
     )
 
 
@@ -984,27 +1053,92 @@ def _extract_model_revision(model_path: str) -> str:
 
     # Try to get git revision if it's a git repository
     if model_path.is_dir():
-        # Check if it's a git repository
         try:
             git_dir = model_path / ".git"
             if git_dir.exists() or (model_path / ".." / ".git").exists():
-                # It's a git repository, get the commit SHA
-                import subprocess
                 result = subprocess.run(
                     ["git", "rev-parse", "HEAD"],
                     cwd=model_path if git_dir.exists() else model_path.parent,
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     return result.stdout.strip()
         except Exception:
             pass
 
-    # For HuggingFace IDs, we can't easily get the commit SHA without huggingface_hub
-    # Return empty string to indicate it should be provided manually
+    # P0: Best-effort HF revision extraction via huggingface_hub
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        info = api.model_info(str(model_path))
+        if info.sha:
+            return info.sha
+    except Exception:
+        pass
+
     return ""
+
+
+def _derive_config_from_model(model: str) -> TurboPolarConfig:
+    """Load model and derive TurboPolarConfig from actual architecture.
+
+    P0: Cache configuration must match the loaded model, not hardcoded
+    defaults, so the config hash is representative.
+    """
+    from mlx_lm import load
+
+    m, _ = load(model)
+    # Try top-level attributes first (some MLX-LM models expose these)
+    n_heads = getattr(m, "n_heads", None)
+    n_kv_heads = getattr(m, "n_kv_heads", None)
+    hidden_size = getattr(m, "hidden_size", None)
+
+    if n_heads is None or n_kv_heads is None or hidden_size is None:
+        # Inspect first attention layer
+        layers = getattr(m, "layers", getattr(m, "model", None))
+        if layers is None:
+            raise ValueError(
+                "Cannot find model layers to infer attention config")
+        first_layer = layers[0] if hasattr(layers, "__getitem__") else None
+        if first_layer is None:
+            raise ValueError("Cannot access first model layer")
+        attn = getattr(first_layer, "self_attn", getattr(
+            first_layer, "attention", None))
+        if attn is None:
+            raise ValueError("Cannot find attention module in first layer")
+        n_heads = getattr(attn, "n_heads", None)
+        n_kv_heads = getattr(attn, "n_kv_heads", None)
+        # q_proj weight shape is (hidden_size, hidden_size) for standard attn
+        q_weight = getattr(getattr(attn, "q_proj", None), "weight", None)
+        if q_weight is not None:
+            hidden_size = q_weight.shape[0]
+        else:
+            raise ValueError("Cannot infer hidden_size from attention weights")
+
+    if n_heads is None or n_kv_heads is None or hidden_size is None:
+        raise ValueError(
+            f"Incomplete attention config: n_heads={n_heads}, "
+            f"n_kv_heads={n_kv_heads}, hidden_size={hidden_size}"
+        )
+
+    head_dim = hidden_size // n_heads
+    if head_dim not in (64, 128):
+        raise ValueError(
+            f"TurboPolar only supports head_dim 64 or 128, got {head_dim}")
+
+    return TurboPolarConfig(
+        num_q_heads=int(n_heads),
+        num_kv_heads=int(n_kv_heads),
+        head_dim=int(head_dim),
+        block_size=64,
+        storage_mode="kv_quant",
+        use_int8_radii=True,
+        k_angle_bits_deep=8,
+        split_dim=0,
+        execution_mode=ExecutionMode.METAL_STRICT,
+    )
 
 
 def _build_provenance(
@@ -1015,12 +1149,15 @@ def _build_provenance(
     model_revision: Optional[str] = None,
     tokenizer_revision: Optional[str] = None,
     quick: bool = False,
+    seed: int = 42,
 ) -> BenchmarkProvenance:
     prompt_suite = BENCHMARKS_DIR / "exact_token_fixtures.jsonl"
 
     # P0: Use provided revisions or try to extract automatically
-    model_rev = model_revision if model_revision else _extract_model_revision(model)
-    tokenizer_rev = tokenizer_revision if tokenizer_revision else model_rev  # Usually same as model
+    model_rev = model_revision if model_revision else _extract_model_revision(
+        model)
+    # Usually same as model
+    tokenizer_rev = tokenizer_revision if tokenizer_revision else model_rev
 
     # If still empty, this will be caught by the gate as a failure
     if not model_rev:
@@ -1056,7 +1193,9 @@ def _build_provenance(
         memory_contexts = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
         memory_decode = 128
         fused_contexts = [512, 2048, 4096, 8192, 16384]
-        fused_decode = 128
+        # P0: fused decode benchmark uses --forced-decode-tokens 129
+        # (1 scored during prefill + 128 fused decode positions)
+        fused_decode = 129
         cartesian_contexts = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
         cartesian_decode = 128
         teacher_contexts = [512, 2048, 4096, 8192, 16384]
@@ -1067,26 +1206,31 @@ def _build_provenance(
         trial_count=speed_trials,
         decode_token_count=speed_decode,
         token_fixtures_hash=token_fixtures_hash,
+        seed=seed,
     )
     memory_workload_hash = compute_memory_workload_hash(
         context_lengths=memory_contexts,
         forced_decode_count=memory_decode,
         token_fixtures_hash=token_fixtures_hash,
+        seed=seed,
     )
     fused_decode_workload_hash = compute_fused_decode_workload_hash(
         context_lengths=fused_contexts,
         continuation_token_count=fused_decode,
         token_fixtures_hash=token_fixtures_hash,
+        seed=seed,
     )
     cartesian_workload_hash = compute_cartesian_workload_hash(
         context_lengths=cartesian_contexts,
         forced_decode_count=cartesian_decode,
         token_fixtures_hash=token_fixtures_hash,
+        seed=seed,
     )
     teacher_forced_workload_hash = compute_teacher_forced_workload_hash(
         context_lengths=teacher_contexts,
         forced_decode_count=teacher_decode,
         token_fixtures_hash=token_fixtures_hash,
+        seed=seed,
     )
 
     return capture_provenance(
@@ -1230,7 +1374,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run the full TurboPolar promotion suite"
     )
-    parser.add_argument("--model", default=None, help="MLX model path or HF identifier")
+    parser.add_argument("--model", default=None,
+                        help="MLX model path or HF identifier")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -1244,7 +1389,10 @@ def main():
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="Run a reduced benchmark set for fast pipeline validation (fewer contexts, fewer trials)",
+        help=(
+            "Run a reduced benchmark set for fast pipeline validation "
+            "(fewer contexts, fewer trials)"
+        ),
     )
     parser.add_argument(
         "--token-fixtures",
@@ -1255,12 +1403,20 @@ def main():
     parser.add_argument(
         "--model-revision",
         default=None,
-        help="Immutable model revision (git commit SHA or HF commit SHA) - required for promotion. If not provided, will attempt to extract from git repository.",
+        help=(
+            "Immutable model revision (git commit SHA or HF commit SHA) - "
+            "required for promotion. If not provided, will attempt to "
+            "extract from git repository."
+        ),
     )
     parser.add_argument(
         "--tokenizer-revision",
         default=None,
-        help="Immutable tokenizer revision (git commit SHA or HF commit SHA) - required for promotion. If not provided, defaults to model-revision.",
+        help=(
+            "Immutable tokenizer revision (git commit SHA or HF commit SHA) "
+            "- required for promotion. If not provided, defaults to "
+            "model-revision."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -1273,21 +1429,32 @@ def main():
     # Immutable artifact directory: timestamp + short commit + config hash
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     commit = (
-        _run(["git", "rev-parse", "--short", "HEAD"], cwd=project_root).stdout.strip()
+        _run(["git", "rev-parse", "--short", "HEAD"],
+             cwd=project_root).stdout.strip()
         or "unknown"
     )
-    config = TurboPolarConfig(
-        num_q_heads=32,
-        num_kv_heads=8,
-        head_dim=128,
-        block_size=64,
-        storage_mode="kv_quant",
-        use_int8_radii=True,
-        k_angle_bits_deep=8,
-        split_dim=0,
-        execution_mode=ExecutionMode.METAL_STRICT,
-    )
-    config_hash = "dry-run" if args.dry_run else _hash_jsonable(config.__dict__)
+    # P0: Derive cache config from loaded model, not hardcoded defaults
+    if args.dry_run:
+        config = TurboPolarConfig(
+            num_q_heads=32,
+            num_kv_heads=8,
+            head_dim=128,
+            block_size=64,
+            storage_mode="kv_quant",
+            use_int8_radii=True,
+            k_angle_bits_deep=8,
+            split_dim=0,
+            execution_mode=ExecutionMode.METAL_STRICT,
+        )
+    else:
+        print("Loading model to derive cache configuration...")
+        config = _derive_config_from_model(args.model)
+        print(
+            f"Derived config: q_heads={config.num_q_heads}, "
+            f"kv_heads={config.num_kv_heads}, head_dim={config.head_dim}"
+        )
+    config_hash = "dry-run" if args.dry_run else _hash_jsonable(
+        config.__dict__)
     artifact_dir = args.output_dir / f"{timestamp}_{commit}_{config_hash}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     print(f"Artifacts: {artifact_dir}")
@@ -1302,24 +1469,32 @@ def main():
     else:
         print("Step 2/5: teacher-forced benchmark...")
         if args.quick:
-            teacher_report = _teacher_forced_report_quick(args.model, artifact_dir)
+            teacher_report = _teacher_forced_report_quick(
+                args.model, artifact_dir, seed=args.seed
+            )
         else:
-            teacher_report = _teacher_forced_report(args.model, artifact_dir)
+            teacher_report = _teacher_forced_report(
+                args.model, artifact_dir, seed=args.seed
+            )
 
         print("Step 3/5: fused decode benchmark...")
         if args.quick:
-            fused_report = _fused_decode_report_quick(args.model, artifact_dir, args.token_fixtures)
+            fused_report = _fused_decode_report_quick(
+                args.model, artifact_dir, args.token_fixtures, seed=args.seed
+            )
         else:
-            fused_report = _fused_decode_report(args.model, artifact_dir, args.token_fixtures)
+            fused_report = _fused_decode_report(
+                args.model, artifact_dir, args.token_fixtures, seed=args.seed
+            )
 
         print("Step 4/5: speed matrix benchmark...")
         if args.quick:
             speed_report = _speed_report_quick(
-                args.model, artifact_dir, args.token_fixtures
+                args.model, artifact_dir, args.token_fixtures, seed=args.seed
             )
         else:
             speed_report = _speed_report(
-                args.model, artifact_dir, args.token_fixtures
+                args.model, artifact_dir, args.token_fixtures, seed=args.seed
             )
 
         print("Step 5/5: memory benchmark...")
@@ -1327,25 +1502,28 @@ def main():
             memory_report = _memory_report_quick(
                 args.model, artifact_dir,
                 token_fixtures=args.token_fixtures,
-                strict=True,
+                strict=True, seed=args.seed,
             )
         else:
             memory_report = _memory_report(
                 args.model, artifact_dir,
                 token_fixtures=args.token_fixtures,
-                strict=True,
+                strict=True, seed=args.seed,
             )
 
         print("Step 6/5: Cartesian int8 baseline comparison...")
         if args.quick:
-            baseline_report = _baseline_comparison_report_quick(args.model, artifact_dir)
+            baseline_report = _baseline_comparison_report_quick(
+                args.model, artifact_dir)
         else:
-            baseline_report = _baseline_comparison_report(args.model, artifact_dir)
+            baseline_report = _baseline_comparison_report(
+                args.model, artifact_dir)
 
         provenance = _build_provenance(
             args.model, artifact_dir, config,
             args.token_fixtures, args.model_revision,
             args.tokenizer_revision, quick=args.quick,
+            seed=args.seed,
         )
 
         evidence = PromotionEvidence(
@@ -1378,7 +1556,8 @@ def main():
             allow_nan=False,
         )
     with open(provenance_path, "w") as f:
-        json.dump(_clean_dict(evidence.provenance), f, indent=2, allow_nan=False)
+        json.dump(_clean_dict(evidence.provenance),
+                  f, indent=2, allow_nan=False)
 
     print(f"Evidence written to {evidence_path}")
     print(f"Decision written to {decision_path}")
