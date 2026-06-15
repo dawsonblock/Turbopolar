@@ -10,6 +10,18 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+def _numeric_or_none(value: Any) -> Any:
+    """Sanitize numeric fields: reject booleans, pass everything else through.
+
+    Python ``bool`` is a subclass of ``int``, so naive ``isinstance(x, int)``
+    would accept ``True``/``False`` as valid numbers.  This helper coerces
+    booleans to ``None`` so that the promotion gate treats them as missing.
+    """
+    if isinstance(value, bool):
+        return None
+    return value
+
+
 class PromotionState(str, Enum):
     INCOMPLETE = "INCOMPLETE"
     FAILED = "FAILED"
@@ -79,22 +91,29 @@ class TeacherForcedReport:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TeacherForcedReport":
+        total_positions_raw = data.get("total_positions", 0)
+        if isinstance(total_positions_raw, bool):
+            total_positions_raw = 0
         return cls(
             model=data.get("model", ""),
             evaluated_contexts=list(data.get("evaluated_contexts", [])),
-            total_positions=int(data.get("total_positions", 0)),
-            mean_logit_cosine=data.get("mean_logit_cosine"),
-            p05_logit_cosine=data.get("p05_logit_cosine"),
-            min_logit_cosine=data.get("min_logit_cosine"),
-            argmax_agreement=data.get("argmax_agreement"),
-            mean_top5_overlap=data.get("mean_top5_overlap"),
-            mean_top10_overlap=data.get("mean_top10_overlap"),
-            mean_perplexity_delta=data.get("mean_perplexity_delta"),
+            total_positions=int(total_positions_raw),
+            mean_logit_cosine=_numeric_or_none(data.get("mean_logit_cosine")),
+            p05_logit_cosine=_numeric_or_none(data.get("p05_logit_cosine")),
+            min_logit_cosine=_numeric_or_none(data.get("min_logit_cosine")),
+            argmax_agreement=_numeric_or_none(data.get("argmax_agreement")),
+            mean_top5_overlap=_numeric_or_none(data.get("mean_top5_overlap")),
+            mean_top10_overlap=_numeric_or_none(data.get("mean_top10_overlap")),
+            mean_perplexity_delta=_numeric_or_none(
+                data.get("mean_perplexity_delta")
+            ),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
             raw_metrics_path=data.get("raw_metrics_path", ""),
             raw_metrics_hash=data.get("raw_metrics_hash", ""),
             notes=list(data.get("notes", [])),
-            max_perplexity_delta=data.get("max_perplexity_delta"),
+            max_perplexity_delta=_numeric_or_none(
+                data.get("max_perplexity_delta")
+            ),
         )
 
 
@@ -140,48 +159,80 @@ class FusedDecodeReport:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FusedDecodeReport":
+        def _int_or_zero(val: Any) -> int:
+            if isinstance(val, bool):
+                return 0
+            return int(val) if val is not None else 0
+
+        def _optional_int(val: Any) -> Optional[int]:
+            if isinstance(val, bool):
+                return None
+            return int(val) if val is not None else None
+
         return cls(
             model=data.get("model", ""),
-            model_layer_count=int(data.get("model_layer_count", 0)),
+            model_layer_count=_int_or_zero(data.get("model_layer_count", 0)),
             contexts_evaluated=list(data.get("contexts_evaluated", [])),
-            requested_fused_positions_per_context=int(
+            requested_fused_positions_per_context=_int_or_zero(
                 data.get("requested_fused_positions_per_context", 0)
             ),
             positions_per_context=dict(data.get("positions_per_context", {})),
-            failed_positions_per_context=dict(data.get("failed_positions_per_context", {})),
+            failed_positions_per_context=dict(
+                data.get("failed_positions_per_context", {})
+            ),
             compressed_page_dispatches_per_context=dict(
                 data.get("compressed_page_dispatches_per_context", {})
             ),
             dense_tail_dispatches_per_context=dict(
                 data.get("dense_tail_dispatches_per_context", {})
             ),
-            fallback_calls_per_context=dict(data.get("fallback_calls_per_context", {})),
+            fallback_calls_per_context=dict(
+                data.get("fallback_calls_per_context", {})
+            ),
             trace_artifact_path=data.get("trace_artifact_path", ""),
             trace_artifact_hash=data.get("trace_artifact_hash", ""),
-            mean_logit_cosine=data.get("mean_logit_cosine"),
-            p05_logit_cosine=data.get("p05_logit_cosine"),
-            min_logit_cosine=data.get("min_logit_cosine"),
-            mean_top5_overlap=data.get("mean_top5_overlap"),
-            mean_top10_overlap=data.get("mean_top10_overlap"),
-            argmax_agreement=data.get("argmax_agreement"),
-            mean_perplexity_delta=data.get("mean_perplexity_delta"),
+            mean_logit_cosine=_numeric_or_none(data.get("mean_logit_cosine")),
+            p05_logit_cosine=_numeric_or_none(data.get("p05_logit_cosine")),
+            min_logit_cosine=_numeric_or_none(data.get("min_logit_cosine")),
+            mean_top5_overlap=_numeric_or_none(data.get("mean_top5_overlap")),
+            mean_top10_overlap=_numeric_or_none(data.get("mean_top10_overlap")),
+            argmax_agreement=_numeric_or_none(data.get("argmax_agreement")),
+            mean_perplexity_delta=_numeric_or_none(
+                data.get("mean_perplexity_delta")
+            ),
             any_nans_or_infs=bool(data.get("any_nans_or_infs", True)),
             execution_mode=(
                 data.get("execution_mode", "").strip().lower()
                 if data.get("execution_mode")
                 else None
             ),
-            compressed_page_metal_calls=data.get("compressed_page_metal_calls"),
-            dense_tail_metal_calls=data.get("dense_tail_metal_calls"),
-            merge_metal_calls=data.get("merge_metal_calls"),
-            finalization_metal_calls=data.get("finalization_metal_calls"),
-            compressed_page_fallback_calls=data.get("compressed_page_fallback_calls"),
-            dense_tail_fallback_calls=data.get("dense_tail_fallback_calls"),
-            full_attention_fallback_calls=data.get("full_attention_fallback_calls"),
+            compressed_page_metal_calls=_optional_int(
+                data.get("compressed_page_metal_calls")
+            ),
+            dense_tail_metal_calls=_optional_int(
+                data.get("dense_tail_metal_calls")
+            ),
+            merge_metal_calls=_optional_int(data.get("merge_metal_calls")),
+            finalization_metal_calls=_optional_int(
+                data.get("finalization_metal_calls")
+            ),
+            compressed_page_fallback_calls=_optional_int(
+                data.get("compressed_page_fallback_calls")
+            ),
+            dense_tail_fallback_calls=_optional_int(
+                data.get("dense_tail_fallback_calls")
+            ),
+            full_attention_fallback_calls=_optional_int(
+                data.get("full_attention_fallback_calls")
+            ),
             fallback_reasons=list(data.get("fallback_reasons") or []),
-            fallback_calls=int(data.get("fallback_calls", 0)),
-            first_argmax_divergence_step=data.get("first_argmax_divergence_step"),
-            actual_fused_positions=data.get("actual_fused_positions"),
+            fallback_calls=_int_or_zero(data.get("fallback_calls", 0)),
+            first_argmax_divergence_step=_optional_int(
+                data.get("first_argmax_divergence_step")
+            ),
+            actual_fused_positions=_optional_int(
+                data.get("actual_fused_positions")
+            ),
             notes=list(data.get("notes", [])),
         )
 
@@ -207,18 +258,26 @@ class SpeedReport:
     def from_dict(cls, data: Dict[str, Any]) -> "SpeedReport":
         dense = data.get("dense_decode_tok_s", {})
         turbo = data.get("turbo_decode_tok_s", {})
+        trials_raw = data.get("trials_per_context", 0)
+        fallback_raw = data.get("fallback_calls", 0)
         return cls(
             model=data.get("model", ""),
             contexts_evaluated=list(data.get("contexts_evaluated", [])),
-            trials_per_context=int(data.get("trials_per_context", 0)),
+            trials_per_context=int(trials_raw) if not isinstance(trials_raw, bool) else 0,
             dense_decode_tok_s={int(k): list(v) for k, v in dense.items()},
             turbo_decode_tok_s={int(k): list(v) for k, v in turbo.items()},
-            median_ratio=data.get("median_ratio"),
-            min_ratio_at_4096_plus=data.get("min_ratio_at_4096_plus"),
-            max_ratio_at_4096_plus=data.get("max_ratio_at_4096_plus"),
-            median_ratio_at_8192_plus=data.get("median_ratio_at_8192_plus"),
+            median_ratio=_numeric_or_none(data.get("median_ratio")),
+            min_ratio_at_4096_plus=_numeric_or_none(
+                data.get("min_ratio_at_4096_plus")
+            ),
+            max_ratio_at_4096_plus=_numeric_or_none(
+                data.get("max_ratio_at_4096_plus")
+            ),
+            median_ratio_at_8192_plus=_numeric_or_none(
+                data.get("median_ratio_at_8192_plus")
+            ),
             execution_mode=data.get("execution_mode"),
-            fallback_calls=int(data.get("fallback_calls", 0)),
+            fallback_calls=int(fallback_raw) if not isinstance(fallback_raw, bool) else 0,
             raw_timing_path=data.get("raw_timing_path", ""),
             raw_timing_hash=data.get("raw_timing_hash", ""),
             notes=list(data.get("notes", [])),
@@ -240,18 +299,21 @@ class MemoryReport:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryReport":
+        fallback_raw = data.get("fallback_calls", 0)
         return cls(
             model=data.get("model", ""),
             contexts_evaluated=list(data.get("contexts_evaluated", [])),
-            logical_kv_ratio=data.get("logical_kv_ratio"),
-            persistent_storage_ratio=data.get("persistent_storage_ratio"),
-            peak_device_memory_ratio_at_8192_plus=data.get(
-                "peak_device_memory_ratio_at_8192_plus"
+            logical_kv_ratio=_numeric_or_none(data.get("logical_kv_ratio")),
+            persistent_storage_ratio=_numeric_or_none(
+                data.get("persistent_storage_ratio")
+            ),
+            peak_device_memory_ratio_at_8192_plus=_numeric_or_none(
+                data.get("peak_device_memory_ratio_at_8192_plus")
             ),
             hidden_dense_cache_detected=bool(
                 data.get("hidden_dense_cache_detected", True)
             ),
-            fallback_calls=int(data.get("fallback_calls", 0)),
+            fallback_calls=int(fallback_raw) if not isinstance(fallback_raw, bool) else 0,
             raw_memory_path=data.get("raw_memory_path", ""),
             raw_memory_hash=data.get("raw_memory_hash", ""),
             notes=list(data.get("notes", [])),

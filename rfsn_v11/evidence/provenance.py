@@ -107,7 +107,9 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
     if provenance.turbopolar_config and provenance.turbopolar_config_hash:
         import hashlib
         import json
-        config_json = json.dumps(provenance.turbopolar_config, sort_keys=True)
+        config_json = json.dumps(
+            provenance.turbopolar_config, sort_keys=True, allow_nan=False
+        )
         computed_hash = hashlib.sha256(config_json.encode()).hexdigest()
         if computed_hash != provenance.turbopolar_config_hash:
             errors.append(

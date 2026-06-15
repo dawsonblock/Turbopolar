@@ -41,10 +41,10 @@ def main():
     }
 
     if args.output:
-        args.output.write_text(json.dumps(decision_dict, indent=2))
+        args.output.write_text(json.dumps(decision_dict, indent=2, allow_nan=False))
         print(f"Decision written to {args.output}")
     else:
-        print(json.dumps(decision_dict, indent=2))
+        print(json.dumps(decision_dict, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

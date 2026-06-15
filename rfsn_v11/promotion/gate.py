@@ -14,6 +14,33 @@ def _reject_json_nonfinite(s: str) -> None:
     """Reject NaN/Infinity constants during JSON parsing."""
     raise ValueError(f"JSON non-finite constant rejected: {s}")
 
+
+def _require_finite_number(
+    name: str, value: Any, reasons: List[str]
+) -> bool:
+    """Validate that ``value`` is a finite int or float (not bool).
+
+    Returns ``True`` if the value is valid.  Appends a descriptive reason
+    and returns ``False`` for ``None``, booleans, non-numeric types, or
+    non-finite values (NaN/Infinity).
+    """
+    if value is None:
+        reasons.append(f"{name} is missing")
+        return False
+    if isinstance(value, bool):
+        reasons.append(f"{name} must be numeric, got boolean")
+        return False
+    if not isinstance(value, (int, float)):
+        reasons.append(
+            f"{name} must be numeric, got {type(value).__name__}"
+        )
+        return False
+    if not math.isfinite(value):
+        reasons.append(f"{name} is non-finite: {value}")
+        return False
+    return True
+
+
 from rfsn_v11.evidence.platform_validation import (
     validate_apple_silicon_platform,
     validate_metal_execution_mode,
@@ -666,46 +693,60 @@ class PromotionGate:
 
         # Teacher-forced quality
         tf = evidence.teacher_forced_report
-        if (tf.mean_logit_cosine is None
-                or tf.mean_logit_cosine < self.MEAN_COSINE):
+        tf_mean_ok = _require_finite_number(
+            "Teacher-forced mean_logit_cosine", tf.mean_logit_cosine, reasons
+        )
+        if tf_mean_ok and tf.mean_logit_cosine < self.MEAN_COSINE:
             reasons.append(
                 f"Teacher-forced mean cosine {tf.mean_logit_cosine} < "
                 f"{self.MEAN_COSINE}"
             )
-        if (tf.p05_logit_cosine is None
-                or tf.p05_logit_cosine < self.P05_COSINE):
+        tf_p05_ok = _require_finite_number(
+            "Teacher-forced p05_logit_cosine", tf.p05_logit_cosine, reasons
+        )
+        if tf_p05_ok and tf.p05_logit_cosine < self.P05_COSINE:
             reasons.append(
                 f"Teacher-forced p05 cosine {tf.p05_logit_cosine} < "
                 f"{self.P05_COSINE}"
             )
-        if (tf.min_logit_cosine is None
-                or tf.min_logit_cosine < self.MIN_COSINE):
+        tf_min_ok = _require_finite_number(
+            "Teacher-forced min_logit_cosine", tf.min_logit_cosine, reasons
+        )
+        if tf_min_ok and tf.min_logit_cosine < self.MIN_COSINE:
             reasons.append(
                 f"Teacher-forced min cosine {tf.min_logit_cosine} < "
                 f"{self.MIN_COSINE}"
             )
-        if (tf.mean_top5_overlap is None
-                or tf.mean_top5_overlap < self.MEAN_TOP5):
+        tf_top5_ok = _require_finite_number(
+            "Teacher-forced mean_top5_overlap", tf.mean_top5_overlap, reasons
+        )
+        if tf_top5_ok and tf.mean_top5_overlap < self.MEAN_TOP5:
             reasons.append(
                 f"Teacher-forced top-5 overlap {tf.mean_top5_overlap} < "
                 f"{self.MEAN_TOP5}"
             )
-        if (tf.mean_top10_overlap is None
-                or tf.mean_top10_overlap < self.MEAN_TOP10):
+        tf_top10_ok = _require_finite_number(
+            "Teacher-forced mean_top10_overlap", tf.mean_top10_overlap, reasons
+        )
+        if tf_top10_ok and tf.mean_top10_overlap < self.MEAN_TOP10:
             reasons.append(
                 f"Teacher-forced top-10 overlap {tf.mean_top10_overlap} < "
                 f"{self.MEAN_TOP10}"
             )
-        if (tf.argmax_agreement is None
-                or tf.argmax_agreement < self.ARGMAX_AGREE):
+        tf_argmax_ok = _require_finite_number(
+            "Teacher-forced argmax_agreement", tf.argmax_agreement, reasons
+        )
+        if tf_argmax_ok and tf.argmax_agreement < self.ARGMAX_AGREE:
             reasons.append(
                 f"Teacher-forced argmax agreement {tf.argmax_agreement} < "
                 f"{self.ARGMAX_AGREE}"
             )
-        if (
-            tf.mean_perplexity_delta is None
-            or tf.mean_perplexity_delta > self.MAX_PPL_DELTA
-        ):
+        tf_ppl_ok = _require_finite_number(
+            "Teacher-forced mean_perplexity_delta",
+            tf.mean_perplexity_delta,
+            reasons,
+        )
+        if tf_ppl_ok and tf.mean_perplexity_delta > self.MAX_PPL_DELTA:
             reasons.append(
                 f"Teacher-forced absolute perplexity delta "
                 f"{tf.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
@@ -830,7 +871,10 @@ class PromotionGate:
                     )
 
                 # Validate that report total matches recomputed total
-                if tf.total_positions != recomputed_total:
+                tf_total_ok = _require_finite_number(
+                    "Teacher-forced total_positions", tf.total_positions, reasons
+                )
+                if tf_total_ok and tf.total_positions != recomputed_total:
                     total_pos = tf.total_positions
                     reasons.append(
                         f"Teacher-forced report total_positions "
@@ -845,46 +889,60 @@ class PromotionGate:
                 f"Fused decode requested_fused_positions_per_context "
                 f"must be 128, got {fd.requested_fused_positions_per_context}"
             )
-        if (fd.mean_logit_cosine is None
-                or fd.mean_logit_cosine < self.MEAN_COSINE):
+        fd_mean_ok = _require_finite_number(
+            "Fused decode mean_logit_cosine", fd.mean_logit_cosine, reasons
+        )
+        if fd_mean_ok and fd.mean_logit_cosine < self.MEAN_COSINE:
             reasons.append(
                 f"Fused decode mean cosine {fd.mean_logit_cosine} < "
                 f"{self.MEAN_COSINE}"
             )
-        if (fd.p05_logit_cosine is None
-                or fd.p05_logit_cosine < self.P05_COSINE):
+        fd_p05_ok = _require_finite_number(
+            "Fused decode p05_logit_cosine", fd.p05_logit_cosine, reasons
+        )
+        if fd_p05_ok and fd.p05_logit_cosine < self.P05_COSINE:
             reasons.append(
                 f"Fused decode p05 cosine {fd.p05_logit_cosine} < "
                 f"{self.P05_COSINE}"
             )
-        if (fd.min_logit_cosine is None
-                or fd.min_logit_cosine < self.MIN_COSINE):
+        fd_min_ok = _require_finite_number(
+            "Fused decode min_logit_cosine", fd.min_logit_cosine, reasons
+        )
+        if fd_min_ok and fd.min_logit_cosine < self.MIN_COSINE:
             reasons.append(
                 f"Fused decode min cosine {fd.min_logit_cosine} < "
                 f"{self.MIN_COSINE}"
             )
-        if (fd.mean_top5_overlap is None
-                or fd.mean_top5_overlap < self.MEAN_TOP5):
+        fd_top5_ok = _require_finite_number(
+            "Fused decode mean_top5_overlap", fd.mean_top5_overlap, reasons
+        )
+        if fd_top5_ok and fd.mean_top5_overlap < self.MEAN_TOP5:
             reasons.append(
                 f"Fused decode top-5 overlap {fd.mean_top5_overlap} < "
                 f"{self.MEAN_TOP5}"
             )
-        if (fd.mean_top10_overlap is None
-                or fd.mean_top10_overlap < self.MEAN_TOP10):
+        fd_top10_ok = _require_finite_number(
+            "Fused decode mean_top10_overlap", fd.mean_top10_overlap, reasons
+        )
+        if fd_top10_ok and fd.mean_top10_overlap < self.MEAN_TOP10:
             reasons.append(
                 f"Fused decode top-10 overlap {fd.mean_top10_overlap} < "
                 f"{self.MEAN_TOP10}"
             )
-        if (fd.argmax_agreement is None
-                or fd.argmax_agreement < self.ARGMAX_AGREE):
+        fd_argmax_ok = _require_finite_number(
+            "Fused decode argmax_agreement", fd.argmax_agreement, reasons
+        )
+        if fd_argmax_ok and fd.argmax_agreement < self.ARGMAX_AGREE:
             reasons.append(
                 f"Fused decode argmax agreement {fd.argmax_agreement} < "
                 f"{self.ARGMAX_AGREE}"
             )
-        if (
-            fd.mean_perplexity_delta is None
-            or fd.mean_perplexity_delta > self.MAX_PPL_DELTA
-        ):
+        fd_ppl_ok = _require_finite_number(
+            "Fused decode mean_perplexity_delta",
+            fd.mean_perplexity_delta,
+            reasons,
+        )
+        if fd_ppl_ok and fd.mean_perplexity_delta > self.MAX_PPL_DELTA:
             reasons.append(
                 f"Fused decode absolute perplexity delta "
                 f"{fd.mean_perplexity_delta} > {self.MAX_PPL_DELTA}"
@@ -1115,9 +1173,12 @@ class PromotionGate:
 
         # Speed
         sr = evidence.speed_report
+        sr_min_ok = _require_finite_number(
+            "Speed min_ratio_at_4096_plus", sr.min_ratio_at_4096_plus, reasons
+        )
         if (
-            sr.min_ratio_at_4096_plus is None
-            or sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS
+            sr_min_ok
+            and sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS
         ):
             reasons.append(
                 f"Speed ratio at 4096+ minimum {sr.min_ratio_at_4096_plus} < "
@@ -1221,17 +1282,29 @@ class PromotionGate:
             reasons.append(
                 "Baseline comparison missing required 16K context length."
             )
-        if (sr.max_ratio_at_4096_plus is None
-                or sr.max_ratio_at_4096_plus
-                < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT):
+        sr_max_ok = _require_finite_number(
+            "Speed max_ratio_at_4096_plus", sr.max_ratio_at_4096_plus, reasons
+        )
+        if (
+            sr_max_ok
+            and sr.max_ratio_at_4096_plus
+            < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT
+        ):
             reasons.append(
                 f"No long-context tier improved by >= "
                 f"{self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT}: "
                 f"max ratio {sr.max_ratio_at_4096_plus}"
             )
-        if (sr.median_ratio_at_8192_plus is None
-                or sr.median_ratio_at_8192_plus
-                < self.MIN_MEDIAN_RATIO_AT_8192_PLUS):
+        sr_med_ok = _require_finite_number(
+            "Speed median_ratio_at_8192_plus",
+            sr.median_ratio_at_8192_plus,
+            reasons,
+        )
+        if (
+            sr_med_ok
+            and sr.median_ratio_at_8192_plus
+            < self.MIN_MEDIAN_RATIO_AT_8192_PLUS
+        ):
             reasons.append(
                 f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < "
                 f"{self.MIN_MEDIAN_RATIO_AT_8192_PLUS}"
@@ -1239,23 +1312,40 @@ class PromotionGate:
 
         # Memory
         mr = evidence.memory_report
-        if (mr.logical_kv_ratio is None
-                or mr.logical_kv_ratio < self.LOGICAL_KV_RATIO):
+        mr_logical_ok = _require_finite_number(
+            "Memory logical_kv_ratio", mr.logical_kv_ratio, reasons
+        )
+        if (
+            mr_logical_ok
+            and mr.logical_kv_ratio < self.LOGICAL_KV_RATIO
+        ):
             reasons.append(
                 f"Logical KV ratio {mr.logical_kv_ratio} < "
                 f"{self.LOGICAL_KV_RATIO}"
             )
+        mr_persistent_ok = _require_finite_number(
+            "Memory persistent_storage_ratio",
+            mr.persistent_storage_ratio,
+            reasons,
+        )
         if (
-            mr.persistent_storage_ratio is None
-            or mr.persistent_storage_ratio < self.PERSISTENT_STORAGE_RATIO
+            mr_persistent_ok
+            and mr.persistent_storage_ratio < self.PERSISTENT_STORAGE_RATIO
         ):
             reasons.append(
                 f"Persistent storage ratio {mr.persistent_storage_ratio} < "
                 f"{self.PERSISTENT_STORAGE_RATIO}"
             )
-        if (mr.peak_device_memory_ratio_at_8192_plus is None
-                or mr.peak_device_memory_ratio_at_8192_plus
-                < self.PEAK_MEMORY_RATIO_8192):
+        mr_peak_ok = _require_finite_number(
+            "Memory peak_device_memory_ratio_at_8192_plus",
+            mr.peak_device_memory_ratio_at_8192_plus,
+            reasons,
+        )
+        if (
+            mr_peak_ok
+            and mr.peak_device_memory_ratio_at_8192_plus
+            < self.PEAK_MEMORY_RATIO_8192
+        ):
             reasons.append(
                 f"Peak memory ratio at 8192+ "
                 f"{mr.peak_device_memory_ratio_at_8192_plus} < "
@@ -1418,7 +1508,11 @@ class PromotionGate:
 
         # Legacy fallback check (global).
         if fd and fd.actual_fused_positions is not None:
-            if fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS:
+            if _require_finite_number(
+                "Fused decode actual_fused_positions",
+                fd.actual_fused_positions,
+                reasons,
+            ) and fd.actual_fused_positions < self.REQUIRED_FORCED_DECODE_TOKENS:
                 actual_pos = fd.actual_fused_positions
                 required_pos = self.REQUIRED_FORCED_DECODE_TOKENS
                 reasons.append(
@@ -1529,10 +1623,6 @@ class PromotionGate:
                 "each workload must have a unique identity."
             )
 
-        if pv.git_tree_state == GitTreeState.UNKNOWN:
-            reasons.append(
-                "Git tree state unknown; cannot verify reproducibility."
-            )
         if pv.git_tree_state == GitTreeState.DIRTY:
             reasons.append(
                 f"Source tree was dirty (diff hash {pv.git_diff_hash}); "

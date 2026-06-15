@@ -130,6 +130,6 @@ class TurboPolarOfflineEvaluator:
         }
 
         with open(output_dir / "results.json", "w") as f:
-            json.dump(artifact, f, indent=2)
+            json.dump(artifact, f, indent=2, allow_nan=False)
 
         return artifact

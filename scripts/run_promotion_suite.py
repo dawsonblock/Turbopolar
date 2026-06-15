@@ -333,7 +333,7 @@ def _teacher_forced_report(
     with open(
         raw_metrics_dedicated_path, "w", encoding="utf-8"
     ) as f:
-        json.dump(report, f, sort_keys=True, indent=2)
+        json.dump(report, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
     
@@ -397,7 +397,7 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
     with open(
         raw_metrics_dedicated_path, "w", encoding="utf-8"
     ) as f:
-        json.dump(report, f, sort_keys=True, indent=2)
+        json.dump(report, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
     
@@ -620,7 +620,7 @@ def _speed_report(
         }
 
     with open(raw_timing_path, "w") as f:
-        json.dump(raw_timing_data, f, sort_keys=True, indent=2)
+        json.dump(raw_timing_data, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -723,7 +723,7 @@ def _speed_report_quick(
         }
 
     with open(raw_timing_path, "w") as f:
-        json.dump(raw_timing_data, f, sort_keys=True, indent=2)
+        json.dump(raw_timing_data, f, sort_keys=True, indent=2, allow_nan=False)
     with open(raw_timing_path, "rb") as f:
         raw_timing_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -1366,7 +1366,7 @@ def main():
     provenance_path = artifact_dir / "provenance.json"
 
     with open(evidence_path, "w") as f:
-        json.dump(_clean_dict(evidence), f, indent=2)
+        json.dump(_clean_dict(evidence), f, indent=2, allow_nan=False)
     with open(decision_path, "w") as f:
         json.dump(
             {
@@ -1375,9 +1375,10 @@ def main():
             },
             f,
             indent=2,
+            allow_nan=False,
         )
     with open(provenance_path, "w") as f:
-        json.dump(_clean_dict(evidence.provenance), f, indent=2)
+        json.dump(_clean_dict(evidence.provenance), f, indent=2, allow_nan=False)
 
     print(f"Evidence written to {evidence_path}")
     print(f"Decision written to {decision_path}")

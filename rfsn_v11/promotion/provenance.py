@@ -139,7 +139,7 @@ def _compute_git_dirty_hash() -> str:
 
 def _hash_jsonable(obj: Any) -> str:
     return hashlib.sha256(
-        json.dumps(obj, sort_keys=True, default=str).encode()
+        json.dumps(obj, sort_keys=True, default=str, allow_nan=False).encode()
     ).hexdigest()
 
 
