@@ -90,6 +90,11 @@ class TurboPolarConfig:
     execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
     trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # HYBRID APPROACH: Threshold for switching from dense to compressed mode
+    # When actual_seq_len < hybrid_threshold, use dense attention (faster)
+    # When actual_seq_len >= hybrid_threshold, use compressed attention (memory-efficient)
+    # Set to 0 to disable hybrid mode (always use compressed)
+    hybrid_threshold: int = 4096
 
     def __post_init__(self):
         if self.num_q_heads <= 0:

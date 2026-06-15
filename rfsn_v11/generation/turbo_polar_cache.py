@@ -122,6 +122,11 @@ class TurboPolarKVCacheRuntime:
         self.partial_v_buffer: Optional[mx.array] = None
         self.partial_length = 0
 
+        # HYBRID APPROACH: Dense storage for initial tokens before compression threshold
+        self.dense_k_storage: Optional[mx.array] = None
+        self.dense_v_storage: Optional[mx.array] = None
+        self.in_dense_mode = True  # Start in dense mode for speed
+
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks: list[QJLPayload] = []
@@ -250,17 +255,25 @@ class TurboPolarKVCacheRuntime:
 
         B, H, T_new, D = k_new.shape
         L = self.config.block_size
+        threshold = self.config.hybrid_threshold
 
-        # OPTIMIZATION: Process tokens in batches instead of one at a time
-        # This reduces Python loop overhead and improves performance
+        # HYBRID APPROACH: Check if we should switch from dense to compressed mode
+        if self.in_dense_mode and threshold > 0:
+            if self.actual_seq_len + T_new >= threshold:
+                # Switching to compressed mode - compress dense storage
+                self._switch_to_compressed_mode()
+            else:
+                # Stay in dense mode - append to dense storage
+                self._append_dense(k_new, v_new)
+                return
+
+        # COMPRESSED MODE: Use normal compression logic
         t = 0
         while t < T_new:
-            # Calculate how many tokens we can process before hitting block boundary
             space_in_buffer = L - self.partial_length
             tokens_to_process = min(T_new - t, space_in_buffer)
             
             if tokens_to_process > 0:
-                # Copy tokens in batch
                 end_idx = self.partial_length + tokens_to_process
                 self.partial_k_buffer[:, :, self.partial_length:end_idx, :] = k_new[:, :, t:t+tokens_to_process, :]
                 self.partial_v_buffer[:, :, self.partial_length:end_idx, :] = v_new[:, :, t:t+tokens_to_process, :]
@@ -268,9 +281,109 @@ class TurboPolarKVCacheRuntime:
                 self.actual_seq_len += tokens_to_process
                 t += tokens_to_process
             
-            # Flush when buffer is full
             if self.partial_length >= L:
                 self._flush_tail_block()
+
+    def _append_dense(self, k_new: mx.array, v_new: mx.array):
+        """Append tokens in dense mode without compression."""
+        B, H, T_new, D = k_new.shape
+        
+        if self.dense_k_storage is None:
+            # Initialize dense storage
+            self.dense_k_storage = mx.zeros((B, H, self.config.hybrid_threshold, D), dtype=k_new.dtype)
+            self.dense_v_storage = mx.zeros((B, H, self.config.hybrid_threshold, D), dtype=v_new.dtype)
+        
+        # Append to dense storage
+        start = self.actual_seq_len
+        end = start + T_new
+        self.dense_k_storage[:, :, start:end, :] = k_new
+        self.dense_v_storage[:, :, start:end, :] = v_new
+        self.actual_seq_len += T_new
+
+    def _switch_to_compressed_mode(self):
+        """Compress dense storage and switch to compressed mode."""
+        if self.dense_k_storage is None:
+            self.in_dense_mode = False
+            return
+        
+        # Compress all dense tokens
+        dense_k = self.dense_k_storage[:, :, :self.actual_seq_len, :]
+        dense_v = self.dense_v_storage[:, :, :self.actual_seq_len, :]
+        
+        # Use the prefill append path for batch compression
+        self._append_prefill(dense_k, dense_v)
+        
+        # Clear dense storage and mark as compressed mode
+        self.dense_k_storage = None
+        self.dense_v_storage = None
+        self.in_dense_mode = False
+
+    def _append_prefill(self, k_new: mx.array, v_new: mx.array):
+        """Append prefill tokens with batch compression (original logic)."""
+        B, H, T_new, D = k_new.shape
+        L = self.config.block_size
+        
+        t = 0
+        # Step 1 — Fill the partial buffer to complete a block.
+        if self.partial_length > 0:
+            space = L - self.partial_length
+            if T_new >= space:
+                self.partial_k_buffer[:, :, self.partial_length:, :] = k_new[:, :, :space, :]
+                self.partial_v_buffer[:, :, self.partial_length:, :] = v_new[:, :, :space, :]
+                self._flush_tail_block()
+                self.partial_length = 0
+                t = space
+            else:
+                self.partial_k_buffer[:, :, self.partial_length:self.partial_length + T_new, :] = k_new
+                self.partial_v_buffer[:, :, self.partial_length:self.partial_length + T_new, :] = v_new
+                self.partial_length += T_new
+                self.actual_seq_len += T_new
+                return
+
+        # Step 2 — Process all complete incoming blocks in a batch.
+        remaining = T_new - t
+        num_full_blocks = remaining // L
+        if num_full_blocks > 0:
+            k_full = k_new[:, :, t : t + num_full_blocks * L, :].reshape(
+                B, H, num_full_blocks, L, D
+            )
+            v_full = v_new[:, :, t : t + num_full_blocks * L, :].reshape(
+                B, H, num_full_blocks, L, D
+            )
+            polar_blocks = self.polar_encoder.encode_blocks(k_full)
+            quant_v = self.v_quantizer.encode_blocks(v_full)
+            # Append each completed block to paged storage.
+            for i in range(num_full_blocks):
+                pb = PolarKeyBlock(
+                    radii=polar_blocks.radii[:, :, i, :, :],
+                    angle_codes_l1=polar_blocks.angle_codes_l1[:, :, i, :, :],
+                    angle_codes_deep=polar_blocks.angle_codes_deep[:, :, i, :, :],
+                    radii_scales=polar_blocks.radii_scales[:, :, i, :, :]
+                    if polar_blocks.radii_scales is not None
+                    else None,
+                    shape=(B, H, L, D),
+                    block_size=L,
+                    head_dim=D,
+                    metadata=polar_blocks.metadata,
+                )
+                vb = QuantizedVBlock(
+                    codes=quant_v.codes[:, :, i : i + 1, :, :],
+                    scales=quant_v.scales[:, :, i : i + 1, :, :],
+                    group_size=quant_v.group_size,
+                )
+                self.k_storage.append(pb)
+                self.v_storage.append(vb)
+                self.total_blocks += 1
+                self.actual_seq_len += L
+            t += num_full_blocks * L
+
+        # Step 3 — Store final remainder.
+        if t < T_new:
+            rem = T_new - t
+            self.partial_k_buffer[:, :, :rem, :] = k_new[:, :, t:, :]
+            self.partial_v_buffer[:, :, :rem, :] = v_new[:, :, t:, :]
+            self.partial_length = rem
+            self.actual_seq_len += rem
 
     def _flush_tail_block(self):
         """Flush a full tail buffer into compressed persistent storage."""
@@ -404,6 +517,17 @@ class TurboPolarKVCacheRuntime:
 
     def attention_view(self) -> TurboPolarAttentionView:
         """Return a page-view attention payload without materializing full history."""
+        # HYBRID APPROACH: If in dense mode, return dense storage as partial
+        if self.in_dense_mode and self.dense_k_storage is not None:
+            return TurboPolarAttentionView(
+                pages=tuple(),  # No compressed pages in dense mode
+                partial_k=self.dense_k_storage[:, :, :self.actual_seq_len, :],
+                partial_v=self.dense_v_storage[:, :, :self.actual_seq_len, :],
+                partial_length=self.actual_seq_len,
+                total_tokens=self.actual_seq_len,
+            )
+        
+        # COMPRESSED MODE: Return compressed pages
         pages: list[CompressedPageView] = []
         k_paged = self.k_storage._paged
         v_paged = self.v_storage._paged

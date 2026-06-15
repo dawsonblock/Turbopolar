@@ -207,17 +207,59 @@ class TurboPolarFastCache:
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
-        # Page-based online-softmax attention without full-cache materialization.
-        output, trace = self.bridge.execute_paged_online_attention(
-            q_squeezed,
-            view.pages,
-            view.partial_k,
-            view.partial_v,
-            cfg,
-            view.total_tokens,
-            mode=cfg.execution_mode,
-            trace_validation_mode=cfg.trace_validation_mode,
-        )
+        # HYBRID APPROACH: If no compressed pages (dense mode), use standard dense attention
+        if not view.pages and view.partial_k is not None:
+            # Manual dense attention implementation using MLX operations
+            # q_squeezed: [B, H_q, D]
+            # view.partial_k: [B, H_kv, T, D]
+            # view.partial_v: [B, H_kv, T, D]
+            
+            B, H_q, D = q_squeezed.shape
+            H_kv = view.partial_k.shape[1]
+            T = view.partial_k.shape[2]
+            
+            # Reshape q for attention: [B, H_q, 1, D]
+            q = mx.expand_dims(q_squeezed, axis=2)
+            
+            # Handle GQA by reshaping for proper broadcasting
+            num_repeats = H_q // H_kv
+            q_reshaped = q.reshape(B, H_kv, num_repeats, 1, D)  # [B, H_kv, num_repeats, 1, D]
+            k_reshaped = view.partial_k.reshape(B, H_kv, 1, T, D)  # [B, H_kv, 1, T, D]
+            
+            # Compute attention scores: [B, H_kv, num_repeats, 1, T]
+            scores = mx.matmul(q_reshaped, mx.transpose(k_reshaped, (0, 1, 2, 4, 3))) * scale
+            
+            # Softmax over sequence dimension
+            attn_weights = mx.softmax(scores, axis=-1)
+            
+            # Apply attention to values
+            v_reshaped = view.partial_v.reshape(B, H_kv, 1, T, D)  # [B, H_kv, 1, T, D]
+            output = mx.matmul(attn_weights, v_reshaped)  # [B, H_kv, num_repeats, 1, D]
+            
+            # Reshape back to [B, H_q, D]
+            output = output.reshape(B, H_q, D)
+            
+            trace = {
+                "kernel_name": "manual_dense_attention",
+                "metal_used": False,
+                "fallback_used": False,
+                "turbo_mode": "hybrid_dense",
+                "actual_seq_len": view.total_tokens,
+                "hybrid_threshold": self.config.hybrid_threshold,
+            }
+        else:
+            # Page-based online-softmax attention without full-cache materialization.
+            output, trace = self.bridge.execute_paged_online_attention(
+                q_squeezed,
+                view.pages,
+                view.partial_k,
+                view.partial_v,
+                cfg,
+                view.total_tokens,
+                mode=cfg.execution_mode,
+                trace_validation_mode=cfg.trace_validation_mode,
+            )
+            trace["turbo_mode"] = "hybrid_compressed"
 
         # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs internally.
         # In ASYNC_PERFORMANCE mode evaluation is deferred to the caller.
