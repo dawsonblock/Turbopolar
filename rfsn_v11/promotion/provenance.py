@@ -30,9 +30,21 @@ def _file_sha256(path: Path) -> str:
 
 
 def _dir_sha256(directory: Path, glob: str = "*.metal") -> str:
+    """Compute a canonical SHA-256 of files matching ``glob``.
+
+    The hash includes, for every file, the relative filename, a
+    length delimiter, and the file contents so that renaming or
+    splitting files produces a different hash.
+    """
     h = hashlib.sha256()
     for path in sorted(directory.glob(glob)):
-        h.update(path.read_bytes())
+        rel = path.relative_to(directory).as_posix()
+        data = path.read_bytes()
+        h.update(rel.encode())
+        h.update(b"\x00")
+        h.update(str(len(data)).encode())
+        h.update(b"\x00")
+        h.update(data)
     return h.hexdigest()
 
 
@@ -67,7 +79,7 @@ def _compute_git_dirty_hash() -> str:
     # P0: Recursively process untracked entries (files and directories)
     repo_root = Path(_run(["git", "rev-parse", "--show-toplevel"]) or ".")
 
-    def _hash_untracked_entry(entry_path: str, h: hashlib._Hash) -> None:
+    def _hash_untracked_entry(entry_path: str, h: Any) -> None:
         """Recursively hash an untracked file or directory."""
         full_path = repo_root / entry_path
 
@@ -110,7 +122,9 @@ def _compute_git_dirty_hash() -> str:
     for entry in sorted(untracked_entries):
         _hash_untracked_entry(entry, h)
 
-    # P0: Return full 64-character SHA-256 hash (not truncated)
+    # P0: Return empty string for a clean tree, full hash otherwise
+    if not tracked_diff and not untracked_entries:
+        return ""
     return h.hexdigest()
 
 
@@ -189,6 +203,24 @@ def compute_cartesian_workload_hash(
     """
     workload = {
         "benchmark_family": "cartesian",
+        "context_lengths": sorted(context_lengths),
+        "forced_decode_count": forced_decode_count,
+        "token_fixtures_hash": token_fixtures_hash,
+    }
+    return _hash_jsonable(workload)
+
+
+def compute_teacher_forced_workload_hash(
+    context_lengths: List[int],
+    forced_decode_count: int,
+    token_fixtures_hash: str,
+) -> str:
+    """Compute workload hash for teacher-forced benchmark.
+
+    Captures the unique configuration of teacher-forced benchmark workload.
+    """
+    workload = {
+        "benchmark_family": "teacher_forced",
         "context_lengths": sorted(context_lengths),
         "forced_decode_count": forced_decode_count,
         "token_fixtures_hash": token_fixtures_hash,

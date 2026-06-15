@@ -233,6 +233,9 @@ class MemoryReport:
     persistent_storage_ratio: Optional[float] = None
     peak_device_memory_ratio_at_8192_plus: Optional[float] = None
     hidden_dense_cache_detected: bool = True
+    fallback_calls: int = 0
+    raw_memory_path: str = ""
+    raw_memory_hash: str = ""
     notes: List[str] = field(default_factory=list)
 
     @classmethod
@@ -248,6 +251,9 @@ class MemoryReport:
             hidden_dense_cache_detected=bool(
                 data.get("hidden_dense_cache_detected", True)
             ),
+            fallback_calls=int(data.get("fallback_calls", 0)),
+            raw_memory_path=data.get("raw_memory_path", ""),
+            raw_memory_hash=data.get("raw_memory_hash", ""),
             notes=list(data.get("notes", [])),
         )
 
@@ -315,6 +321,7 @@ class BenchmarkProvenance:
     memory_workload_hash: str = ""  # Hash of memory benchmark workload
     fused_decode_workload_hash: str = ""  # Hash of fused decode workload
     cartesian_workload_hash: str = ""  # Hash of cartesian comparison workload
+    teacher_forced_workload_hash: str = ""  # Hash of teacher-forced benchmark workload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BenchmarkProvenance":
@@ -357,6 +364,7 @@ class BenchmarkProvenance:
             memory_workload_hash=data.get("memory_workload_hash", ""),
             fused_decode_workload_hash=data.get("fused_decode_workload_hash", ""),
             cartesian_workload_hash=data.get("cartesian_workload_hash", ""),
+            teacher_forced_workload_hash=data.get("teacher_forced_workload_hash", ""),
         )
 
 

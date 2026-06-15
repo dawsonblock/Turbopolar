@@ -13,6 +13,7 @@ Use ``--dry-run`` to synthesise evidence without a model (for CI smoke).
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -50,6 +51,7 @@ from rfsn_v11.promotion.provenance import (  # noqa: E402
     compute_memory_workload_hash,
     compute_fused_decode_workload_hash,
     compute_cartesian_workload_hash,
+    compute_teacher_forced_workload_hash,
 )
 
 
@@ -88,18 +90,20 @@ REQUIRED_METAL_TESTS = {
 
 def _parse_junit_xml(path: Path) -> Dict[str, Any]:
     """Parse pytest JUnit XML into a structured dict.
-    
-    P1-35: Uses explicit markers when available, falling back to classname inference.
-    
+
+    P1-35: Uses explicit markers when available, falling back to
+    classname inference.
+
     Explicit markers are preferred over classname inference because:
     1. They survive test refactoring (moving tests between files)
     2. They clearly indicate intent in the test source
     3. They don't depend on module naming conventions
-    
+
     To mark a test as a metal test, use:
         @pytest.mark.metal
-    
-    The marker will appear in JUnit XML as a <property name="markers" value="metal"/>.
+
+    The marker will appear in JUnit XML as a
+    <property name="markers" value="metal"/>.
     """
     if not path.exists():
         return {
@@ -126,13 +130,13 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
     metal_passed: Set[str] = set()
     metal_skipped: Set[str] = set()
     testcases: List[Dict[str, Any]] = []
-    
+
     for testcase in testsuite.findall("testcase"):
         cls = testcase.get("classname", "")
         name = testcase.get("name", "")
         failed = any(child.tag in ("failure", "error") for child in testcase)
         skipped_tc = any(child.tag == "skipped" for child in testcase)
-        
+
         # P1-35: Check for explicit markers in properties
         has_metal_marker = False
         properties_elem = testcase.find("properties")
@@ -140,13 +144,17 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
             for prop in properties_elem.findall("property"):
                 prop_name = prop.get("name", "")
                 prop_value = prop.get("value", "")
-                if prop_name == "markers" and "metal" in prop_value:
+                if (
+                    prop_name == "markers"
+                    and "metal" in prop_value
+                ):
                     has_metal_marker = True
-        
-        # Also check for marker in test name (pytest can include markers in test id)
+
+        # Also check for marker in test name
+        # (pytest can include markers in test id)
         if "[metal]" in name or "metal_" in name.lower():
             has_metal_marker = True
-        
+
         testcases.append(
             {
                 "classname": cls,
@@ -156,12 +164,12 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
                 "has_metal_marker": has_metal_marker,
             }
         )
-        
+
         # P1-35: Determine if this is a metal test
         # Priority: explicit marker > classname inference
         is_metal_test = False
         module_prefix = ""
-        
+
         if has_metal_marker:
             is_metal_test = True
             # Use module prefix from classname
@@ -174,9 +182,12 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
                 module_prefix = ".".join(parts[:-1])
             else:
                 module_prefix = cls
-            if any(module_prefix.startswith(req) for req in REQUIRED_METAL_TESTS):
+            if any(
+                module_prefix.startswith(req)
+                for req in REQUIRED_METAL_TESTS
+            ):
                 is_metal_test = True
-        
+
         if is_metal_test and module_prefix:
             metal_present.add(module_prefix)
             if not failed and not skipped_tc:
@@ -194,7 +205,8 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
         "metal_tests_present": sorted(metal_present),
         "metal_tests_passed": sorted(metal_passed),
         "metal_tests_skipped": sorted(metal_skipped),
-        "marker_based_detection": True,  # P1-35: Indicates we support explicit markers
+        # P1-35: Indicates we support explicit markers
+        "marker_based_detection": True,
     }
 
 
@@ -202,7 +214,10 @@ def _run_pytest(artifact_dir: Path) -> KernelReport:
     """Run pytest and record pass/fail per category from JUnit XML."""
     junit_path = artifact_dir / "pytest.xml"
     result = _run(
-        [sys.executable, "-m", "pytest", "tests/", "-q", f"--junitxml={junit_path}"],
+        [
+            sys.executable, "-m", "pytest", "tests/", "-q",
+            f"--junitxml={junit_path}",
+        ],
         timeout=600,
     )
     junit = _parse_junit_xml(junit_path)
@@ -260,7 +275,9 @@ def _run_benchmark(
     return result
 
 
-def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
+def _teacher_forced_report(
+    model: str, output_dir: Path
+) -> TeacherForcedReport:
     _run_benchmark(
         "run_dense_vs_turbopolar.py",
         "--model",
@@ -289,7 +306,7 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         len(prompt.get("position_metrics", []))
         for prompt in report.get("prompts", [])
     )
-    
+
     # Calculate full SHA-256 of the raw metrics file
     raw_metrics_path = output_dir / "teacher_forced" / "report.json"
     import hashlib
@@ -297,8 +314,12 @@ def _teacher_forced_report(model: str, output_dir: Path) -> TeacherForcedReport:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
 
     # Also write a dedicated raw_metrics.json file for the gate to parse
-    raw_metrics_dedicated_path = output_dir / "teacher_forced" / "raw_metrics.json"
-    with open(raw_metrics_dedicated_path, "w") as f:
+    raw_metrics_dedicated_path = (
+        output_dir / "teacher_forced" / "raw_metrics.json"
+    )
+    with open(
+        raw_metrics_dedicated_path, "w", encoding="utf-8"
+    ) as f:
         json.dump(report, f, sort_keys=True, indent=2)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
@@ -349,7 +370,7 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         len(prompt.get("position_metrics", []))
         for prompt in report.get("prompts", [])
     )
-    
+
     # Calculate full SHA-256 of the raw metrics file
     raw_metrics_path = output_dir / "teacher_forced" / "report.json"
     import hashlib
@@ -357,8 +378,12 @@ def _teacher_forced_report_quick(model: str, output_dir: Path) -> TeacherForcedR
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
 
     # Also write a dedicated raw_metrics.json file for the gate to parse
-    raw_metrics_dedicated_path = output_dir / "teacher_forced" / "raw_metrics.json"
-    with open(raw_metrics_dedicated_path, "w") as f:
+    raw_metrics_dedicated_path = (
+        output_dir / "teacher_forced" / "raw_metrics.json"
+    )
+    with open(
+        raw_metrics_dedicated_path, "w", encoding="utf-8"
+    ) as f:
         json.dump(report, f, sort_keys=True, indent=2)
     with open(raw_metrics_dedicated_path, "rb") as f:
         raw_metrics_hash = hashlib.sha256(f.read()).hexdigest()
@@ -492,8 +517,10 @@ def _fused_decode_report_quick(model: str, output_dir: Path, token_fixtures: Opt
     )
 
 
-def _speed_report(model: str, output_dir: Path) -> SpeedReport:
-    _run_benchmark(
+def _speed_report(
+    model: str, output_dir: Path, token_fixtures: Optional[Path] = None
+) -> SpeedReport:
+    cmd = [
         "run_speed_matrix.py",
         "--model",
         model,
@@ -515,8 +542,10 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
         "5",
         "--execution-mode",
         "metal_strict",
-        timeout=3600,
-    )
+    ]
+    if token_fixtures:
+        cmd.extend(["--token-fixtures", str(token_fixtures)])
+    _run_benchmark(*cmd, timeout=3600)
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
@@ -597,8 +626,10 @@ def _speed_report(model: str, output_dir: Path) -> SpeedReport:
     )
 
 
-def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
-    _run_benchmark(
+def _speed_report_quick(
+    model: str, output_dir: Path, token_fixtures: Optional[Path] = None
+) -> SpeedReport:
+    cmd = [
         "run_speed_matrix.py",
         "--model",
         model,
@@ -615,8 +646,10 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
         "3",
         "--execution-mode",
         "metal_strict",
-        timeout=1800,
-    )
+    ]
+    if token_fixtures:
+        cmd.extend(["--token-fixtures", str(token_fixtures)])
+    _run_benchmark(*cmd, timeout=1800)
     report = _load_json(output_dir / "speed_matrix" / "speed_matrix.json")
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
@@ -696,8 +729,13 @@ def _speed_report_quick(model: str, output_dir: Path) -> SpeedReport:
     )
 
 
-def _memory_report(model: str, output_dir: Path) -> MemoryReport:
-    _run_benchmark(
+def _memory_report(
+    model: str,
+    output_dir: Path,
+    token_fixtures: Optional[Path] = None,
+    strict: bool = False,
+) -> MemoryReport:
+    cmd = [
         "run_memory_matrix.py",
         "--model",
         model,
@@ -713,30 +751,65 @@ def _memory_report(model: str, output_dir: Path) -> MemoryReport:
         "16384",
         "--output-dir",
         str(output_dir / "memory_matrix"),
-        timeout=1800,
-    )
-    report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
+    ]
+    if token_fixtures:
+        cmd.extend(["--token-fixtures", str(token_fixtures)])
+    if strict:
+        cmd.append("--strict")
+    _run_benchmark(*cmd, timeout=1800)
+
+    raw_memory_path = output_dir / "memory_matrix" / "memory_matrix.json"
+    with open(raw_memory_path, "rb") as f:
+        raw_memory_hash = hashlib.sha256(f.read()).hexdigest()
+
+    report = _load_json(raw_memory_path)
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
 
+    # P0: Use the worst (minimum) ratio across all long contexts
     long_records = [r for r in records if r["length"] >= 8192]
-    long_record = long_records[-1] if long_records else (records[-1] if records else {})
+    if long_records:
+        logical_kv_ratio = min(
+            r["logical_kv_ratio"] for r in long_records
+            if r.get("logical_kv_ratio") is not None
+        )
+        persistent_storage_ratio = min(
+            r["persistent_storage_ratio"] for r in long_records
+            if r.get("persistent_storage_ratio") is not None
+        )
+        peak_device_memory_ratio = min(
+            r["peak_device_memory_ratio"] for r in long_records
+            if r.get("peak_device_memory_ratio") is not None
+        )
+    else:
+        last = records[-1] if records else {}
+        logical_kv_ratio = last.get("logical_kv_ratio")
+        persistent_storage_ratio = last.get("persistent_storage_ratio")
+        peak_device_memory_ratio = last.get("peak_device_memory_ratio")
 
     hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
+    total_fallbacks = sum(r.get("fallback_count", 0) for r in records)
 
     return MemoryReport(
+        model=model,
         contexts_evaluated=contexts,
-        logical_kv_ratio=long_record.get("logical_kv_ratio"),
-        persistent_storage_ratio=long_record.get("persistent_storage_ratio"),
-        peak_device_memory_ratio_at_8192_plus=long_record.get(
-            "peak_device_memory_ratio"
-        ),
+        logical_kv_ratio=logical_kv_ratio,
+        persistent_storage_ratio=persistent_storage_ratio,
+        peak_device_memory_ratio_at_8192_plus=peak_device_memory_ratio,
         hidden_dense_cache_detected=hidden_dense,
+        fallback_calls=total_fallbacks,
+        raw_memory_path=str(raw_memory_path),
+        raw_memory_hash=raw_memory_hash,
     )
 
 
-def _memory_report_quick(model: str, output_dir: Path) -> MemoryReport:
-    _run_benchmark(
+def _memory_report_quick(
+    model: str,
+    output_dir: Path,
+    token_fixtures: Optional[Path] = None,
+    strict: bool = False,
+) -> MemoryReport:
+    cmd = [
         "run_memory_matrix.py",
         "--model",
         model,
@@ -746,25 +819,55 @@ def _memory_report_quick(model: str, output_dir: Path) -> MemoryReport:
         "4096",
         "--output-dir",
         str(output_dir / "memory_matrix"),
-        timeout=900,
-    )
-    report = _load_json(output_dir / "memory_matrix" / "memory_matrix.json")
+    ]
+    if token_fixtures:
+        cmd.extend(["--token-fixtures", str(token_fixtures)])
+    if strict:
+        cmd.append("--strict")
+    _run_benchmark(*cmd, timeout=900)
+
+    raw_memory_path = output_dir / "memory_matrix" / "memory_matrix.json"
+    with open(raw_memory_path, "rb") as f:
+        raw_memory_hash = hashlib.sha256(f.read()).hexdigest()
+
+    report = _load_json(raw_memory_path)
     records = report.get("records", [])
     contexts = [r["length"] for r in records]
 
+    # P0: Use the worst (minimum) ratio across all long contexts
     long_records = [r for r in records if r["length"] >= 4096]
-    long_record = long_records[-1] if long_records else (records[-1] if records else {})
+    if long_records:
+        logical_kv_ratio = min(
+            r["logical_kv_ratio"] for r in long_records
+            if r.get("logical_kv_ratio") is not None
+        )
+        persistent_storage_ratio = min(
+            r["persistent_storage_ratio"] for r in long_records
+            if r.get("persistent_storage_ratio") is not None
+        )
+        peak_device_memory_ratio = min(
+            r["peak_device_memory_ratio"] for r in long_records
+            if r.get("peak_device_memory_ratio") is not None
+        )
+    else:
+        last = records[-1] if records else {}
+        logical_kv_ratio = last.get("logical_kv_ratio")
+        persistent_storage_ratio = last.get("persistent_storage_ratio")
+        peak_device_memory_ratio = last.get("peak_device_memory_ratio")
 
     hidden_dense = any(r.get("hidden_dense_cache_detected", True) for r in records)
+    total_fallbacks = sum(r.get("fallback_count", 0) for r in records)
 
     return MemoryReport(
+        model=model,
         contexts_evaluated=contexts,
-        logical_kv_ratio=long_record.get("logical_kv_ratio"),
-        persistent_storage_ratio=long_record.get("persistent_storage_ratio"),
-        peak_device_memory_ratio_at_8192_plus=long_record.get(
-            "peak_device_memory_ratio"
-        ),
+        logical_kv_ratio=logical_kv_ratio,
+        persistent_storage_ratio=persistent_storage_ratio,
+        peak_device_memory_ratio_at_8192_plus=peak_device_memory_ratio,
         hidden_dense_cache_detected=hidden_dense,
+        fallback_calls=total_fallbacks,
+        raw_memory_path=str(raw_memory_path),
+        raw_memory_hash=raw_memory_hash,
     )
 
 
@@ -898,6 +1001,7 @@ def _build_provenance(
     token_fixtures: Optional[Path] = None,
     model_revision: Optional[str] = None,
     tokenizer_revision: Optional[str] = None,
+    quick: bool = False,
 ) -> BenchmarkProvenance:
     prompt_suite = BENCHMARKS_DIR / "exact_token_fixtures.jsonl"
 
@@ -912,28 +1016,63 @@ def _build_provenance(
         tokenizer_rev = ""  # Empty string triggers gate failure
 
     # P0: Compute workload hashes for each benchmark family
-    context_lengths = [512, 2048, 4096, 8192, 16384]
-    token_fixtures_hash = _hash_jsonable(str(token_fixtures)) if token_fixtures else ""
+    # Hash actual fixture file contents, not the path string
+    token_fixtures_hash = (
+        hashlib.sha256(token_fixtures.read_bytes()).hexdigest()
+        if token_fixtures and token_fixtures.exists()
+        else ""
+    )
+
+    # Use actual executed parameters, distinguishing full vs quick mode
+    if quick:
+        speed_contexts = [512, 1024, 2048, 4096]
+        speed_trials = 3
+        speed_decode = 64
+        memory_contexts = [512, 2048, 4096]
+        memory_decode = 128
+        fused_contexts = [512, 2048, 4096]
+        fused_decode = 32
+        cartesian_contexts = [512, 1024, 2048, 4096]
+        cartesian_decode = 32
+        teacher_contexts = [512, 2048, 4096]
+        teacher_decode = 32
+    else:
+        speed_contexts = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+        speed_trials = 5
+        speed_decode = 128
+        memory_contexts = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+        memory_decode = 128
+        fused_contexts = [512, 2048, 4096, 8192, 16384]
+        fused_decode = 128
+        cartesian_contexts = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+        cartesian_decode = 128
+        teacher_contexts = [512, 2048, 4096, 8192, 16384]
+        teacher_decode = 128
 
     speed_workload_hash = compute_speed_workload_hash(
-        context_lengths=context_lengths,
-        trial_count=5,
-        decode_token_count=128,
+        context_lengths=speed_contexts,
+        trial_count=speed_trials,
+        decode_token_count=speed_decode,
         token_fixtures_hash=token_fixtures_hash,
     )
     memory_workload_hash = compute_memory_workload_hash(
-        context_lengths=context_lengths,
-        forced_decode_count=128,
+        context_lengths=memory_contexts,
+        forced_decode_count=memory_decode,
         token_fixtures_hash=token_fixtures_hash,
     )
     fused_decode_workload_hash = compute_fused_decode_workload_hash(
-        context_lengths=context_lengths,
-        continuation_token_count=128,
+        context_lengths=fused_contexts,
+        continuation_token_count=fused_decode,
         token_fixtures_hash=token_fixtures_hash,
     )
     cartesian_workload_hash = compute_cartesian_workload_hash(
-        context_lengths=context_lengths,
-        forced_decode_count=128,
+        context_lengths=cartesian_contexts,
+        forced_decode_count=cartesian_decode,
+        token_fixtures_hash=token_fixtures_hash,
+    )
+    teacher_forced_workload_hash = compute_teacher_forced_workload_hash(
+        context_lengths=teacher_contexts,
+        forced_decode_count=teacher_decode,
         token_fixtures_hash=token_fixtures_hash,
     )
 
@@ -945,9 +1084,9 @@ def _build_provenance(
         prompt_suite_path=prompt_suite,
         benchmark_command=" ".join(sys.argv),
         warmup_count=2,
-        trial_count=5,
-        context_lengths=context_lengths,
-        decode_token_count=128,
+        trial_count=speed_trials,
+        context_lengths=speed_contexts,
+        decode_token_count=speed_decode,
         qjl_enabled=False,
         token_fixtures_path=token_fixtures,
         # P0: Pass computed workload hashes
@@ -955,6 +1094,7 @@ def _build_provenance(
         memory_workload_hash=memory_workload_hash,
         fused_decode_workload_hash=fused_decode_workload_hash,
         cartesian_workload_hash=cartesian_workload_hash,
+        teacher_forced_workload_hash=teacher_forced_workload_hash,
     )
 
 
@@ -1050,8 +1190,10 @@ def _synthetic_evidence() -> PromotionEvidence:
         provenance=BenchmarkProvenance(
             git_tree_state=GitTreeState.CLEAN,
             model_repo_id="dry-run/model",
-            model_revision="",  # Empty string triggers gate failure for dry-run
-            tokenizer_revision="",  # Empty string triggers gate failure for dry-run
+            # Empty string triggers gate failure for dry-run
+            model_revision="",
+            # Empty string triggers gate failure for dry-run
+            tokenizer_revision="",
             turbopolar_config_hash="dry-run",
             evidence_kind="synthetic_dry_run",
         ),
@@ -1158,15 +1300,27 @@ def main():
 
         print("Step 4/5: speed matrix benchmark...")
         if args.quick:
-            speed_report = _speed_report_quick(args.model, artifact_dir)
+            speed_report = _speed_report_quick(
+                args.model, artifact_dir, args.token_fixtures
+            )
         else:
-            speed_report = _speed_report(args.model, artifact_dir)
+            speed_report = _speed_report(
+                args.model, artifact_dir, args.token_fixtures
+            )
 
         print("Step 5/5: memory benchmark...")
         if args.quick:
-            memory_report = _memory_report_quick(args.model, artifact_dir)
+            memory_report = _memory_report_quick(
+                args.model, artifact_dir,
+                token_fixtures=args.token_fixtures,
+                strict=True,
+            )
         else:
-            memory_report = _memory_report(args.model, artifact_dir)
+            memory_report = _memory_report(
+                args.model, artifact_dir,
+                token_fixtures=args.token_fixtures,
+                strict=True,
+            )
 
         print("Step 6/5: Cartesian int8 baseline comparison...")
         if args.quick:
@@ -1174,7 +1328,11 @@ def main():
         else:
             baseline_report = _baseline_comparison_report(args.model, artifact_dir)
 
-        provenance = _build_provenance(args.model, artifact_dir, config, args.token_fixtures, args.model_revision, args.tokenizer_revision)
+        provenance = _build_provenance(
+            args.model, artifact_dir, config,
+            args.token_fixtures, args.model_revision,
+            args.tokenizer_revision, quick=args.quick,
+        )
 
         evidence = PromotionEvidence(
             kernel_report=kernel_report,

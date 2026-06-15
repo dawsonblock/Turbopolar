@@ -391,6 +391,69 @@ def _recompute_speed_ratios(
         return None
 
 
+def _recompute_memory_ratios(
+    raw_memory: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Recompute memory ratios from raw memory matrix records.
+
+    Returns a dict with:
+      - logical_kv_ratio (worst across 8192+ contexts)
+      - persistent_storage_ratio (worst across 8192+ contexts)
+      - peak_device_memory_ratio (worst across 8192+ contexts)
+      - contexts_evaluated
+      - fallback_calls (total across all contexts)
+      - fixture_identities (list of per-context fixture info)
+    """
+    try:
+        records = raw_memory.get("records", [])
+        if not records:
+            return None
+
+        contexts = [r["length"] for r in records]
+        fallback_calls = sum(r.get("fallback_count", 0) for r in records)
+
+        long_records = [r for r in records if r.get("length", 0) >= 8192]
+        if long_records:
+            logical_kv_ratio = min(
+                r["logical_kv_ratio"] for r in long_records
+                if r.get("logical_kv_ratio") is not None
+            )
+            persistent_storage_ratio = min(
+                r["persistent_storage_ratio"] for r in long_records
+                if r.get("persistent_storage_ratio") is not None
+            )
+            peak_device_memory_ratio = min(
+                r["peak_device_memory_ratio"] for r in long_records
+                if r.get("peak_device_memory_ratio") is not None
+            )
+        else:
+            last = records[-1]
+            logical_kv_ratio = last.get("logical_kv_ratio")
+            persistent_storage_ratio = last.get("persistent_storage_ratio")
+            peak_device_memory_ratio = last.get("peak_device_memory_ratio")
+
+        fixture_identities = [
+            {
+                "context": r.get("length"),
+                "fixture_id": r.get("fixture_id"),
+                "fixture_hash": r.get("fixture_hash"),
+            }
+            for r in records
+            if r.get("fixture_id")
+        ]
+
+        return {
+            "logical_kv_ratio": logical_kv_ratio,
+            "persistent_storage_ratio": persistent_storage_ratio,
+            "peak_device_memory_ratio": peak_device_memory_ratio,
+            "contexts_evaluated": contexts,
+            "fallback_calls": fallback_calls,
+            "fixture_identities": fixture_identities,
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _fused_fallback_total(report: FusedDecodeReport) -> int:
     """Calculate total fallback calls from fused decode report."""
     values = (
@@ -1106,6 +1169,95 @@ class PromotionGate:
             )
         if mr.hidden_dense_cache_detected:
             reasons.append("Hidden dense full-history cache detected.")
+        if mr.fallback_calls > 0:
+            reasons.append(
+                f"Memory fallback_calls={mr.fallback_calls}; "
+                f"fallback occurred in strict mode."
+            )
+
+        # P0: Validate raw memory artifact independently
+        if not mr.raw_memory_path:
+            reasons.append("Memory evidence raw_memory_path is missing.")
+        elif not mr.raw_memory_hash:
+            reasons.append("Memory evidence raw_memory_hash is missing.")
+        else:
+            try:
+                content = validate_artifact_file(
+                    mr.raw_memory_path,
+                    mr.raw_memory_hash,
+                    artifact_name="Memory raw matrix artifact",
+                )
+                raw_memory = json.loads(content)
+                if not isinstance(raw_memory, dict):
+                    reasons.append(
+                        "Memory raw matrix must be a JSON object"
+                    )
+                else:
+                    recomputed = _recompute_memory_ratios(raw_memory)
+                    if recomputed is None:
+                        reasons.append(
+                            "Memory raw matrix could not be recomputed"
+                        )
+                    else:
+                        # Validate required contexts
+                        raw_contexts = set(recomputed["contexts_evaluated"])
+                        if not self.REQUIRED_CONTEXTS.issubset(raw_contexts):
+                            missing = self.REQUIRED_CONTEXTS - raw_contexts
+                            reasons.append(
+                                f"Memory raw contexts incomplete: "
+                                f"missing {missing}"
+                            )
+                        # Validate zero fallback
+                        if recomputed["fallback_calls"] > 0:
+                            reasons.append(
+                                f"Memory fallback_calls="
+                                f"{recomputed['fallback_calls']}; "
+                                f"fallback occurred in strict mode."
+                            )
+                        # Validate fixture identity per context
+                        if not recomputed["fixture_identities"]:
+                            reasons.append(
+                                "Memory raw matrix lacks per-context "
+                                "fixture identities."
+                            )
+                        # Cross-check summary values
+                        tolerance = 1e-6
+                        if (mr.logical_kv_ratio is not None
+                                and recomputed["logical_kv_ratio"] is not None
+                                and abs(mr.logical_kv_ratio
+                                        - recomputed["logical_kv_ratio"])
+                                > tolerance):
+                            reasons.append(
+                                "Memory logical_kv_ratio does not match "
+                                "raw matrix recomputation."
+                            )
+                        if (mr.persistent_storage_ratio is not None
+                                and recomputed["persistent_storage_ratio"]
+                                is not None
+                                and abs(
+                                    mr.persistent_storage_ratio
+                                    - recomputed["persistent_storage_ratio"]
+                                ) > tolerance):
+                            reasons.append(
+                                "Memory persistent_storage_ratio does not "
+                                "match raw matrix recomputation."
+                            )
+                        if (mr.peak_device_memory_ratio_at_8192_plus
+                                is not None
+                                and recomputed["peak_device_memory_ratio"]
+                                is not None
+                                and abs(
+                                    mr.peak_device_memory_ratio_at_8192_plus
+                                    - recomputed["peak_device_memory_ratio"]
+                                ) > tolerance):
+                            reasons.append(
+                                "Memory peak_device_memory_ratio_at_8192+ "
+                                "does not match raw matrix recomputation."
+                            )
+            except Exception as e:
+                reasons.append(
+                    f"Memory raw matrix artifact validation failed: {e}"
+                )
 
         # Baseline comparison
         br = evidence.baseline_comparison_report
@@ -1236,6 +1388,33 @@ class PromotionGate:
             reasons.append(
                 f"Tokenizer revision '{pv.tokenizer_revision}' is too short; "
                 "immutable git commit hash required (at least 7 characters)."
+            )
+
+        # P0: Validate all five workload hashes are present and well-formed
+        _workload_hashes = {
+            "speed": pv.speed_workload_hash,
+            "memory": pv.memory_workload_hash,
+            "fused_decode": pv.fused_decode_workload_hash,
+            "cartesian": pv.cartesian_workload_hash,
+            "teacher_forced": pv.teacher_forced_workload_hash,
+        }
+        for name, h in _workload_hashes.items():
+            if not h:
+                reasons.append(
+                    f"{name}_workload_hash is missing; workload identity "
+                    f"required for reproducibility."
+                )
+            elif len(h) != 64:
+                reasons.append(
+                    f"{name}_workload_hash must be a full 64-character "
+                    f"SHA-256 hex string (got {len(h)} chars)."
+                )
+        # Cross-family uniqueness: no two workload hashes may be identical
+        _non_empty = [h for h in _workload_hashes.values() if h]
+        if len(_non_empty) != len(set(_non_empty)):
+            reasons.append(
+                "Duplicate workload hash detected across benchmark families; "
+                "each workload must have a unique identity."
             )
 
         # Check evidence kind - synthetic evidence is never promotable

@@ -187,7 +187,8 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
     def _create_speed_trials_artifact(self) -> tuple[Path, str]:
         """Create a valid speed trials artifact file.
 
-        Creates trial data where recomputed ratios match the SpeedReport exactly.
+        Creates trial data where recomputed ratios match the SpeedReport
+        exactly.
         """
         speed_data = {
             "schema_version": 1,
@@ -213,14 +214,41 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                         "per_token_ms": [1.0 + i * 0.01 for i in range(128)],
                         "first_token_ms": 1.0,
                         "throughput_tps": throughput,
-                        "compressed_page_dispatches": 10 if mode == "turbo" else 0,
-                        "dense_tail_dispatches": 1 if mode == "turbo" else 0,
+                        "compressed_page_dispatches": (
+                            10 if mode == "turbo" else 0
+                        ),
+                        "dense_tail_dispatches": (
+                            1 if mode == "turbo" else 0
+                        ),
                         "fallback_calls": 0,
                     }
-                    speed_data["speed_evidence"]["trial_results"].append(trial_data)
+                    speed_data[
+                        "speed_evidence"
+                    ]["trial_results"].append(trial_data)
 
         path = Path(self.temp_dir) / "speed_trials.json"
         content = json.dumps(speed_data)
+        path.write_text(content)
+        hash_value = hashlib.sha256(content.encode()).hexdigest()
+        return path, hash_value
+
+    def _create_memory_matrix_artifact(self) -> tuple[Path, str]:
+        """Create a valid memory matrix artifact file."""
+        records = []
+        for ctx in PromotionGate.REQUIRED_CONTEXTS:
+            records.append({
+                "length": ctx,
+                "logical_kv_ratio": 1.90,
+                "persistent_storage_ratio": 1.80,
+                "peak_device_memory_ratio": 1.25,
+                "hidden_dense_cache_detected": False,
+                "fallback_count": 0,
+                "fixture_id": f"fixture_{ctx}",
+                "fixture_hash": "f" * 64,
+            })
+        memory_data = {"records": records}
+        path = Path(self.temp_dir) / "memory_matrix.json"
+        content = json.dumps(memory_data)
         path.write_text(content)
         hash_value = hashlib.sha256(content.encode()).hexdigest()
         return path, hash_value
@@ -232,6 +260,7 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         )
         trace_path, trace_hash = self._create_fused_trace_artifact()
         speed_path, speed_hash = self._create_speed_trials_artifact()
+        memory_path, memory_hash = self._create_memory_matrix_artifact()
 
         # Compute recomputed teacher metrics from the actual artifact
         with open(teacher_path) as f:
@@ -347,6 +376,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 persistent_storage_ratio=1.80,
                 peak_device_memory_ratio_at_8192_plus=1.25,
                 hidden_dense_cache_detected=False,
+                fallback_calls=0,
+                raw_memory_path=str(memory_path),
+                raw_memory_hash=memory_hash,
                 contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
             ),
             baseline_comparison_report=BaselineComparisonReport(
@@ -374,15 +406,21 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 execution_mode="metal_strict",
                 evidence_kind="experimental",
                 token_fixtures_hash="a" * 64,
+                speed_workload_hash="s" * 64,
+                memory_workload_hash="m" * 64,
+                fused_decode_workload_hash="f" * 64,
+                cartesian_workload_hash="c" * 64,
+                teacher_forced_workload_hash="t" * 64,
             ),
         )
 
     def test_complete_evidence_returns_review_required_when_locked(self):
-        """Complete valid evidence should return REVIEW_REQUIRED when locked.
+        """Complete valid evidence should return REVIEW_REQUIRED when
+        locked.
 
-        This test creates internally consistent artifacts that pass all gate
-        validation, then verifies that with PROMOTION_LOCKED=True, the gate
-        returns REVIEW_REQUIRED (not FAILED).
+        This test creates internally consistent artifacts that pass all
+        gate validation, then verifies that with PROMOTION_LOCKED=True,
+        the gate returns REVIEW_REQUIRED (not FAILED).
         """
         evidence = self._create_full_evidence()
         gate = PromotionGate()
@@ -395,7 +433,8 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         # With valid evidence and locked promotion, should be REVIEW_REQUIRED
         self.assertEqual(
             decision.state, PromotionState.REVIEW_REQUIRED,
-            f"Expected REVIEW_REQUIRED but got {decision.state}. Reasons: {decision.reasons}"
+            f"Expected REVIEW_REQUIRED but got {decision.state}. "
+            f"Reasons: {decision.reasons}"
         )
         self.assertIn("locked", decision.reasons[0].lower())
 

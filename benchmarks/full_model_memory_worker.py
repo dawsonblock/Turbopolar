@@ -282,9 +282,8 @@ def run_memory_worker(
             hasattr(cache[0], "execution_stats")
             and cache[0].execution_stats() is not None
         ):
-            fallback_count = cache[0].execution_stats().get(
-                "fallback_calls", 0
-            )
+            stats = cache[0].execution_stats()
+            fallback_count = getattr(stats, "fallback_calls", 0)
         else:
             fallback_count = 0
 
