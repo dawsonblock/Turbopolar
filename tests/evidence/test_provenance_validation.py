@@ -50,6 +50,21 @@ class TestProvenanceValidation(unittest.TestCase):
         self.assertTrue(len(errors) > 0)
         self.assertTrue("git_commit" in errors[0])
 
+    def test_validate_sha1_git_commit(self):
+        """40-character SHA-1 git commit should pass."""
+        provenance = ProvenanceEvidence(
+            run_id="test_run_123",
+            git_commit="a" * 40,  # Standard SHA-1
+            python_version="3.12.0",
+            mlx_version="0.31.2",
+            model_repo_id="mlx-community/Llama-3.2-1B-Instruct",
+            model_revision="abc123",
+            turbopolar_config_hash="d" * 64,
+            execution_mode="metal_strict",
+        )
+        errors = validate_provenance_immutable_fields(provenance)
+        self.assertEqual(errors, [])
+
     def test_validate_invalid_tree_state(self):
         """Invalid git tree state should fail."""
         provenance = ProvenanceEvidence(

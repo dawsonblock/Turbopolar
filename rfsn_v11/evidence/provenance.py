@@ -78,7 +78,7 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
         if not value:
             errors.append(f"Required provenance field '{field_name}' is empty")
     
-    # Hash fields should be 64 characters (SHA-256)
+    # Hash fields should be valid hex lengths (40 for SHA-1, 64 for SHA-256)
     hash_fields = [
         ("git_commit", provenance.git_commit),
         ("turbopolar_config_hash", provenance.turbopolar_config_hash),
@@ -86,9 +86,9 @@ def validate_provenance_immutable_fields(provenance: ProvenanceEvidence) -> List
     ]
     
     for field_name, value in hash_fields:
-        if value and len(value) != 64:
+        if value and len(value) not in (40, 64):
             errors.append(
-                f"Hash field '{field_name}' must be 64 characters, got {len(value)}"
+                f"Hash field '{field_name}' must be 40 or 64 characters, got {len(value)}"
             )
     
     # Git tree state must be valid
