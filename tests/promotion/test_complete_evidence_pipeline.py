@@ -39,20 +39,27 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
 
     def _create_teacher_metrics_artifact(self) -> tuple[Path, str]:
-        """Create a valid teacher metrics artifact file."""
+        """Create a valid teacher metrics artifact file.
+
+        Creates metrics with controlled variation so recomputed percentiles
+        match the report values exactly.
+        """
+        # Create 128 metrics with all values exactly at thresholds
+        # mean_cosine=0.995, p05_cosine=0.995, min_cosine=0.995
+        metrics = []
+        for _ in range(128):
+            metrics.append({
+                "logit_cosine": 0.995,
+                "top5_overlap": 0.96,
+                "top10_overlap": 0.98,
+                "argmax_agreement": True,
+                "any_nan_or_inf": False,
+            })
+
         teacher_data = {
             "prompts": [
                 {
-                    "position_metrics": [
-                        {
-                            "logit_cosine": 0.999,
-                            "top5_overlap": 0.96,
-                            "top10_overlap": 0.98,
-                            "argmax_agreement": True,
-                            "any_nan_or_inf": False,
-                        }
-                        for _ in range(128)
-                    ],
+                    "position_metrics": metrics,
                     "dense_perplexity": 10.0,
                     "candidate_perplexity": 10.1,
                     "perplexity_delta": 0.01,
@@ -66,47 +73,122 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         return path, hash_value
 
     def _create_fused_trace_artifact(self) -> tuple[Path, str]:
-        """Create a valid fused decode trace artifact file."""
-        trace_data = {
-            "experiments": [
-                {
-                    "experiment_id": "test_exp",
-                    "fixture_id": "test_fixture",
-                    "context_length": 512,
-                    "layers": [
-                        {
-                            "layer": 0,
-                            "decode_steps": [
-                                {
-                                    "decode_ordinal": 0,
-                                    "cache_offset_before": 0,
-                                    "cache_tokens_before": 0,
-                                    "cache_tokens_after": 1,
-                                    "page_operations": [],
-                                    "tail_operation": {
-                                        "operation_type": "dense_tail",
-                                        "execution_mode": "metal_strict",
-                                        "metal_requested": True,
-                                        "metal_executed": True,
-                                        "fallback_used": False,
-                                        "output_evaluated": True,
-                                        "processed_tokens": 1,
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ]
-        }
+        """Create a valid fused decode trace artifact file.
+
+        The gate expects a JSON array of attention trace records with
+        nested page_traces and dense_tail_trace operations.
+        """
+        BLOCK_SIZE = 64
+        PAGE_CAPACITY_BLOCKS = 16
+        PAGE_SIZE = 1024
+
+        def _make_op(
+            ctx: int,
+            fixture_id: str,
+            decode_step: int,
+            decode_ordinal: int,
+            layer_index: int,
+            cache_offset_before: int,
+            page_index: int | None,
+            operation: str,
+            processed: int,
+        ) -> dict:
+            return {
+                "experiment_id": "exp_test",
+                "context_length": ctx,
+                "fixture_id": fixture_id,
+                "decode_step": decode_step,
+                "decode_ordinal": decode_ordinal,
+                "cache_offset_before": cache_offset_before,
+                "layer_index": layer_index,
+                "operation": operation,
+                "page_index": page_index,
+                "kernel_name": "test_kernel",
+                "execution_mode": "metal_strict",
+                "metal_requested": True,
+                "metal_executed": True,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "output_evaluated": True,
+                "expected_tokens": processed,
+                "processed_tokens": processed,
+            }
+
+        trace_records = []
+        for ctx in [512, 2048, 4096, 8192, 16384]:
+            for d in range(128):
+                for layer in range(1):
+                    cache_tokens_after = ctx + d + 1
+                    cache_tokens_before = ctx + d
+                    cache_offset_before = cache_tokens_before
+                    decode_step = cache_offset_before
+                    partial_tail_length = cache_tokens_after % BLOCK_SIZE
+                    completed_blocks = cache_tokens_after // BLOCK_SIZE
+                    expected_pages = (
+                        completed_blocks + PAGE_CAPACITY_BLOCKS - 1
+                    ) // PAGE_CAPACITY_BLOCKS
+                    page_tokens = cache_tokens_after - partial_tail_length
+
+                    page_traces = []
+                    for p in range(expected_pages):
+                        if p == expected_pages - 1:
+                            op_processed = page_tokens - p * PAGE_SIZE
+                        else:
+                            op_processed = PAGE_SIZE
+                        page_traces.append(
+                            _make_op(
+                                ctx,
+                                "fixture_test",
+                                decode_step,
+                                d,
+                                layer,
+                                cache_offset_before,
+                                p,
+                                "compressed_page",
+                                op_processed,
+                            )
+                        )
+
+                    dense_tail = None
+                    if partial_tail_length > 0:
+                        dense_tail = _make_op(
+                            ctx,
+                            "fixture_test",
+                            decode_step,
+                            d,
+                            layer,
+                            cache_offset_before,
+                            None,
+                            "dense_tail",
+                            partial_tail_length,
+                        )
+
+                    trace_records.append({
+                        "experiment_id": "exp_test",
+                        "context_length": ctx,
+                        "fixture_id": "fixture_test",
+                        "decode_step": decode_step,
+                        "decode_ordinal": d,
+                        "layer_index": layer,
+                        "expected_page_count": expected_pages,
+                        "cache_tokens_before": cache_tokens_before,
+                        "cache_tokens_after": cache_tokens_after,
+                        "partial_tail_length": partial_tail_length,
+                        "page_traces": page_traces,
+                        "dense_tail_trace": dense_tail,
+                    })
+
         path = Path(self.temp_dir) / "fused_traces.json"
-        content = json.dumps(trace_data)
+        content = json.dumps(trace_records)
         path.write_text(content)
         hash_value = hashlib.sha256(content.encode()).hexdigest()
         return path, hash_value
 
     def _create_speed_trials_artifact(self) -> tuple[Path, str]:
-        """Create a valid speed trials artifact file."""
+        """Create a valid speed trials artifact file.
+
+        Creates trial data where recomputed ratios match the SpeedReport exactly.
+        """
         speed_data = {
             "schema_version": 1,
             "speed_evidence": {
@@ -114,35 +196,28 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
             }
         }
 
-        # Add trials for each required context
+        # Use fixed throughput values that will produce consistent ratios
+        # dense throughput = 80 tps, turbo throughput = 100 tps
+        # ratio = 100/80 = 1.25 for all contexts
         for context in [512, 2048, 4096, 8192, 16384]:
             for mode in ["dense", "turbo"]:
                 for trial_idx in range(5):
-                    trial = {
+                    throughput = 100.0 if mode == "turbo" else 80.0
+                    trial_data = {
                         "context_length": context,
                         "mode": mode,
-                        "trial_index": trial_idx,
-                        "execution_order": (
-                            f"{context}_{mode}",
-                            f"trial_{trial_idx}",
-                        ),
-                        "execution_mode": (
-                            "metal_strict" if mode == "turbo"
-                            else "reference"
-                        ),
-                        "prefill_seconds": 0.1,
-                        "token_latencies_ms": [1.0] * 128,
+                        "trial": trial_idx,
+                        "execution_order": [mode, "other"],
+                        "execution_mode": "metal_strict",
+                        "prefill_seconds": 1.0,
+                        "per_token_ms": [1.0 + i * 0.01 for i in range(128)],
                         "first_token_ms": 1.0,
-                        "throughput_tps": (
-                            1000.0 if mode == "turbo" else 800.0
-                        ),
-                        "compressed_page_dispatches": (
-                            10 if mode == "turbo" else 0
-                        ),
+                        "throughput_tps": throughput,
+                        "compressed_page_dispatches": 10 if mode == "turbo" else 0,
                         "dense_tail_dispatches": 1 if mode == "turbo" else 0,
                         "fallback_calls": 0,
                     }
-                    speed_data["speed_evidence"]["trial_results"].append(trial)
+                    speed_data["speed_evidence"]["trial_results"].append(trial_data)
 
         path = Path(self.temp_dir) / "speed_trials.json"
         content = json.dumps(speed_data)
@@ -158,6 +233,32 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         trace_path, trace_hash = self._create_fused_trace_artifact()
         speed_path, speed_hash = self._create_speed_trials_artifact()
 
+        # Compute recomputed teacher metrics from the actual artifact
+        with open(teacher_path) as f:
+            teacher_data = json.load(f)
+        metrics = teacher_data["prompts"][0]["position_metrics"]
+        cosines = sorted([m["logit_cosine"] for m in metrics])
+        p05_idx = int(len(cosines) * 0.05)
+        p05_cosine = cosines[p05_idx]
+        min_cosine = cosines[0]
+
+        # Compute speed ratios from actual artifact
+        with open(speed_path) as f:
+            speed_data = json.load(f)
+        trials = speed_data["speed_evidence"]["trial_results"]
+        dense_throughputs = []
+        turbo_throughputs = []
+        for t in trials:
+            if t["context_length"] >= 4096:
+                if t["mode"] == "dense":
+                    dense_throughputs.append(t["throughput_tps"])
+                else:
+                    turbo_throughputs.append(t["throughput_tps"])
+
+        dense_avg = sum(dense_throughputs) / len(dense_throughputs)
+        turbo_avg = sum(turbo_throughputs) / len(turbo_throughputs)
+        ratio = turbo_avg / dense_avg
+
         return PromotionEvidence(
             kernel_report=KernelReport(
                 all_unit_tests_passed=True,
@@ -172,9 +273,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 ),
             ),
             teacher_forced_report=TeacherForcedReport(
-                mean_logit_cosine=0.999,
-                p05_logit_cosine=0.995,
-                min_logit_cosine=0.980,
+                mean_logit_cosine=sum(cosines) / len(cosines),
+                p05_logit_cosine=p05_cosine,
+                min_logit_cosine=min_cosine,
                 mean_top5_overlap=0.96,
                 mean_top10_overlap=0.98,
                 argmax_agreement=1.0,
@@ -197,9 +298,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                     PromotionGate.REQUIRED_CONTEXTS
                 ),
                 execution_mode="metal_strict",
-                model_layer_count=32,
-                compressed_page_metal_calls=10,
-                dense_tail_metal_calls=10,
+                model_layer_count=1,
+                compressed_page_metal_calls=4228,
+                dense_tail_metal_calls=630,
                 merge_metal_calls=0,
                 finalization_metal_calls=0,
                 compressed_page_fallback_calls=0,
@@ -217,13 +318,23 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 fallback_calls_per_context={
                     ctx: 0 for ctx in PromotionGate.REQUIRED_CONTEXTS
                 },
+                compressed_page_dispatches_per_context={
+                    512: 128,
+                    2048: 321,
+                    4096: 577,
+                    8192: 1089,
+                    16384: 2113,
+                },
+                dense_tail_dispatches_per_context={
+                    ctx: 126 for ctx in PromotionGate.REQUIRED_CONTEXTS
+                },
                 trace_artifact_path=str(trace_path),
                 trace_artifact_hash=trace_hash,
             ),
             speed_report=SpeedReport(
-                min_ratio_at_4096_plus=1.25,
-                max_ratio_at_4096_plus=1.30,
-                median_ratio_at_8192_plus=1.28,
+                min_ratio_at_4096_plus=ratio,
+                max_ratio_at_4096_plus=ratio,
+                median_ratio_at_8192_plus=ratio,
                 trials_per_context=5,
                 contexts_evaluated=list(PromotionGate.REQUIRED_CONTEXTS),
                 execution_mode="metal_strict",
@@ -260,10 +371,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
     def test_complete_evidence_returns_review_required_when_locked(self):
         """Complete valid evidence should return REVIEW_REQUIRED when locked.
 
-        Note: This test demonstrates that the gate correctly validates
-        artifacts. Creating truly valid artifacts requires full benchmark runs,
-        so this test primarily verifies the lock behavior and artifact
-        validation pipeline.
+        This test creates internally consistent artifacts that pass all gate
+        validation, then verifies that with PROMOTION_LOCKED=True, the gate
+        returns REVIEW_REQUIRED (not FAILED).
         """
         evidence = self._create_full_evidence()
         gate = PromotionGate()
@@ -273,18 +383,12 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
 
         decision = gate.evaluate(evidence)
 
-        # The test artifacts are minimal, so validation failures are expected
-        # This demonstrates the artifact validation pipeline is working
-        # A truly valid evidence package with locked promotion would return
-        # REVIEW_REQUIRED
-        self.assertIn(
-            decision.state,
-            [PromotionState.FAILED, PromotionState.REVIEW_REQUIRED],
+        # With valid evidence and locked promotion, should be REVIEW_REQUIRED
+        self.assertEqual(
+            decision.state, PromotionState.REVIEW_REQUIRED,
+            f"Expected REVIEW_REQUIRED but got {decision.state}. Reasons: {decision.reasons}"
         )
-
-        # If we got REVIEW_REQUIRED, verify it's due to the lock
-        if decision.state == PromotionState.REVIEW_REQUIRED:
-            self.assertIn("locked", decision.reasons[0].lower())
+        self.assertIn("locked", decision.reasons[0].lower())
 
     def test_missing_artifact_path_returns_failed(self):
         """Missing artifact path should return FAILED."""
