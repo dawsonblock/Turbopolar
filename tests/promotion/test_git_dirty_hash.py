@@ -6,6 +6,7 @@ files, nested directories, and edge cases.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -31,6 +32,7 @@ class TestGitDirtyHash(unittest.TestCase):
 
     def tearDown(self):
         os.chdir(self.original_cwd)
+        shutil.rmtree(self.tmpdir)
 
     def _run_in_tmp(self, cmd):
         subprocess.run(cmd, cwd=self.tmpdir, check=True, capture_output=True)

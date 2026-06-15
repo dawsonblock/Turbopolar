@@ -28,6 +28,11 @@ class TurboPolarOfflineEvaluator:
     def run_qjl_ablation(
         self, q: mx.array, k_original: mx.array
     ) -> Tuple[bool, float, float]:
+        if self.config.qjl_proj_dim % 8 != 0:
+            raise ValueError(
+                "qjl_proj_dim must be divisible by 8, "
+                f"got {self.config.qjl_proj_dim}"
+            )
         B, H, T, D = k_original.shape
         cache = TurboPolarKVCacheRuntime(self.config)
         cache.append(k_original, mx.zeros_like(k_original))
@@ -42,19 +47,26 @@ class TurboPolarOfflineEvaluator:
         k_recon = self.decoder.decode_block(block)[:, :, :actual_len, :]
 
         scores_ref = (
-            mx.sum(q[:, :, None, :] * k_original, axis=-1) * self.config.attention_scale
+            mx.sum(q[:, :, None, :] * k_original, axis=-1)
+            * self.config.attention_scale
         )
         scores_polar = (
-            mx.sum(q[:, :, None, :] * k_recon, axis=-1) * self.config.attention_scale
+            mx.sum(q[:, :, None, :] * k_recon, axis=-1)
+            * self.config.attention_scale
         )
         error_without = float(mx.max(mx.abs(scores_ref - scores_polar)))
-        topk_overlap_without = topk_set_overlap_np(scores_ref, scores_polar, k=10)
+        topk_overlap_without = topk_set_overlap_np(
+            scores_ref, scores_polar, k=10
+        )
 
         q_proj = mx.matmul(q, cache.qjl_encoder.W)
         q_signs = q_proj >= 0
         reshaped = q_signs.reshape(B, H, self.config.qjl_proj_dim // 8, 8)
         powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
-        q_packed = mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1).astype(mx.uint8)
+        q_packed = (
+            mx.sum(reshaped.astype(mx.uint8) * powers, axis=-1)
+            .astype(mx.uint8)
+        )
 
         scores_corrected_full = self.metal_bridge.execute_fused_qk_qjl(
             q, block, qjl_payload, q_packed, self.config
@@ -62,8 +74,12 @@ class TurboPolarOfflineEvaluator:
         scores_corrected = scores_corrected_full[:, :, :actual_len]
         mx.eval(scores_ref, scores_corrected)
 
-        error_with = float(mx.max(mx.abs(scores_ref - scores_corrected)))
-        topk_overlap_with = topk_set_overlap_np(scores_ref, scores_corrected, k=10)
+        error_with = float(
+            mx.max(mx.abs(scores_ref - scores_corrected))
+        )
+        topk_overlap_with = topk_set_overlap_np(
+            scores_ref, scores_corrected, k=10
+        )
 
         use_qjl = (
             error_with <= error_without * 0.90
@@ -81,21 +97,33 @@ class TurboPolarOfflineEvaluator:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Validate inputs for NaN/Inf before computing metrics
-        if mx.any(mx.isnan(baseline_logits)) or mx.any(mx.isinf(baseline_logits)):
+        if mx.any(mx.isnan(baseline_logits)) or mx.any(
+            mx.isinf(baseline_logits)
+        ):
             raise ValueError("baseline_logits contains NaN or Inf values")
-        if mx.any(mx.isnan(candidate_logits)) or mx.any(mx.isinf(candidate_logits)):
+        if mx.any(mx.isnan(candidate_logits)) or mx.any(
+            mx.isinf(candidate_logits)
+        ):
             raise ValueError("candidate_logits contains NaN or Inf values")
 
-        kl_div = mean_token_kl(baseline_logits, candidate_logits)
-        top5_overlap = topk_set_overlap_np(baseline_logits, candidate_logits, k=5)
-        top10_overlap = topk_set_overlap_np(baseline_logits, candidate_logits, k=10)
+        kl_div = mean_token_kl(
+            baseline_logits, candidate_logits
+        )
+        top5_overlap = topk_set_overlap_np(
+            baseline_logits, candidate_logits, k=5
+        )
+        top10_overlap = topk_set_overlap_np(
+            baseline_logits, candidate_logits, k=10
+        )
         deltas = calculate_logit_deltas(baseline_logits, candidate_logits)
 
         flat_base = baseline_logits.flatten()
         flat_cand = candidate_logits.flatten()
         norm_b = mx.sqrt(mx.sum(flat_base**2))
         norm_c = mx.sqrt(mx.sum(flat_cand**2))
-        logit_cosine = float(mx.sum(flat_base * flat_cand) / (norm_b * norm_c + 1e-12))
+        logit_cosine = float(
+            mx.sum(flat_base * flat_cand) / (norm_b * norm_c + 1e-12)
+        )
 
         passed = (
             logit_cosine >= 0.999

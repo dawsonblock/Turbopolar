@@ -7,7 +7,6 @@ before any threshold or reconciliation comparison.
 """
 
 import unittest
-import unittest.mock
 
 from rfsn_v11.promotion.schema import (
     BaselineComparisonReport,
@@ -168,7 +167,7 @@ class TestPromotionGateNonFiniteSummary(unittest.TestCase):
                 model_repo_id="test/model",
                 model_revision="abc123def456",
                 tokenizer_revision="ghi789jkl012",
-                token_fixtures_hash="mno345pqr678" * 4,
+                token_fixtures_hash="mno345pqr678" * 5 + "mno3",
                 turbopolar_config_hash="a" * 64,
                 benchmark_command="python run.py",
                 warmup_count=1,
@@ -338,24 +337,31 @@ class TestPromotionGateNonFiniteSummary(unittest.TestCase):
     # Git tree state UNKNOWN ordering fix ---------------------------------
 
     def test_git_unknown_not_added_as_hard_failure(self):
-        """Verify that UNKNOWN git state does not pre-emptively add a hard
-        failure reason, so the later INCOMPLETE branch remains reachable when
-        no other failures exist."""
-        # This is a code-structure test: we directly inspect that the early
-        # reason-adding block for UNKNOWN is absent.
+        """UNKNOWN git handling must come after the FAILED return, not before
+        it (regression test for early-exit bug)."""
         import inspect
-        source = inspect.getsource(PromotionGate.evaluate)
-        # The buggy code appended a reason for UNKNOWN before the general
-        # ``if reasons:`` check.  After the fix, the only UNKNOWN handling
-        # should be the later INCOMPLETE branch.
-        self.assertNotIn(
-            'reasons.append(\n'
-            '                "Git tree state unknown; '
-            'cannot verify reproducibility."\n'
-            '            )',
-            source,
-            "UNKNOWN git state should not pre-emptively add a "
-            "hard failure reason",
+
+        source_lines, _ = inspect.getsourcelines(PromotionGate.evaluate)
+        failed_line = None
+        unknown_line = None
+        for i, line in enumerate(source_lines):
+            if "state=PromotionState.FAILED" in line:
+                failed_line = i
+                break
+        for i, line in enumerate(source_lines):
+            if "GitTreeState.UNKNOWN" in line:
+                unknown_line = i
+                break
+        self.assertIsNotNone(
+            failed_line, "FAILED return must exist in evaluate"
+        )
+        self.assertIsNotNone(
+            unknown_line, "UNKNOWN check must exist in evaluate"
+        )
+        self.assertGreater(
+            unknown_line,
+            failed_line,
+            "UNKNOWN check must come after the FAILED return, not before it",
         )
 
 

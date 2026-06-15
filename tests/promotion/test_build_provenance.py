@@ -105,24 +105,6 @@ class TestBuildProvenance(unittest.TestCase):
                 ),
                 "teacher_forced_workload_hash must be hexadecimal",
             )
-            kwargs = mock_capture.call_args.kwargs
-            self.assertIn(
-                "teacher_forced_workload_hash",
-                kwargs,
-                "capture_provenance must receive teacher_forced_workload_hash",
-            )
-            self.assertEqual(
-                len(kwargs["teacher_forced_workload_hash"]),
-                64,
-                "teacher_forced_workload_hash must be a 64-char hex string",
-            )
-            self.assertTrue(
-                all(
-                    c in "0123456789abcdef"
-                    for c in kwargs["teacher_forced_workload_hash"].lower()
-                ),
-                "teacher_forced_workload_hash must be hexadecimal",
-            )
 
         self.assertEqual(
             result.execution_mode,
@@ -133,24 +115,6 @@ class TestBuildProvenance(unittest.TestCase):
             result.teacher_forced_workload_hash,
             "a" * 64,
             "teacher_forced_workload_hash must flow through to provenance",
-        )
-        kwargs = mock_capture.call_args.kwargs
-        self.assertIn(
-            "teacher_forced_workload_hash",
-            kwargs,
-            "capture_provenance must receive teacher_forced_workload_hash",
-        )
-        self.assertEqual(
-            len(kwargs["teacher_forced_workload_hash"]),
-            64,
-            "teacher_forced_workload_hash must be a 64-char hex string",
-        )
-        self.assertTrue(
-            all(
-                c in "0123456789abcdef"
-                for c in kwargs["teacher_forced_workload_hash"].lower()
-            ),
-            "teacher_forced_workload_hash must be hexadecimal",
         )
 
     def test_build_provenance_uses_metal_strict(self):
