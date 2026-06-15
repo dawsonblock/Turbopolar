@@ -25,6 +25,12 @@ test-native:
 	@python -c "import mlx.core as mx; assert mx.metal.is_available(), 'Metal not available'" 2>/dev/null || (echo "ERROR: native tests require Apple Silicon with Metal." && exit 1)
 	pytest tests/ -v --tb=short
 
+evidence-markdown:
+	python scripts/generate_evidence_markdown.py \
+		--speed benchmarks/outputs/speed_matrix/report.json \
+		--memory benchmarks/outputs/memory_matrix/report.json \
+		--output docs/evidence_summary.md
+
 compile:
 	python -m compileall rfsn_v11 tests scripts benchmarks
 

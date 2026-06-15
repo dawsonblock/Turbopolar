@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "repair/*", "feat/*"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  portable:
+    name: Portable tests (no MLX required)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install core dependencies (no MLX)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-xdist
+
+      - name: Compile check
+        run: |
+          python -m compileall -q rfsn_v11 tests scripts benchmarks
+
+      - name: Run portable tests
+        # mlx is not available on Linux; importorskip guards all native tests
+        run: |
+          pytest tests/ -v --tb=short -q
+
+  packaging:
+    name: Wheel build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Verify wheel contents
+        run: |
+          pip install dist/*.whl --no-deps
+          python -c "
+          from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
+          from importlib.resources import files
+          metal_dir = files('rfsn_v11.kernels.turbo_polar')
+          sources = [f.name for f in metal_dir.iterdir() if f.name.endswith('.metal')]
+          assert 'tqpolar_online_attention.metal' in sources, 'Missing attention metal source'
+          assert 'tqpolar_fused_qk.metal' in sources, 'Missing fused QK metal source'
+          print('Wheel OK: metal sources present:', sources)
+          "
+
+  schema:
+    name: Schema and promotion gate tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install pytest
+
+      - name: Run schema and gate tests (no MLX needed)
+        run: |
+          pytest tests/evidence/ tests/promotion/ tests/unit/test_promotion_gate_nonfinite.py \
+                 tests/unit/test_promotion_schema.py tests/unit/test_supported_config_contract.py \
+                 tests/unit/test_trace_validation.py -v --tb=short
+
+  native:
+    name: Native Metal tests (Apple Silicon)
+    runs-on: macos-14   # M1 runner; change to self-hosted for guaranteed M2+
+    if: >
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      || contains(github.event.pull_request.labels.*.name, 'run-native')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install with all optional deps
+        run: pip install -e ".[dev]"
+
+      - name: Verify Metal is available
+        run: |
+          python -c "
+          import mlx.core as mx
+          assert mx.metal.is_available(), 'Metal unavailable on this runner'
+          print('Metal OK, MLX', mx.__version__)
+          "
+
+      - name: Run native test suite
+        run: |
+          pytest tests/ -v --tb=short

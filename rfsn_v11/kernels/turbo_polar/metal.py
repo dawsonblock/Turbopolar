@@ -844,6 +844,86 @@ class MetalKernelBridge:
         }
         return output.astype(mx.float16), trace
 
+    def _build_arena_block(
+        self,
+        valid_page_views: list,
+        B: int,
+        H_kv: int,
+        D: int,
+        block_size: int,
+    ) -> Tuple[Optional["PolarKeyBlock"], Optional["QuantizedVBlock"], int]:
+        """Concatenate all valid page slices into a single arena block.
+
+        Returns (arena_block, arena_v, total_valid_blocks). Returns
+        (None, None, 0) when there are no valid pages.
+
+        By building one contiguous tensor per field across all pages, we
+        reduce the Metal dispatch count from N_pages to 1 and eliminate
+        the per-page _online_softmax_combine_raw Python operations. The
+        existing kernel handles online-softmax over all S blocks internally.
+        """
+        if not valid_page_views:
+            return None, None, 0
+
+        total_valid_blocks = sum(pv.valid_blocks for pv in valid_page_views)
+
+        # Concatenate radii fields across all valid page slices.
+        all_radii = mx.concatenate(
+            [pv.k_page.radii[:, :, :pv.valid_blocks, :, :]
+             for pv in valid_page_views],
+            axis=2,
+        )
+        all_angle_l1 = mx.concatenate(
+            [pv.k_page.angle_codes_l1[:, :, :pv.valid_blocks, :, :]
+             for pv in valid_page_views],
+            axis=2,
+        )
+        all_angle_deep = mx.concatenate(
+            [pv.k_page.angle_codes_deep[:, :, :pv.valid_blocks, :, :]
+             for pv in valid_page_views],
+            axis=2,
+        )
+
+        # Concatenate radii_scales only when present (int8 radii mode).
+        first_k = valid_page_views[0].k_page
+        all_radii_scales = None
+        if first_k.radii_scales is not None:
+            all_radii_scales = mx.concatenate(
+                [pv.k_page.radii_scales[:, :, :pv.valid_blocks, :, :]
+                 for pv in valid_page_views],
+                axis=2,
+            )
+
+        arena_block = PolarKeyBlock(
+            radii=all_radii,
+            angle_codes_l1=all_angle_l1,
+            angle_codes_deep=all_angle_deep,
+            radii_scales=all_radii_scales,
+            shape=(B, H_kv, total_valid_blocks * block_size, D),
+            block_size=block_size,
+            head_dim=D,
+            metadata=valid_page_views[0].metadata,
+        )
+
+        # Concatenate V fields.
+        all_v_codes = mx.concatenate(
+            [pv.v_page.codes[:, :, :pv.valid_blocks, :, :]
+             for pv in valid_page_views],
+            axis=2,
+        )
+        all_v_scales = mx.concatenate(
+            [pv.v_page.scales[:, :, :pv.valid_blocks, :, :]
+             for pv in valid_page_views],
+            axis=2,
+        )
+        arena_v = QuantizedVBlock(
+            codes=all_v_codes,
+            scales=all_v_scales,
+            group_size=valid_page_views[0].v_page.group_size,
+        )
+
+        return arena_block, arena_v, total_valid_blocks
+
     def _execute_paged_online_attention_metal_strict(
         self,
         q: mx.array,
@@ -854,80 +934,76 @@ class MetalKernelBridge:
         actual_seq_len: int,
         trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE,
     ) -> Tuple[mx.array, Dict[str, Any]]:
-        """Strict Metal path: any missing kernel or dispatch error is fatal."""
+        """Strict Metal path: any missing kernel or dispatch error is fatal.
+
+        Two-stage dispatch redesign: all compressed pages are concatenated
+        into a single contiguous arena block and dispatched in ONE Metal call
+        rather than one call per page. This reduces dispatch count from
+        O(pages) to O(1) per decode step, eliminates per-page MLX slice
+        copies, and removes the Python-level online-softmax merge loop.
+        """
         if self._kernel_attn_quant_raw is None:
             raise MetalExecutionRequiredError(
                 "Raw compressed-page Metal kernel is unavailable."
             )
         B = q.shape[0]
         H_q = q.shape[1]
+        H_kv = config.num_kv_heads
         D = config.head_dim
-        num_queries_per_kv = (
-            H_q // config.num_kv_heads if config.num_kv_heads > 0 else 1
+        synchronous = (
+            trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
         )
-        synchronous = trace_validation_mode is TraceValidationMode.SYNCHRONOUS_EVIDENCE
 
+        total_tokens = 0
+        page_traces: list[Dict[str, Any]] = []
+
+        # Collect non-empty pages and build a single contiguous arena block.
+        valid_page_views = [pv for pv in pages if pv.valid_blocks > 0]
+        arena_block, arena_v, total_valid_blocks = self._build_arena_block(
+            valid_page_views, B, H_kv, D, config.block_size
+        )
+
+        # State initialised to identity; updated by arena dispatch + dense tail.
         state = MetalKernelBridge.OnlineSoftmaxState(
             max_score=mx.full((B, H_q), -float("inf"), dtype=mx.float32),
             exp_sum=mx.zeros((B, H_q), dtype=mx.float32),
             weighted_value_sum=mx.zeros((B, H_q, D), dtype=mx.float32),
         )
 
-        total_tokens = 0
-        page_traces: list[Dict[str, Any]] = []
-
-        for page_view in pages:
-            valid_blocks = page_view.valid_blocks
-            if valid_blocks == 0:
-                continue
-
-            k_page = page_view.k_page
-            block = PolarKeyBlock(
-                radii=k_page.radii[:, :, :valid_blocks, :, :],
-                angle_codes_l1=k_page.angle_codes_l1[:, :, :valid_blocks, :, :],
-                angle_codes_deep=k_page.angle_codes_deep[:, :, :valid_blocks, :, :],
-                radii_scales=(
-                    k_page.radii_scales[:, :, :valid_blocks, :, :]
-                    if k_page.radii_scales is not None
-                    else None
-                ),
-                shape=(B, k_page.radii.shape[1], valid_blocks * config.block_size, D),
-                block_size=config.block_size,
-                head_dim=D,
-                metadata=page_view.metadata,
-            )
-
-            v_page = page_view.v_page
-            quant_v = QuantizedVBlock(
-                codes=v_page.codes[:, :, :valid_blocks, :, :],
-                scales=v_page.scales[:, :, :valid_blocks, :, :],
-                group_size=v_page.group_size,
-            )
-
-            page_weighted, page_max, page_exp, page_trace = (
+        if arena_block is not None and total_valid_blocks > 0:
+            arena_seq_len = total_valid_blocks * config.block_size
+            arena_weighted, arena_max, arena_exp, arena_trace = (
                 self.execute_online_attention_quant_v_raw(
                     q,
-                    block,
-                    quant_v,
+                    arena_block,
+                    arena_v,
                     config,
-                    actual_seq_len=valid_blocks * config.block_size,
+                    actual_seq_len=arena_seq_len,
                     strict=True,
                     evaluate_outputs=synchronous,
                 )
             )
-            if page_trace.get("fallback_used"):
+            if arena_trace.get("fallback_used"):
                 raise MetalExecutionRequiredError(
-                    f"Compressed-page trace reported fallback_used=True for page with {valid_blocks} blocks"
+                    "Arena block trace reported fallback_used=True"
                 )
-            if not page_trace.get("metal_used"):
+            if not arena_trace.get("metal_used"):
                 raise MetalExecutionRequiredError(
-                    f"Compressed-page trace reported metal_used=False for page with {valid_blocks} blocks"
+                    "Arena block trace reported metal_used=False"
                 )
             state = self._online_softmax_combine_raw(
-                state, page_max, page_exp, page_weighted
+                state, arena_max, arena_exp, arena_weighted
             )
-            total_tokens += valid_blocks * config.block_size
-            page_traces.append(page_trace)
+            total_tokens += arena_seq_len
+            # Emit one synthetic trace entry per original page for telemetry
+            # compatibility with the rest of the pipeline.
+            for pv in valid_page_views:
+                page_traces.append({
+                    **arena_trace,
+                    "kernel_name": "tqpolar_online_attention_quant_v_raw",
+                    "actual_seq_len": pv.valid_blocks * config.block_size,
+                    "arena_batched": True,
+                })
 
         # Dense tail via Metal raw-state kernel.
         dense_tail_metal = False
@@ -966,6 +1042,7 @@ class MetalKernelBridge:
         if pages and tail_k is not None and tail_k.shape[2] > 0:
             self._stats.dense_tail_calls += 1
 
+        num_queries_per_kv = H_q // H_kv if H_kv > 0 else 1
         trace = {
             "kernel_name": "paged_online_attention_full_metal",
             "execution_mode": "metal_strict",
@@ -978,6 +1055,7 @@ class MetalKernelBridge:
             "actual_seq_len": actual_seq_len,
             "total_tokens_processed": total_tokens,
             "num_queries_per_kv": num_queries_per_kv,
+            "arena_batched": True,
             "page_traces": page_traces,
             "output_evaluated": synchronous,
         }

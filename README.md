@@ -8,7 +8,7 @@ This is **research alpha software**. TurboPolar has a strict compressed-page and
 
 - Compresses the key cache using polar quantization (magnitude + angle codes).
 - Stores values in grouped int8.
-- Uses one compressed-page Metal dispatch per page, one dense-tail Metal dispatch, MLX online-state merging, and MLX finalization.
+- Concatenates all compressed pages into a single contiguous arena, dispatches ONE Metal attention call for the full compressed history, then one dense-tail Metal call. No per-page Python loop or state merge at decode time.
 - Targets Llama-style GQA models with `head_dim == 128` and `block_size == 64`.
 
 ## Supported configuration
@@ -54,12 +54,12 @@ Three execution modes are supported: `REFERENCE` (CPU/Python reference), `METAL_
 ## Run the real-model benchmarks
 
 ```bash
-make bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-make fused-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-make speed-matrix MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-make memory-bench
-make cartesian-bench MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
-make promote MODEL=mlx-community/Llama-3.2-1B-Instruct-4bit
+make bench MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+make fused-bench MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+make speed-matrix MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+make memory-bench MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+make cartesian-bench MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+make promote MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
 ```
 
 These compare dense KV-cache logits against TurboPolar on a real MLX model, measure decode speed across sequence lengths, probe actual allocator memory, compare against a Cartesian int8 baseline, and produce promotion evidence. Real-model long-context evidence remains incomplete. Promotion remains locked. See `benchmarks/README.md` for details.

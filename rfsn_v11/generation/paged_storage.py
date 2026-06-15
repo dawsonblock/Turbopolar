@@ -296,20 +296,27 @@ class PagedPolarKStorage:
         return len(self.pages)
 
     def get_memory_stats(self) -> Tuple[int, int]:
-        """Return (logical_payload_bytes, allocated_capacity_bytes)."""
+        """Return (logical_payload_bytes, allocated_capacity_bytes).
+
+        Logical bytes are computed arithmetically from itemsize and shapes
+        rather than by slicing device arrays.  MLX slices produce copies
+        rather than views, so slicing solely to count bytes would perturb
+        the allocator being measured.
+        """
         logical = 0
         allocated = 0
         for page in self.pages:
             for arr in (page.radii, page.angle_codes_l1, page.angle_codes_deep):
-                allocated += _nbytes(arr)
+                arr_bytes = _nbytes(arr)
+                allocated += arr_bytes
                 if page.valid_blocks > 0:
-                    logical += _nbytes(arr[:, :, : page.valid_blocks, :, :])
+                    # Compute valid fraction arithmetically.
+                    logical += arr_bytes * page.valid_blocks // arr.shape[2]
             if page.radii_scales is not None:
-                allocated += _nbytes(page.radii_scales)
+                rs_bytes = _nbytes(page.radii_scales)
+                allocated += rs_bytes
                 if page.valid_blocks > 0:
-                    logical += _nbytes(
-                        page.radii_scales[:, :, : page.valid_blocks, :, :]
-                    )
+                    logical += rs_bytes * page.valid_blocks // page.radii_scales.shape[2]
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> PolarKeyBlock:
@@ -409,14 +416,18 @@ class PagedQuantVStorage:
         return len(self.pages)
 
     def get_memory_stats(self) -> Tuple[int, int]:
-        """Return (logical_payload_bytes, allocated_capacity_bytes)."""
+        """Return (logical_payload_bytes, allocated_capacity_bytes).
+
+        Uses arithmetic on itemsize and shape rather than device slices.
+        """
         logical = 0
         allocated = 0
         for page in self.pages:
             for arr in (page.codes, page.scales):
-                allocated += _nbytes(arr)
+                arr_bytes = _nbytes(arr)
+                allocated += arr_bytes
                 if page.valid_blocks > 0:
-                    logical += _nbytes(arr[:, :, : page.valid_blocks, :, :])
+                    logical += arr_bytes * page.valid_blocks // arr.shape[2]
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> QuantizedVBlock:

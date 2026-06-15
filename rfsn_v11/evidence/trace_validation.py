@@ -1077,4 +1077,8 @@ def validate_trace_topology(
             + "; ".join(failures[:10])
         )
 
-    return {"failures": failures, "topology_stats": topology_stats}
+    # Expose the most common stats at the top level for backward compatibility
+    # alongside the nested topology_stats dict.
+    result = {"failures": failures, "topology_stats": topology_stats}
+    result.update(topology_stats)
+    return result

@@ -356,8 +356,10 @@ class TurboPolarKVCacheRuntime:
 
     def _flush_block(self, k_block: mx.array, v_block: mx.array):
         B, H, L, D = k_block.shape
+        t0_ns = time.perf_counter_ns()
         polar_block = self.polar_encoder.encode_block(k_block)
         quant_v = self.v_quantizer.quantize_block(v_block.reshape(B, H, 1, L, D))
+        self.compression_time_ns += time.perf_counter_ns() - t0_ns
 
         self.k_storage.append(polar_block)
         self.v_storage.append(quant_v)
@@ -436,8 +438,10 @@ class TurboPolarKVCacheRuntime:
             v_full = v_new[:, :, t : t + num_full_blocks * L, :].reshape(
                 B, H, num_full_blocks, L, D
             )
+            t0_ns = time.perf_counter_ns()
             polar_blocks = self.polar_encoder.encode_blocks(k_full)
             quant_v = self.v_quantizer.encode_blocks(v_full)
+            self.compression_time_ns += time.perf_counter_ns() - t0_ns
             # Append each completed block to paged storage.
             for i in range(num_full_blocks):
                 pb = PolarKeyBlock(
@@ -461,6 +465,14 @@ class TurboPolarKVCacheRuntime:
                 self.v_storage.append(vb)
                 self.total_blocks += 1
                 self.actual_seq_len += L
+                self.bytes_written += (
+                    _nbytes(pb.radii)
+                    + _nbytes(pb.angle_codes_l1)
+                    + _nbytes(pb.angle_codes_deep)
+                    + (_nbytes(pb.radii_scales) if pb.radii_scales is not None else 0)
+                    + _nbytes(vb.codes)
+                    + _nbytes(vb.scales)
+                )
             t += num_full_blocks * L
 
         # Step 3 — Store final remainder.
@@ -798,14 +810,24 @@ class TurboPolarKVCacheRuntime:
             allocated += v_allocated
 
         # Dense tail buffers: always allocated; only partial_length is logical.
+        # Count bytes arithmetically to avoid creating temporary device arrays
+        # just to measure them (MLX slices produce copies, not views).
         if self.partial_k_buffer is not None:
             allocated += _nbytes(self.partial_k_buffer)
             allocated += _nbytes(self.partial_v_buffer)
             if self.partial_length > 0:
-                tail_k_logical = self.partial_k_buffer[:, :, : self.partial_length, :]
-                tail_v_logical = self.partial_v_buffer[:, :, : self.partial_length, :]
-                logical += _nbytes(tail_k_logical) + _nbytes(tail_v_logical)
-                dense_tail += _nbytes(tail_k_logical) + _nbytes(tail_v_logical)
+                # Compute logical bytes from dtype and shape without slicing.
+                itemsize = self.partial_k_buffer.itemsize
+                tail_logical_bytes = (
+                    self.partial_k_buffer.shape[0]
+                    * self.partial_k_buffer.shape[1]
+                    * self.partial_length
+                    * self.partial_k_buffer.shape[3]
+                    * itemsize
+                    * 2  # K and V
+                )
+                logical += tail_logical_bytes
+                dense_tail += tail_logical_bytes
             else:
                 dense_tail = 0
 
