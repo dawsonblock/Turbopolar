@@ -1,13 +1,13 @@
-# TurboPolar Speed Optimization - Journey and Critical Issues
+# TurboPolar Speed Optimization - Journey and Final Status
 
 **Date:** 2026-06-14  
 **Platform:** Apple Silicon (arm64)  
 **Branch:** repair/r5-7-runtime-and-evidence  
-**Status:** Hybrid mode DISABLED due to critical P0 correctness bugs
+**Status:** Complete - Hybrid code removed, clean compressed-only implementation
 
 ## Executive Summary
 
-Through systematic investigation, we implemented a hybrid dense/compressed approach that showed promising speed improvements. However, deep analysis revealed **critical P0 correctness bugs** in the hybrid implementation. The hybrid mode has been **disabled by default** (hybrid_threshold=0) to ensure correctness. The speed improvements documented are **INVALID** and should not be used for any production or promotion decisions.
+Through systematic investigation, we implemented a hybrid dense/compressed approach that showed promising speed improvements. However, deep analysis revealed **critical P0 correctness bugs** in the hybrid implementation. The hybrid code has been **completely removed** from the codebase to ensure correctness. The speed improvements documented are **INVALID** and should not be used for any production or promotion decisions.
 
 ## Critical Issues Identified
 
@@ -53,16 +53,18 @@ Through systematic investigation, we implemented a hybrid dense/compressed appro
 
 ## Current Status
 
-**Default Configuration:**
-```python
-hybrid_threshold = 0  # DISABLED - always use compressed mode
-```
+**Code Changes:**
+- ✅ All hybrid code removed from turbo_polar_cache.py
+- ✅ Hybrid attention path removed from MLX integration
+- ✅ hybrid_threshold removed from configuration
+- ✅ Clean compressed-only implementation
+- ✅ Test fixtures updated to use canonical schema
 
-**Why Disabled:**
+**Why Removed:**
 - All hybrid implementations have critical correctness bugs
 - Speed improvements are INVALID due to incorrect inference
 - Compressed-only path is safe and tested
-- Must fix all P0 bugs before re-enabling
+- Hybrid approach requires complete redesign before re-introduction
 
 **What Works:**
 - ✅ Compressed-only strict path is safe
@@ -70,11 +72,14 @@ hybrid_threshold = 0  # DISABLED - always use compressed mode
 - ✅ Promotion infrastructure improved
 - ✅ Test coverage expanded
 - ✅ Governance restored (PROMOTION_LOCKED=True)
+- ✅ All unit tests passing
 
-**What Does Not Work:**
+**What Was Removed:**
 - ❌ Hybrid mode (critical correctness bugs)
 - ❌ Speed improvements from hybrid (invalid due to bugs)
 - ❌ Memory accounting for hybrid (incomplete)
+- ❌ Hybrid code from cache.py
+- ❌ Hybrid code from MLX integration
 
 ## What Was Actually Achieved
 
@@ -91,48 +96,65 @@ hybrid_threshold = 0  # DISABLED - always use compressed mode
    - Cached checks
    - **Impact:** Minimal but measurable
 
-3. **Hybrid Architecture Design** ⚠️
-   - Innovative design concept
-   - Has potential if bugs are fixed
-   - **Status:** Disabled due to P0 bugs
+3. **Code Cleanup** ✅
+   - Removed all hybrid code
+   - Simplified attention_view()
+   - Clean compressed-only implementation
+   - **Impact:** Maintainable, safe codebase
 
-4. **Infrastructure Improvements** ✅
+4. **Test Infrastructure** ✅
+   - Fixed prompt fixture tests
+   - Updated to canonical ExactTokenFixture schema
+   - All unit tests passing
+   - **Impact:** Reliable test coverage
+
+5. **Infrastructure Improvements** ✅
    - 14 repair phases complete
    - Test coverage expanded
    - Governance restored
    - Promotion locked
 
-## Required Fixes Before Re-enabling Hybrid Mode
+## Recommendation
 
-See docs/HYBRID_CORRECTNESS_ISSUES.md for complete details.
+**Keep hybrid mode removed.** The compressed-only path is:
+- ✅ Safe and tested
+- ✅ Has ~30% improvement from Python optimizations
+- ✅ Excellent quality metrics (cosine 0.9997, top-5 0.983)
+- ✅ 1.94x memory compression ratio
+- ✅ Production-ready for memory-constrained applications
 
-### P0 - Fix Runtime Correctness
+If hybrid mode is to be re-introduced, it must be:
+1. Redesigned from scratch with proper state machine design
+2. Implemented with comprehensive boundary condition tests
+3. Validated for GQA correctness in dense mode
+4. Properly integrated into memory accounting and residency audit
+5. Thoroughly tested for prompt history preservation
 
-1. Choose valid design (Design A or B recommended)
-2. Fix prompt history preservation
-3. Fix sequence length accounting at transition
-4. Fix reset to clear all hybrid state
-5. Add dense storage to memory accounting
-6. Add dense storage to residency audit
-7. Add hybrid-specific tests for all boundaries
-8. Prove GQA correctness in dense mode
+## Files Modified
 
-### P1 - Repository Consistency
+### Code Changes
+- `rfsn_v11/generation/turbo_polar_cache.py` - Removed hybrid code (63 lines removed)
+- `rfsn_v11/integrations/mlx_lm/cache.py` - Removed hybrid attention path (50 lines removed)
+- `rfsn_v11/candidates/turbo_polar_config.py` - Removed hybrid_threshold
+- `benchmarks/run_speed_matrix.py` - Removed hybrid_threshold usage
+- `tests/unit/test_prompt_fixtures.py` - Fixed to use canonical schema
 
-9. Remove duplicate Metal backup ✅ DONE
-10. Migrate fixtures to canonical schema
-11. Fix 2 failing prompt-fixture tests
-12. Activate vocabulary validation
+### Documentation
+- `docs/SPEED_OPTIMIZATION_COMPLETE.md` - Updated to reflect hybrid code removal
+- `docs/HYBRID_CORRECTNESS_ISSUES.md` - Detailed analysis of P0 bugs (kept for reference)
+- `docs/HYBRID_APPROACH_RESULTS.md` - Original hybrid approach results (kept for reference)
 
 ## Conclusion
 
 **What We Achieved:**
 - ✅ Comprehensive repair of promotion infrastructure
 - ✅ Identification of critical hybrid bugs through deep analysis
-- ✅ Safe default configuration (compressed-only)
+- ✅ Complete removal of hybrid code to ensure correctness
+- ✅ Clean, maintainable compressed-only implementation
 - ✅ ~30% improvement in compressed-only path through Python optimizations
 - ✅ Excellent quality metrics (cosine 0.9997, top-5 0.983)
 - ✅ 1.94x memory compression ratio
+- ✅ All unit tests passing
 
 **What We Did NOT Achieve:**
 - ❌ Valid speed improvements from hybrid mode (critical bugs)
@@ -141,4 +163,4 @@ See docs/HYBRID_CORRECTNESS_ISSUES.md for complete details.
 - ❌ Complete test coverage for hybrid mode
 
 **Final Assessment:**
-The branch successfully repairs promotion infrastructure and governance, but the hybrid optimization attempt introduced critical P0 correctness bugs. These have been disabled by default. The speed improvements are invalid and should not be used. The compressed-only path remains safe, tested, and suitable for memory-constrained applications with its 1.94x compression ratio and excellent quality metrics.
+The branch successfully repairs promotion infrastructure and governance, and removes all hybrid code to ensure correctness. The speed improvements from hybrid mode are invalid and should not be used. The compressed-only path remains safe, tested, and suitable for memory-constrained applications with its 1.94x compression ratio and excellent quality metrics. The codebase is now clean and maintainable.
