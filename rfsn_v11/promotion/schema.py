@@ -309,6 +309,12 @@ class BenchmarkProvenance:
     kernel_binding_hash: str = ""
     execution_mode: str = ""
     evidence_kind: str = "experimental"  # "experimental" | "synthetic_dry_run"
+    # P1-31: Separate workload hashes for each benchmark family
+    # These allow tracking workload changes independently per benchmark type
+    speed_workload_hash: str = ""  # Hash of speed benchmark workload (contexts, trials, fixtures)
+    memory_workload_hash: str = ""  # Hash of memory benchmark workload
+    fused_decode_workload_hash: str = ""  # Hash of fused decode workload
+    cartesian_workload_hash: str = ""  # Hash of cartesian comparison workload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BenchmarkProvenance":
@@ -346,6 +352,11 @@ class BenchmarkProvenance:
             kernel_binding_hash=data.get("kernel_binding_hash", ""),
             execution_mode=data.get("execution_mode", ""),
             evidence_kind=data.get("evidence_kind", "experimental"),
+            # P1-31: Separate workload hashes
+            speed_workload_hash=data.get("speed_workload_hash", ""),
+            memory_workload_hash=data.get("memory_workload_hash", ""),
+            fused_decode_workload_hash=data.get("fused_decode_workload_hash", ""),
+            cartesian_workload_hash=data.get("cartesian_workload_hash", ""),
         )
 
 

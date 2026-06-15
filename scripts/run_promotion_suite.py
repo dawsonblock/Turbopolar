@@ -83,7 +83,20 @@ REQUIRED_METAL_TESTS = {
 
 
 def _parse_junit_xml(path: Path) -> Dict[str, Any]:
-    """Parse pytest JUnit XML into a structured dict."""
+    """Parse pytest JUnit XML into a structured dict.
+    
+    P1-35: Uses explicit markers when available, falling back to classname inference.
+    
+    Explicit markers are preferred over classname inference because:
+    1. They survive test refactoring (moving tests between files)
+    2. They clearly indicate intent in the test source
+    3. They don't depend on module naming conventions
+    
+    To mark a test as a metal test, use:
+        @pytest.mark.metal
+    
+    The marker will appear in JUnit XML as a <property name="markers" value="metal"/>.
+    """
     if not path.exists():
         return {
             "collected": 0,
@@ -109,24 +122,58 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
     metal_passed: Set[str] = set()
     metal_skipped: Set[str] = set()
     testcases: List[Dict[str, Any]] = []
+    
     for testcase in testsuite.findall("testcase"):
         cls = testcase.get("classname", "")
+        name = testcase.get("name", "")
         failed = any(child.tag in ("failure", "error") for child in testcase)
         skipped_tc = any(child.tag == "skipped" for child in testcase)
+        
+        # P1-35: Check for explicit markers in properties
+        has_metal_marker = False
+        properties_elem = testcase.find("properties")
+        if properties_elem is not None:
+            for prop in properties_elem.findall("property"):
+                prop_name = prop.get("name", "")
+                prop_value = prop.get("value", "")
+                if prop_name == "markers" and "metal" in prop_value:
+                    has_metal_marker = True
+        
+        # Also check for marker in test name (pytest can include markers in test id)
+        if "[metal]" in name or "metal_" in name.lower():
+            has_metal_marker = True
+        
         testcases.append(
             {
                 "classname": cls,
+                "name": name,
                 "failed": failed,
                 "skipped": skipped_tc,
+                "has_metal_marker": has_metal_marker,
             }
         )
-        # Map class name to module prefix.
-        parts = cls.split(".")
-        if len(parts) >= 2:
-            module_prefix = ".".join(parts[:-1])
+        
+        # P1-35: Determine if this is a metal test
+        # Priority: explicit marker > classname inference
+        is_metal_test = False
+        module_prefix = ""
+        
+        if has_metal_marker:
+            is_metal_test = True
+            # Use module prefix from classname
+            parts = cls.split(".")
+            module_prefix = ".".join(parts[:-1]) if len(parts) >= 2 else cls
         else:
-            module_prefix = cls
-        if any(module_prefix.startswith(req) for req in REQUIRED_METAL_TESTS):
+            # Fallback to classname inference (legacy method)
+            parts = cls.split(".")
+            if len(parts) >= 2:
+                module_prefix = ".".join(parts[:-1])
+            else:
+                module_prefix = cls
+            if any(module_prefix.startswith(req) for req in REQUIRED_METAL_TESTS):
+                is_metal_test = True
+        
+        if is_metal_test and module_prefix:
             metal_present.add(module_prefix)
             if not failed and not skipped_tc:
                 metal_passed.add(module_prefix)
@@ -143,6 +190,7 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
         "metal_tests_present": sorted(metal_present),
         "metal_tests_passed": sorted(metal_passed),
         "metal_tests_skipped": sorted(metal_skipped),
+        "marker_based_detection": True,  # P1-35: Indicates we support explicit markers
     }
 
 

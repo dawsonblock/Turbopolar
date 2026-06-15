@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from rfsn_v11.candidates.turbo_polar_config import TurboPolarConfig
 from rfsn_v11.promotion.schema import BenchmarkProvenance, GitTreeState
@@ -36,10 +36,133 @@ def _dir_sha256(directory: Path, glob: str = "*.metal") -> str:
     return h.hexdigest()
 
 
+def _compute_git_dirty_hash() -> str:
+    """Compute a hash of all changes in the working tree including untracked files.
+    
+    This captures:
+    - Modified tracked files (via git diff HEAD)
+    - Untracked files (by hashing their content)
+    
+    Returns a 16-character hex hash of the dirty state.
+    """
+    h = hashlib.sha256()
+    
+    # 1. Hash the diff of tracked files
+    tracked_diff = _run(["git", "diff", "HEAD"])
+    if tracked_diff:
+        h.update(tracked_diff.encode())
+    
+    # 2. Hash untracked files
+    # Get list of untracked files (lines starting with '??')
+    porcelain = _run(["git", "status", "--porcelain"])
+    untracked_files = []
+    for line in porcelain.split('\n'):
+        if line.startswith('?? '):
+            # Extract filename (handle quoted paths for special chars)
+            filepath = line[3:].strip()
+            if filepath.startswith('"') and filepath.endswith('"'):
+                filepath = filepath[1:-1]
+            untracked_files.append(filepath)
+    
+    # Hash content of untracked files (sorted for determinism)
+    repo_root = Path(_run(["git", "rev-parse", "--show-toplevel"]) or ".")
+    for filepath in sorted(untracked_files):
+        full_path = repo_root / filepath
+        if full_path.is_file():
+            # Include filename and content in hash
+            h.update(f"{filepath}:".encode())
+            try:
+                h.update(full_path.read_bytes())
+            except Exception:
+                # If we can't read the file, hash its size and mtime as fallback
+                try:
+                    stat = full_path.stat()
+                    h.update(f"{stat.st_size}:{stat.st_mtime}".encode())
+                except Exception:
+                    pass
+    
+    return h.hexdigest()[:16]
+
+
 def _hash_jsonable(obj: Any) -> str:
     return hashlib.sha256(
         json.dumps(obj, sort_keys=True, default=str).encode()
     ).hexdigest()
+
+
+def compute_speed_workload_hash(
+    context_lengths: List[int],
+    trial_count: int,
+    decode_token_count: int,
+    token_fixtures_hash: str,
+) -> str:
+    """Compute workload hash for speed benchmark.
+    
+    Captures the unique configuration of speed benchmark workload.
+    Changes to context lengths, trial count, or fixtures result in different hash.
+    """
+    workload = {
+        "benchmark_family": "speed",
+        "context_lengths": sorted(context_lengths),
+        "trial_count": trial_count,
+        "decode_token_count": decode_token_count,
+        "token_fixtures_hash": token_fixtures_hash,
+    }
+    return _hash_jsonable(workload)
+
+
+def compute_memory_workload_hash(
+    context_lengths: List[int],
+    forced_decode_count: int,
+    token_fixtures_hash: str,
+) -> str:
+    """Compute workload hash for memory benchmark.
+    
+    Captures the unique configuration of memory benchmark workload.
+    """
+    workload = {
+        "benchmark_family": "memory",
+        "context_lengths": sorted(context_lengths),
+        "forced_decode_count": forced_decode_count,
+        "token_fixtures_hash": token_fixtures_hash,
+    }
+    return _hash_jsonable(workload)
+
+
+def compute_fused_decode_workload_hash(
+    context_lengths: List[int],
+    continuation_token_count: int,
+    token_fixtures_hash: str,
+) -> str:
+    """Compute workload hash for fused decode benchmark.
+    
+    Captures the unique configuration of fused decode benchmark workload.
+    """
+    workload = {
+        "benchmark_family": "fused_decode",
+        "context_lengths": sorted(context_lengths),
+        "continuation_token_count": continuation_token_count,
+        "token_fixtures_hash": token_fixtures_hash,
+    }
+    return _hash_jsonable(workload)
+
+
+def compute_cartesian_workload_hash(
+    context_lengths: List[int],
+    forced_decode_count: int,
+    token_fixtures_hash: str,
+) -> str:
+    """Compute workload hash for cartesian comparison benchmark.
+    
+    Captures the unique configuration of cartesian comparison workload.
+    """
+    workload = {
+        "benchmark_family": "cartesian",
+        "context_lengths": sorted(context_lengths),
+        "forced_decode_count": forced_decode_count,
+        "token_fixtures_hash": token_fixtures_hash,
+    }
+    return _hash_jsonable(workload)
 
 
 def _macos_version() -> str:
@@ -87,9 +210,7 @@ def capture_provenance(
         git_tree_state = GitTreeState.DIRTY
     git_diff_hash = ""
     if git_tree_state == GitTreeState.DIRTY:
-        git_diff_hash = hashlib.sha256(
-            _run(["git", "diff", "HEAD"]).encode()
-        ).hexdigest()[:16]
+        git_diff_hash = _compute_git_dirty_hash()
 
     mlx_version = ""
     try:

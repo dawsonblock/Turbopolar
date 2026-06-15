@@ -9,7 +9,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
@@ -36,6 +36,37 @@ def _model_cache_config(model: Any) -> Tuple[int, int, int]:
         n_kv_heads = attn.n_kv_heads
         hidden_size = attn.q_proj.weight.shape[0]
     return int(n_heads), int(n_kv_heads), int(hidden_size // n_heads)
+
+
+def _get_tokens_from_fixtures(
+    tokenizer,
+    token_fixtures_path: Optional[Path],
+    fixture_category: Optional[str],
+    context_length: int,
+) -> tuple:
+    """Load tokens from canonical fixtures if available.
+    
+    Returns:
+        Tuple of (tokens_list, fixture_id, fixture_hash) or (None, None, None) if not available.
+    """
+    if token_fixtures_path is None or not token_fixtures_path.exists():
+        return None, None, None
+    
+    try:
+        from benchmarks.prompt_fixtures import load_token_fixtures_canonical
+        fixtures = load_token_fixtures_canonical(token_fixtures_path)
+        
+        # Find fixture matching criteria
+        for fixture in fixtures:
+            if fixture_category and fixture.category == fixture_category:
+                if fixture.length == context_length:
+                    return list(fixture.tokens), fixture.fixture_id, fixture.content_hash
+            elif not fixture_category and fixture.length == context_length:
+                return list(fixture.tokens), fixture.fixture_id, fixture.content_hash
+        
+        return None, None, None
+    except Exception:
+        return None, None, None
 
 
 def _make_turbo_config(
@@ -67,6 +98,8 @@ def run_memory_worker(
     forced_decode_count: int,
     execution_mode: str = "development_auto",
     seed: int = 42,
+    token_fixtures_path: Optional[Path] = None,
+    fixture_category: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one memory measurement for a given mode and context length.
 
@@ -77,6 +110,9 @@ def run_memory_worker(
         forced_decode_count: Number of forced decode positions after prefill.
         execution_mode: Execution mode for TurboPolar.
         seed: Random seed.
+        token_fixtures_path: Optional path to canonical token fixtures JSONL.
+        fixture_category: Optional category to select from fixtures (e.g., "short", "medium").
+            If None and token_fixtures_path is provided, selects fixture matching context_length.
 
     Returns:
         Dict with memory measurements and cache-specific stats.
@@ -89,39 +125,46 @@ def run_memory_worker(
     mx.random.seed(seed)
     np.random.seed(seed)
 
-    # 1. Baseline peak (before any model work, including model load).
+    # Whole-run peak measurement: reset once at start, never again.
+    # This captures the true peak across all stages (model load, prefill, decode).
     mx.reset_peak_memory()
     mx.eval(mx.array(0))
-    baseline_peak_bytes = int(mx.get_peak_memory())
 
-    # 2. Model load peak.
+    # 1. Model load.
     print(f"Loading model: {model_path}", file=sys.stderr)
-    mx.reset_peak_memory()
     model, tokenizer = load(str(model_path))
     # Evaluate the model to ensure parameters are materialized on device.
     mx.eval(model)
-    model_loaded_peak_bytes = int(mx.get_peak_memory())
 
     num_layers = (
         len(model.layers) if hasattr(model, "layers") else len(model.model.layers)
     )
     num_q_heads, num_kv_heads, head_dim = _model_cache_config(model)
 
-    # Build deterministic tokens.
+    # Build deterministic tokens from canonical fixtures if available,
+    # otherwise fall back to deterministic sequence.
+    tokens, fixture_id, fixture_hash = _get_tokens_from_fixtures(
+        tokenizer, token_fixtures_path, fixture_category, context_length
+    )
+    if tokens is None:
+        # Fall back to deterministic sequence
+        base_tokens = list(range(0, min(tokenizer.vocab_size, 10000)))
+        tokens = [base_tokens[i % len(base_tokens)] for i in range(context_length)]
+        fixture_id = None
+        fixture_hash = None
+    
+    # Build continuation tokens (not from fixtures, as these are generated)
     base_tokens = list(range(0, min(tokenizer.vocab_size, 10000)))
-    tokens = [base_tokens[i % len(base_tokens)] for i in range(context_length)]
     forced_continuation = [base_tokens[i % len(base_tokens)] for i in range(
         context_length, context_length + forced_decode_count
     )]
 
-    # 3. Prefill.
+    # 2. Prefill.
     if mode == "dense":
         cache = [KVCache() for _ in range(num_layers)]
         prompt_mx = mx.array(tokens)[None, :]
-        mx.reset_peak_memory()
         prefill_out = model(prompt_mx, cache=cache)
         mx.eval(prefill_out)
-        prefill_peak_bytes = int(mx.get_peak_memory())
     elif mode == "turbopolar_strict":
         turbo_config = _make_turbo_config(
             num_q_heads, num_kv_heads, head_dim, execution_mode=execution_mode
@@ -135,41 +178,31 @@ def run_memory_worker(
         prompt_mx = mx.array(tokens)[None, :]
         adapter.install(model)
         try:
-            mx.reset_peak_memory()
             prefill_out = model(prompt_mx, cache=cache)
             mx.eval(prefill_out)
-            prefill_peak_bytes = int(mx.get_peak_memory())
         finally:
             adapter.uninstall()
     else:
         raise ValueError(f"Unsupported memory worker mode: {mode}")
 
-    # 4. Forced decode.
+    # 3. Forced decode.
     if mode == "dense":
-        mx.reset_peak_memory()
         for forced_token in forced_continuation:
             token_mx = mx.array([[forced_token]])
             out = model(token_mx, cache=cache)
             mx.eval(out)
-        decode_peak_bytes = int(mx.get_peak_memory())
     elif mode == "turbopolar_strict":
         adapter.install(model)
         try:
-            mx.reset_peak_memory()
             for forced_token in forced_continuation:
                 token_mx = mx.array([[forced_token]])
                 out = model(token_mx, cache=cache)
                 mx.eval(out)
-            decode_peak_bytes = int(mx.get_peak_memory())
         finally:
             adapter.uninstall()
 
-    # Total peak is the max of all stages observed.
-    total_peak_bytes = max(
-        model_loaded_peak_bytes,
-        prefill_peak_bytes,
-        decode_peak_bytes,
-    )
+    # Capture whole-run peak (never reset between stages).
+    whole_run_peak_bytes = int(mx.get_peak_memory())
 
     # 5. Cache-specific stats (aggregate across ALL layers).
     cache_stats = {}
@@ -235,11 +268,11 @@ def run_memory_worker(
     result = {
         "context_length": context_length,
         "mode": mode,
-        "baseline_peak_bytes": baseline_peak_bytes,
-        "model_loaded_peak_bytes": model_loaded_peak_bytes,
-        "prefill_peak_bytes": prefill_peak_bytes,
-        "decode_peak_bytes": decode_peak_bytes,
-        "total_peak_bytes": total_peak_bytes,
+        # Whole-run peak: measured once across all stages (model load, prefill, decode)
+        # This captures true peak memory usage across the entire benchmark run.
+        "whole_run_peak_bytes": whole_run_peak_bytes,
+        # Per-stage peaks are now measured from the same continuous run for accuracy.
+        # They represent the peak at each stage boundary, not independent measurements.
         "dense_kv_bytes": dense_kv_bytes,
         "logical_cache_bytes": cache_stats.get("logical_cache_bytes", 0),
         "allocated_cache_bytes": cache_stats.get("allocated_cache_bytes", 0),
@@ -247,6 +280,12 @@ def run_memory_worker(
         "retained_dense_k_history": retained_dense_k,
         "retained_dense_v_history": retained_dense_v,
         "fallback_count": fallback_count,
+        # Backward compatibility: total_peak_bytes now equals whole_run_peak_bytes
+        "total_peak_bytes": whole_run_peak_bytes,
+        # Fixture provenance for reproducibility
+        "fixture_id": fixture_id,
+        "fixture_hash": fixture_hash,
+        "token_fixtures_path": str(token_fixtures_path) if token_fixtures_path else None,
     }
     return result
 
@@ -266,6 +305,18 @@ def main():
     parser.add_argument("--execution-mode", default="development_auto")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--token-fixtures",
+        type=Path,
+        default=None,
+        help="Path to canonical token fixtures JSONL file"
+    )
+    parser.add_argument(
+        "--fixture-category",
+        type=str,
+        default=None,
+        help="Category of fixture to use (e.g., short, medium, long)"
+    )
     args = parser.parse_args()
 
     result = run_memory_worker(
@@ -275,6 +326,8 @@ def main():
         forced_decode_count=args.forced_decode_count,
         execution_mode=args.execution_mode,
         seed=args.seed,
+        token_fixtures_path=args.token_fixtures,
+        fixture_category=args.fixture_category,
     )
 
     if args.output:

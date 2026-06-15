@@ -70,10 +70,14 @@ class TestMemoryWorkerLogic(unittest.TestCase):
     def test_source_contains_expected_fields(self):
         """Worker source must contain the corrected peak field names."""
         source = (PROJECT_ROOT / "benchmarks" / "full_model_memory_worker.py").read_text()
-        self.assertIn("baseline_peak_bytes", source)
-        self.assertIn("model_loaded_peak_bytes", source)
-        self.assertIn("prefill_peak_bytes", source)
-        self.assertIn("decode_peak_bytes", source)
+        # P1-33: Whole-run peak semantics - single measurement across all stages
+        self.assertIn("whole_run_peak_bytes", source)
+        # Old per-stage peaks removed in favor of whole-run peak
+        self.assertNotIn("baseline_peak_bytes = int", source)
+        self.assertNotIn("model_loaded_peak_bytes = int", source)
+        self.assertNotIn("prefill_peak_bytes = int", source)
+        self.assertNotIn("decode_peak_bytes = int", source)
+        # total_peak_bytes now equals whole_run_peak_bytes for backward compat
         self.assertIn("total_peak_bytes", source)
         self.assertIn("dense_kv_bytes", source)
         self.assertIn("for layer_cache in cache:", source)
@@ -83,14 +87,12 @@ class TestMemoryWorkerLogic(unittest.TestCase):
     def test_field_names_in_output(self):
         """Verify that the worker emits the expected JSON schema keys."""
         # Build a synthetic result dict matching what the worker should produce.
+        # P1-33: Whole-run peak measurement replaces per-stage peaks
         expected_keys = {
             "context_length",
             "mode",
-            "baseline_peak_bytes",
-            "model_loaded_peak_bytes",
-            "prefill_peak_bytes",
-            "decode_peak_bytes",
-            "total_peak_bytes",
+            "whole_run_peak_bytes",  # Primary peak measurement (whole run)
+            "total_peak_bytes",  # Backward compatibility alias
             "dense_kv_bytes",
             "logical_cache_bytes",
             "allocated_cache_bytes",
@@ -98,6 +100,10 @@ class TestMemoryWorkerLogic(unittest.TestCase):
             "retained_dense_k_history",
             "retained_dense_v_history",
             "fallback_count",
+            # P1-32: Canonical fixture provenance
+            "fixture_id",
+            "fixture_hash",
+            "token_fixtures_path",
         }
         self.assertTrue(
             len(expected_keys) > 0,
@@ -110,34 +116,37 @@ class TestMemoryWorkerLogic(unittest.TestCase):
         # by inspecting the source code for the correct measurement sequence
         source = (PROJECT_ROOT / "benchmarks" / "full_model_memory_worker.py").read_text()
         
-        # Verify baseline is measured before model load
-        baseline_idx = source.find("baseline_peak_bytes = int(mx.get_peak_memory())")
+        # P1-33: Whole-run peak semantics
+        # Verify single reset at start (whole-run measurement)
+        reset_idx = source.find("mx.reset_peak_memory()")
         model_load_idx = source.find("model, tokenizer = load(")
-        self.assertGreater(baseline_idx, -1, "Baseline measurement should exist")
+        self.assertGreater(reset_idx, -1, "Peak memory reset should exist")
         self.assertGreater(model_load_idx, -1, "Model load should exist")
-        self.assertLess(baseline_idx, model_load_idx, 
-                       "Baseline should be measured before model load")
         
-        # Verify model load peak is measured during/after load
-        model_load_peak_idx = source.find("model_loaded_peak_bytes = int(mx.get_peak_memory())")
-        self.assertGreater(model_load_peak_idx, -1, "Model load peak should be measured")
-        self.assertGreater(model_load_peak_idx, model_load_idx,
-                          "Model load peak should be measured after load starts")
+        # Verify we reset BEFORE model load (for true whole-run measurement)
+        self.assertLess(reset_idx, model_load_idx, 
+                       "Reset should happen before model load")
         
-        # Verify prefill peak is measured
-        prefill_peak_idx = source.find("prefill_peak_bytes = int(mx.get_peak_memory())")
-        self.assertGreater(prefill_peak_idx, -1, "Prefill peak should be measured")
+        # Verify we do NOT reset between stages (key for whole-run semantics)
+        # Count resets - should only be 1 at the start
+        reset_count = source.count("mx.reset_peak_memory()")
+        self.assertEqual(reset_count, 1, 
+                        "Should only reset peak memory once at start (whole-run semantics)")
         
-        # Verify decode peak is measured
-        decode_peak_idx = source.find("decode_peak_bytes = int(mx.get_peak_memory())")
-        self.assertGreater(decode_peak_idx, -1, "Decode peak should be measured")
+        # Verify whole-run peak is captured after all stages
+        whole_run_peak_idx = source.find("whole_run_peak_bytes = int(mx.get_peak_memory())")
+        self.assertGreater(whole_run_peak_idx, -1, "Whole-run peak should be measured")
         
-        # Verify total_peak uses max of all stages
-        total_peak_idx = source.find("total_peak_bytes = max(")
-        self.assertGreater(total_peak_idx, -1, "Total peak should use max()")
-        self.assertIn("model_loaded_peak_bytes", source[total_peak_idx:total_peak_idx+200])
-        self.assertIn("prefill_peak_bytes", source[total_peak_idx:total_peak_idx+200])
-        self.assertIn("decode_peak_bytes", source[total_peak_idx:total_peak_idx+200])
+        # Verify the whole-run peak comes after decode stage
+        decode_loop_idx = source.find("for forced_token in forced_continuation:")
+        self.assertGreater(decode_loop_idx, -1, "Decode loop should exist")
+        self.assertGreater(whole_run_peak_idx, decode_loop_idx,
+                          "Whole-run peak should be measured after decode completes")
+        
+        # Verify backward compatibility: total_peak_bytes equals whole_run_peak_bytes
+        total_peak_assignment = source.find('"total_peak_bytes": whole_run_peak_bytes')
+        self.assertGreater(total_peak_assignment, -1, 
+                          "total_peak_bytes should alias whole_run_peak_bytes for backward compat")
 
     def test_dense_history_audit_logic(self):
         """Test that dense history audit checks partial buffers correctly."""
