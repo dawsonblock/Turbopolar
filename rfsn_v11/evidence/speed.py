@@ -43,14 +43,24 @@ class RawSpeedArtifact:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RawSpeedArtifact":
-        """Convert dictionary to canonical schema."""
+        """Convert dictionary to canonical schema.
+
+        Handles three formats:
+        1. Canonical: {"schema_version": 1, "trials": [...]}
+        2. Benchmark: {"trial_results": [...]}
+        3. Unified: {"schema_version": 1, "speed_evidence": {"trial_results": [...]}}
+        """
         schema_version = data.get("schema_version", 1)
-        
-        # Handle both legacy trial_records and new trials format
+
+        # Handle all three formats
         trials_data = data.get("trials", [])
         if not trials_data and "trial_results" in data:
             trials_data = data["trial_results"]
-        
+        if not trials_data and "speed_evidence" in data:
+            speed_evidence = data.get("speed_evidence", {})
+            if isinstance(speed_evidence, dict):
+                trials_data = speed_evidence.get("trial_results", [])
+
         trials = []
         for trial_data in trials_data:
             trial = RawSpeedTrial(
@@ -71,7 +81,7 @@ class RawSpeedArtifact:
                 fallback_calls=trial_data.get("fallbacks", 0),
             )
             trials.append(trial)
-        
+
         return cls(schema_version=schema_version, trials=tuple(trials))
 
 

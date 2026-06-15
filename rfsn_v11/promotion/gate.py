@@ -8,6 +8,7 @@ import json
 import numpy as np
 from typing import List, Dict, Any, Optional
 
+from rfsn_v11.evidence.speed import RawSpeedArtifact, validate_speed_trials
 from rfsn_v11.evidence.trace_validation import (
     EvidenceValidationError,
     TraceArtifactError,
@@ -841,92 +842,19 @@ class PromotionGate:
                     sr.raw_timing_hash,
                     artifact_name="Speed raw timing artifact",
                 )
-                # P1-25: Parse speed trials and recompute ratios
+                # P1-25: Parse speed trials using canonical schema validator
                 raw_timing = json.loads(content)
                 if not isinstance(raw_timing, dict):
                     reasons.append("Speed raw timing must be a JSON object")
                 else:
-                    # P1-26: Require five trials and 128 latency values per context
-                    # Handle unified schema (speed_evidence.trial_results), benchmark format (trial_results), and legacy format (trials)
-                    trial_results = None
-                    if "speed_evidence" in raw_timing:
-                        # Unified schema format
-                        speed_evidence = raw_timing.get("speed_evidence", {})
-                        trial_results = speed_evidence.get("trial_results", [])
-                    elif "trial_results" in raw_timing:
-                        # Benchmark format from run_speed_matrix.py
-                        trial_results = raw_timing.get("trial_results", [])
-                    
-                    if trial_results is not None:
-                        if not isinstance(trial_results, list):
-                            reasons.append("Speed trial_results must be a list")
-                        else:
-                            # Group by context and mode
-                            context_mode_counts: Dict[int, Dict[str, int]] = {}
-                            for trial in trial_results:
-                                if not isinstance(trial, dict):
-                                    continue
-                                context = trial.get("context_length")
-                                mode = trial.get("mode")
-                                if context is None or mode is None:
-                                    continue
-                                
-                                if context not in context_mode_counts:
-                                    context_mode_counts[context] = {"dense": 0, "turbo": 0}
-                                context_mode_counts[context][mode] += 1
-                            
-                            # Validate trial counts
-                            for context in self.REQUIRED_CONTEXTS:
-                                if context not in context_mode_counts:
-                                    reasons.append(f"Speed raw timing missing context {context}")
-                                    continue
-                                
-                                dense_count = context_mode_counts[context].get("dense", 0)
-                                turbo_count = context_mode_counts[context].get("turbo", 0)
-                                
-                                if dense_count < self.MIN_TRIALS_PER_CONTEXT:
-                                    reasons.append(
-                                        f"Context {context}: has {dense_count} dense trials "
-                                        f"< required {self.MIN_TRIALS_PER_CONTEXT}"
-                                    )
-                                if turbo_count < self.MIN_TRIALS_PER_CONTEXT:
-                                    reasons.append(
-                                        f"Context {context}: has {turbo_count} turbo trials "
-                                        f"< required {self.MIN_TRIALS_PER_CONTEXT}"
-                                    )
-                                
-                                # Validate latency counts
-                                for trial in trial_results:
-                                    if trial.get("context_length") == context:
-                                        latencies = trial.get("per_token_ms", [])
-                                        if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
-                                            reasons.append(
-                                                f"Context {context} trial: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
-                                                f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
-                                            )
-                    else:
-                        # Legacy format
-                        trials = raw_timing.get("trials", {})
-                        for context in self.REQUIRED_CONTEXTS:
-                            if context not in trials:
-                                reasons.append(f"Speed raw timing missing context {context}")
-                                continue
-                            context_trials = trials[context]
-                            if not isinstance(context_trials, list) or len(context_trials) < self.MIN_TRIALS_PER_CONTEXT:
-                                reasons.append(
-                                    f"Context {context}: has {len(context_trials) if isinstance(context_trials, list) else 0} trials "
-                                    f"< required {self.MIN_TRIALS_PER_CONTEXT}"
-                                )
-                            for trial_idx, trial in enumerate(context_trials):
-                                if not isinstance(trial, dict):
-                                    reasons.append(f"Context {context} trial {trial_idx}: not a dict")
-                                    continue
-                                latencies = trial.get("latencies", [])
-                                if not isinstance(latencies, list) or len(latencies) < self.REQUIRED_FORCED_DECODE_TOKENS:
-                                    reasons.append(
-                                        f"Context {context} trial {trial_idx}: has {len(latencies) if isinstance(latencies, list) else 0} latencies "
-                                        f"< required {self.REQUIRED_FORCED_DECODE_TOKENS}"
-                                    )
+                    # Use canonical RawSpeedArtifact validator for unified validation
+                    try:
+                        artifact = RawSpeedArtifact.from_dict(raw_timing)
+                        validation_errors = validate_speed_trials(artifact)
+                        for err in validation_errors:
+                            reasons.append(f"Speed validation: {err}")
+                    except (ValueError, TypeError, KeyError) as exc:
+                        reasons.append(f"Speed canonical validation failed: {exc}")
                     
                     # P1-25: Recompute speed ratios from raw timing
                     recomputed_speed = _recompute_speed_ratios(raw_timing)
