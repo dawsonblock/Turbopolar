@@ -5,8 +5,14 @@ and passing; missing evidence results in INCOMPLETE/FAILED.
 """
 
 import json
+import math
 import numpy as np
 from typing import List, Dict, Any, Optional
+
+
+def _reject_json_nonfinite(s: str) -> None:
+    """Reject NaN/Infinity constants during JSON parsing."""
+    raise ValueError(f"JSON non-finite constant rejected: {s}")
 
 from rfsn_v11.evidence.platform_validation import (
     validate_apple_silicon_platform,
@@ -117,18 +123,26 @@ def _recompute_teacher_forced_summary(
         for pos in positions:
             cos = pos.get("logit_cosine")
             if cos is not None:
+                if not isinstance(cos, (int, float)) or not math.isfinite(cos):
+                    return None
                 cosines.append(cos)
 
             top5 = pos.get("top5_overlap")
             if top5 is not None:
+                if not isinstance(top5, (int, float)) or not math.isfinite(top5):
+                    return None
                 top5_overlaps.append(top5)
 
             top10 = pos.get("top10_overlap")
             if top10 is not None:
+                if not isinstance(top10, (int, float)) or not math.isfinite(top10):
+                    return None
                 top10_overlaps.append(top10)
 
             argmax = pos.get("argmax_agreement")
             if argmax is not None:
+                if isinstance(argmax, (int, float)) and not math.isfinite(argmax):
+                    return None
                 argmax_agreements.append(1 if argmax else 0)
 
             # Note: PositionMetrics does not contain perplexity_delta,
@@ -228,11 +242,17 @@ def _recompute_speed_ratios(
                 # mean(turbo throughput) / mean(dense throughput)
                 dense_throughputs = [
                     t.get("throughput_tps", 0.0)
-                    for t in dense_trials if t.get("throughput_tps", 0.0) > 0
+                    for t in dense_trials
+                    if isinstance(t.get("throughput_tps"), (int, float))
+                    and math.isfinite(t.get("throughput_tps", 0.0))
+                    and t.get("throughput_tps", 0.0) > 0
                 ]
                 turbo_throughputs = [
                     t.get("throughput_tps", 0.0)
-                    for t in turbo_trials if t.get("throughput_tps", 0.0) > 0
+                    for t in turbo_trials
+                    if isinstance(t.get("throughput_tps"), (int, float))
+                    and math.isfinite(t.get("throughput_tps", 0.0))
+                    and t.get("throughput_tps", 0.0) > 0
                 ]
 
                 if not dense_throughputs or not turbo_throughputs:
@@ -303,11 +323,17 @@ def _recompute_speed_ratios(
                 # mean(turbo throughput) / mean(dense throughput)
                 dense_throughputs = [
                     t.get("throughput_tps", 0.0)
-                    for t in dense_trials if t.get("throughput_tps", 0.0) > 0
+                    for t in dense_trials
+                    if isinstance(t.get("throughput_tps"), (int, float))
+                    and math.isfinite(t.get("throughput_tps", 0.0))
+                    and t.get("throughput_tps", 0.0) > 0
                 ]
                 turbo_throughputs = [
                     t.get("throughput_tps", 0.0)
-                    for t in turbo_trials if t.get("throughput_tps", 0.0) > 0
+                    for t in turbo_trials
+                    if isinstance(t.get("throughput_tps"), (int, float))
+                    and math.isfinite(t.get("throughput_tps", 0.0))
+                    and t.get("throughput_tps", 0.0) > 0
                 ]
 
                 if not dense_throughputs or not turbo_throughputs:
@@ -440,7 +466,8 @@ def _recompute_memory_ratios(
                 return None
 
             if any(
-                v < 0 for v in (
+                not isinstance(v, int) or not math.isfinite(v) or v < 0
+                for v in (
                     dense_kv, turbo_logical, turbo_allocated,
                     dense_peak, turbo_peak,
                 )
@@ -700,7 +727,7 @@ class PromotionGate:
                     artifact_name="Teacher-forced raw metrics artifact",
                 )
                 # P1-24: Parse position records and recompute summaries
-                raw_metrics = json.loads(content)
+                raw_metrics = json.loads(content, parse_constant=_reject_json_nonfinite)
                 if not isinstance(raw_metrics, dict):
                     reasons.append(
                         "Teacher-forced raw metrics must be a JSON object")
@@ -887,7 +914,7 @@ class PromotionGate:
                         fd.trace_artifact_hash,
                         artifact_name="Fused decode trace artifact",
                     )
-                    raw_traces = json.loads(content)
+                    raw_traces = json.loads(content, parse_constant=_reject_json_nonfinite)
                     parsed_traces = parse_trace_artifact(raw_traces)
 
                     # Validate trace topology - require model_layer_count to be
@@ -1125,7 +1152,7 @@ class PromotionGate:
                     artifact_name="Speed raw timing artifact",
                 )
                 # P1-25: Parse speed trials using canonical schema validator
-                raw_timing = json.loads(content)
+                raw_timing = json.loads(content, parse_constant=_reject_json_nonfinite)
                 if not isinstance(raw_timing, dict):
                     reasons.append("Speed raw timing must be a JSON object")
                 else:
@@ -1254,7 +1281,7 @@ class PromotionGate:
                     mr.raw_memory_hash,
                     artifact_name="Memory raw matrix artifact",
                 )
-                raw_memory = json.loads(content)
+                raw_memory = json.loads(content, parse_constant=_reject_json_nonfinite)
                 if not isinstance(raw_memory, dict):
                     reasons.append(
                         "Memory raw matrix must be a JSON object"

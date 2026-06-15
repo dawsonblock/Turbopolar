@@ -175,21 +175,31 @@ def _parse_junit_xml(path: Path) -> Dict[str, Any]:
 
         if has_metal_marker:
             is_metal_test = True
-            # Use module prefix from classname
-            parts = cls.split(".")
-            module_prefix = ".".join(parts[:-1]) if len(parts) >= 2 else cls
-        else:
-            # Fallback to classname inference (legacy method)
-            parts = cls.split(".")
-            if len(parts) >= 2:
-                module_prefix = ".".join(parts[:-1])
-            else:
+            # Use module prefix from classname.
+            # For module-level tests, the classname IS the module name and
+            # must not be stripped.
+            if cls in REQUIRED_METAL_TESTS:
                 module_prefix = cls
-            if any(
-                module_prefix.startswith(req)
-                for req in REQUIRED_METAL_TESTS
-            ):
+            else:
+                parts = cls.split(".")
+                module_prefix = ".".join(parts[:-1]) if len(parts) >= 2 else cls
+        else:
+            # Fallback to classname inference (legacy method).
+            # For module-level tests, the classname IS the module name.
+            if cls in REQUIRED_METAL_TESTS:
+                module_prefix = cls
                 is_metal_test = True
+            else:
+                parts = cls.split(".")
+                if len(parts) >= 2:
+                    module_prefix = ".".join(parts[:-1])
+                else:
+                    module_prefix = cls
+                if any(
+                    module_prefix.startswith(req)
+                    for req in REQUIRED_METAL_TESTS
+                ):
+                    is_metal_test = True
 
         if is_metal_test and module_prefix:
             metal_present.add(module_prefix)

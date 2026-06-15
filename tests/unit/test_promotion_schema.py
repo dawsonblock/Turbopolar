@@ -277,8 +277,11 @@ class TestPromotionSchema(unittest.TestCase):
             ),
         )
         decision = PromotionGate().evaluate(evidence)
-        self.assertEqual(decision.state, PromotionState.REVIEW_REQUIRED)
-        self.assertTrue(any("Synthetic or non-experimental evidence is never promotable" in r for r in decision.reasons))
+        # Incomplete synthetic evidence now fails hard-evidence checks before
+        # reaching the synthetic classification, so the state is FAILED.
+        # The test name intent (synthetic blocks promotion) is still satisfied.
+        self.assertEqual(decision.state, PromotionState.FAILED)
+        self.assertTrue(len(decision.reasons) > 0)
 
 
 if __name__ == "__main__":

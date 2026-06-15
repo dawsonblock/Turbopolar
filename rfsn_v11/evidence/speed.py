@@ -1,5 +1,6 @@
 """Typed speed benchmark evidence schema for TurboPolar promotion."""
 
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -174,19 +175,34 @@ def validate_speed_trials(artifact: RawSpeedArtifact) -> List[str]:
                     f"required {REQUIRED_TOKEN_LATENCIES}"
                 )
             
-            # Check for valid timing values
-            if trial.prefill_seconds <= 0:
-                errors.append(f"Context {context} turbo trial: prefill_seconds <= 0")
-            if trial.first_token_ms <= 0:
-                errors.append(f"Context {context} turbo trial: first_token_ms <= 0")
-            if trial.throughput_tps <= 0:
-                errors.append(f"Context {context} turbo trial: throughput_tps <= 0")
-            
-            # Check for NaN or infinity
-            if any(not isinstance(x, (int, float)) or x != x for x in trial.token_latencies_ms):
-                errors.append(f"Context {context} turbo trial: contains NaN in token_latencies_ms")
-            if any(abs(x) == float('inf') for x in trial.token_latencies_ms):
-                errors.append(f"Context {context} turbo trial: contains infinity in token_latencies_ms")
+            # Check for valid timing values (must be finite and positive)
+            for field_name, field_value in (
+                ("prefill_seconds", trial.prefill_seconds),
+                ("first_token_ms", trial.first_token_ms),
+                ("throughput_tps", trial.throughput_tps),
+            ):
+                if (
+                    not isinstance(field_value, (int, float))
+                    or not math.isfinite(field_value)
+                    or field_value <= 0
+                ):
+                    errors.append(
+                        f"Context {context} turbo trial: {field_name} must be a "
+                        f"finite positive number, got {field_value!r}"
+                    )
+
+            # Check for NaN or infinity in latencies
+            for latency in trial.token_latencies_ms:
+                if (
+                    not isinstance(latency, (int, float))
+                    or not math.isfinite(latency)
+                    or latency <= 0
+                ):
+                    errors.append(
+                        f"Context {context} turbo trial: token_latencies_ms "
+                        f"must contain finite positive numbers, got {latency!r}"
+                    )
+                    break
     
     return errors
 

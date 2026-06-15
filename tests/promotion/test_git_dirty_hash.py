@@ -114,6 +114,16 @@ class TestGitDirtyHash(unittest.TestCase):
         bad.write_text("data")
         bad.chmod(0o000)
         try:
+            # Skip if running as a privileged user where chmod 000 does not
+            # prevent reading (e.g., root on Linux).
+            try:
+                bad.read_text()
+                raise unittest.SkipTest(
+                    "Running with elevated privileges; chmod 000 does not "
+                    "prevent file reads in this environment."
+                )
+            except OSError:
+                pass
             with self.assertRaises(RuntimeError):
                 _compute_git_dirty_hash()
         finally:

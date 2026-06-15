@@ -26,7 +26,12 @@ def main():
     )
     args = parser.parse_args()
 
-    data = json.loads(args.evidence.read_text())
+    data = json.loads(
+        args.evidence.read_text(),
+        parse_constant=lambda s: (_ for _ in ()).throw(
+            ValueError(f"JSON non-finite constant rejected: {s}")
+        ),
+    )
     evidence = PromotionEvidence.from_dict(data)
     decision = PromotionGate().evaluate(evidence)
 
