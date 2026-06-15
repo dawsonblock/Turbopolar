@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
@@ -26,9 +26,14 @@ def _measure_mode(
     seed: int,
     worker: Path,
     forced_decode_count: int = 128,
+    token_fixtures_path: Optional[Path] = None,
+    fixture_category: Optional[str] = None,
+    strict: bool = False,
 ) -> Dict[str, Any]:
     """Run full_model_memory_worker.py for one mode and length."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False
+    ) as tmp:
         output_path = tmp.name
 
     cmd = [
@@ -42,23 +47,37 @@ def _measure_mode(
         "--seed", str(seed),
         "--output", output_path,
     ]
+    # P0: Pass fixture options to worker if provided
+    if token_fixtures_path:
+        cmd.extend(["--token-fixtures", str(token_fixtures_path)])
+    if fixture_category:
+        cmd.extend(["--fixture-category", fixture_category])
+    if strict:
+        cmd.append("--strict")
+
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=300,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"memory_worker failed for length={length} mode={mode}: {result.stderr}"
+            f"memory_worker failed for length={length} mode={mode}: "
+            f"{result.stderr}"
         )
-    with open(output_path, "r") as f:
+    with open(output_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TurboPolar memory matrix benchmark")
-    parser.add_argument("--model", required=True, help="MLX model path or HF identifier")
+    parser = argparse.ArgumentParser(
+        description="TurboPolar memory matrix benchmark"
+    )
+    parser.add_argument(
+        "--model", required=True, help="MLX model path or HF identifier"
+    )
     parser.add_argument(
         "--lengths",
         type=int,
@@ -84,22 +103,65 @@ def main():
         default=128,
         help="Forced decode positions per measurement",
     )
+    # P0: Add fixture provenance options
+    parser.add_argument(
+        "--token-fixtures",
+        type=Path,
+        default=None,
+        help=(
+            "Path to canonical token fixtures JSONL file "
+            "for reproducible workloads"
+        ),
+    )
+    parser.add_argument(
+        "--fixture-category",
+        type=str,
+        default=None,
+        help="Category of fixture to use (e.g., short, medium, long)",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help=(
+            "Fail if fixtures are expected but not found "
+            "(promotion mode)"
+        ),
+    )
     args = parser.parse_args()
 
     worker = Path(__file__).parent / "full_model_memory_worker.py"
     records: List[Dict[str, Any]] = []
 
     print(f"Benchmarking lengths: {args.lengths}")
+    # P0: Collect fixture provenance from worker results (only need once)
+    first_fixture_id = None
+    first_fixture_hash = None
+    first_token_fixtures_path = None
+
     for length in sorted(args.lengths):
         t0 = time.perf_counter()
         dense = _measure_mode(
-            args.model, length, "dense", args.execution_mode, args.seed, worker,
+            args.model, length, "dense", args.execution_mode,
+            args.seed, worker,
             forced_decode_count=args.forced_decode_count,
+            token_fixtures_path=args.token_fixtures,
+            fixture_category=args.fixture_category,
+            strict=args.strict,
         )
         turbo = _measure_mode(
-            args.model, length, "turbopolar_strict", args.execution_mode, args.seed, worker,
+            args.model, length, "turbopolar_strict",
+            args.execution_mode, args.seed, worker,
             forced_decode_count=args.forced_decode_count,
+            token_fixtures_path=args.token_fixtures,
+            fixture_category=args.fixture_category,
+            strict=args.strict,
         )
+        # P0: Collect fixture provenance from first successful turbo run
+        if first_fixture_id is None and turbo.get("fixture_id"):
+            first_fixture_id = turbo.get("fixture_id")
+            first_fixture_hash = turbo.get("fixture_hash")
+            first_token_fixtures_path = turbo.get("token_fixtures_path")
 
         # Use separate numerators and denominators so each ratio compares
         # compatible quantities.
@@ -117,7 +179,8 @@ def main():
             dense_kv_bytes / turbo_allocated if turbo_allocated > 0 else 0.0
         )
         peak_device_memory_ratio = (
-            dense_total_peak / turbo_total_peak if turbo_total_peak > 0 else 0.0
+            dense_total_peak / turbo_total_peak
+            if turbo_total_peak > 0 else 0.0
         )
 
         record = {
@@ -135,11 +198,15 @@ def main():
                 turbo.get("retained_dense_v_history", False)
             ),
             "fallback_count": turbo.get("fallback_count", 0),
+            # P0: Include per-record fixture provenance
+            "fixture_id": turbo.get("fixture_id"),
+            "fixture_hash": turbo.get("fixture_hash"),
         }
         records.append(record)
         elapsed = time.perf_counter() - t0
         print(
-            f"  length={length:5d} logical_ratio={record['logical_kv_ratio']:.3f}x "
+            f"  length={length:5d} "
+            f"logical_ratio={record['logical_kv_ratio']:.3f}x "
             f"allocated_ratio={record['persistent_storage_ratio']:.3f}x "
             f"peak_ratio={record['peak_device_memory_ratio']:.3f}x "
             f"({elapsed:.2f}s)"
@@ -149,11 +216,16 @@ def main():
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "model": args.model,
         "records": records,
+        # P0: Include fixture provenance at report level
+        "fixture_id": first_fixture_id,
+        "fixture_hash": first_fixture_hash,
+        "token_fixtures_path": first_token_fixtures_path,
+        "fixture_category": args.fixture_category,
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     json_path = args.output_dir / "memory_matrix.json"
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     print(f"Report written to {json_path}")
 

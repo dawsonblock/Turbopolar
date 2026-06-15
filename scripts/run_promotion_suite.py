@@ -46,6 +46,10 @@ from rfsn_v11.promotion import (  # noqa: E402
 from rfsn_v11.promotion.provenance import (  # noqa: E402
     capture_provenance,
     _hash_jsonable,
+    compute_speed_workload_hash,
+    compute_memory_workload_hash,
+    compute_fused_decode_workload_hash,
+    compute_cartesian_workload_hash,
 )
 
 
@@ -907,6 +911,32 @@ def _build_provenance(
     if not tokenizer_rev:
         tokenizer_rev = ""  # Empty string triggers gate failure
 
+    # P0: Compute workload hashes for each benchmark family
+    context_lengths = [512, 2048, 4096, 8192, 16384]
+    token_fixtures_hash = _hash_jsonable(str(token_fixtures)) if token_fixtures else ""
+
+    speed_workload_hash = compute_speed_workload_hash(
+        context_lengths=context_lengths,
+        trial_count=5,
+        decode_token_count=128,
+        token_fixtures_hash=token_fixtures_hash,
+    )
+    memory_workload_hash = compute_memory_workload_hash(
+        context_lengths=context_lengths,
+        forced_decode_count=128,
+        token_fixtures_hash=token_fixtures_hash,
+    )
+    fused_decode_workload_hash = compute_fused_decode_workload_hash(
+        context_lengths=context_lengths,
+        continuation_token_count=128,
+        token_fixtures_hash=token_fixtures_hash,
+    )
+    cartesian_workload_hash = compute_cartesian_workload_hash(
+        context_lengths=context_lengths,
+        forced_decode_count=128,
+        token_fixtures_hash=token_fixtures_hash,
+    )
+
     return capture_provenance(
         model_repo_id=model,
         model_revision=model_rev,
@@ -916,10 +946,15 @@ def _build_provenance(
         benchmark_command=" ".join(sys.argv),
         warmup_count=2,
         trial_count=5,
-        context_lengths=[512, 2048, 4096, 8192, 16384],
+        context_lengths=context_lengths,
         decode_token_count=128,
         qjl_enabled=False,
         token_fixtures_path=token_fixtures,
+        # P0: Pass computed workload hashes
+        speed_workload_hash=speed_workload_hash,
+        memory_workload_hash=memory_workload_hash,
+        fused_decode_workload_hash=fused_decode_workload_hash,
+        cartesian_workload_hash=cartesian_workload_hash,
     )
 
 
