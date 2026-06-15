@@ -122,11 +122,6 @@ class TurboPolarKVCacheRuntime:
         self.partial_v_buffer: Optional[mx.array] = None
         self.partial_length = 0
 
-        # HYBRID APPROACH: Dense storage for initial tokens before compression threshold
-        self.dense_k_storage: Optional[mx.array] = None
-        self.dense_v_storage: Optional[mx.array] = None
-        self.in_dense_mode = True  # Start in dense mode for speed
-
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks: list[QJLPayload] = []
@@ -255,31 +250,15 @@ class TurboPolarKVCacheRuntime:
 
         B, H, T_new, D = k_new.shape
         L = self.config.block_size
-        threshold = self.config.hybrid_threshold
 
-        # HYBRID APPROACH: 
-        # - Use prefill path for batch appends (T_new > 1) - always compress
-        # - Use dense mode for single token appends (T_new == 1) below threshold
-        # - Switch to compressed mode for single token appends at/above threshold
-        is_decode = T_new == 1
-        
-        if is_decode and self.in_dense_mode and threshold > 0:
-            if self.actual_seq_len >= threshold:
-                # Switching to compressed mode - compress dense storage
-                self._switch_to_compressed_mode()
-            else:
-                # Stay in dense mode - append to dense storage
-                self._append_dense(k_new, v_new)
-                return
-
-        # COMPRESSED MODE or PREFILL: Use normal compression logic
-        if is_decode:
-            # Single token in compressed mode
+        # COMPRESSED MODE: Use normal compression logic for both single token and prefill
+        if T_new == 1:
+            # Single token decode
             t = 0
             while t < T_new:
                 space_in_buffer = L - self.partial_length
                 tokens_to_process = min(T_new - t, space_in_buffer)
-                
+
                 if tokens_to_process > 0:
                     end_idx = self.partial_length + tokens_to_process
                     self.partial_k_buffer[:, :, self.partial_length:end_idx, :] = k_new[:, :, t:t+tokens_to_process, :]
@@ -287,48 +266,12 @@ class TurboPolarKVCacheRuntime:
                     self.partial_length += tokens_to_process
                     self.actual_seq_len += tokens_to_process
                     t += tokens_to_process
-                
+
                 if self.partial_length >= L:
                     self._flush_tail_block()
         else:
             # Prefill - use batch compression
             self._append_prefill(k_new, v_new)
-
-    def _append_dense(self, k_new: mx.array, v_new: mx.array):
-        """Append tokens in dense mode without compression."""
-        B, H, T_new, D = k_new.shape
-        threshold = self.config.hybrid_threshold
-        
-        if self.dense_k_storage is None:
-            # Initialize dense storage with full threshold size (pre-allocation)
-            # This is faster than growing dynamically
-            self.dense_k_storage = mx.zeros((B, H, threshold, D), dtype=k_new.dtype)
-            self.dense_v_storage = mx.zeros((B, H, threshold, D), dtype=v_new.dtype)
-        
-        # Append to dense storage
-        start = self.actual_seq_len
-        end = start + T_new
-        self.dense_k_storage[:, :, start:end, :] = k_new
-        self.dense_v_storage[:, :, start:end, :] = v_new
-        self.actual_seq_len += T_new
-
-    def _switch_to_compressed_mode(self):
-        """Compress dense storage and switch to compressed mode."""
-        if self.dense_k_storage is None:
-            self.in_dense_mode = False
-            return
-        
-        # Compress all dense tokens
-        dense_k = self.dense_k_storage[:, :, :self.actual_seq_len, :]
-        dense_v = self.dense_v_storage[:, :, :self.actual_seq_len, :]
-        
-        # Use the prefill append path for batch compression
-        self._append_prefill(dense_k, dense_v)
-        
-        # Clear dense storage and mark as compressed mode
-        self.dense_k_storage = None
-        self.dense_v_storage = None
-        self.in_dense_mode = False
 
     def _append_prefill(self, k_new: mx.array, v_new: mx.array):
         """Append prefill tokens with batch compression (original logic)."""
@@ -529,17 +472,6 @@ class TurboPolarKVCacheRuntime:
 
     def attention_view(self) -> TurboPolarAttentionView:
         """Return a page-view attention payload without materializing full history."""
-        # HYBRID APPROACH: If in dense mode, return dense storage as partial
-        if self.in_dense_mode and self.dense_k_storage is not None:
-            return TurboPolarAttentionView(
-                pages=tuple(),  # No compressed pages in dense mode
-                partial_k=self.dense_k_storage[:, :, :self.actual_seq_len, :],
-                partial_v=self.dense_v_storage[:, :, :self.actual_seq_len, :],
-                partial_length=self.actual_seq_len,
-                total_tokens=self.actual_seq_len,
-            )
-        
-        # COMPRESSED MODE: Return compressed pages
         pages: list[CompressedPageView] = []
         k_paged = self.k_storage._paged
         v_paged = self.v_storage._paged

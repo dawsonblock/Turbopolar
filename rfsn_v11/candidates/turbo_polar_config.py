@@ -90,9 +90,6 @@ class TurboPolarConfig:
     execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
     trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE
     metadata: Dict[str, Any] = field(default_factory=dict)
-    # HYBRID APPROACH: DISABLED BY DEFAULT DUE TO CORRECTNESS ISSUES
-    # Must be fixed before re-enabling: see docs/HYBRID_CORRECTNESS_ISSUES.md
-    hybrid_threshold: int = 0  # 0 = always use compressed mode (safe default)
 
     def __post_init__(self):
         if self.num_q_heads <= 0:

@@ -207,47 +207,17 @@ class TurboPolarFastCache:
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
-        # HYBRID APPROACH: If no compressed pages (dense mode), use MLX's optimized attention
-        if not view.pages and view.partial_k is not None:
-            # Use MLX's optimized scaled_dot_product_attention for dense mode
-            # OPTIMIZATION: Avoid unnecessary reshapes by keeping q in proper format
-            # q_squeezed: [B, H_q, D] -> need [B, H_q, 1, D] for SDPA
-            # But we can pass it directly if we adjust the call
-            
-            # Reshape q to [B, H_q, 1, D]
-            q_reshaped = q_squeezed.reshape(q_squeezed.shape[0], q_squeezed.shape[1], 1, q_squeezed.shape[2])
-            
-            output = mx.fast.scaled_dot_product_attention(
-                q_reshaped,
-                view.partial_k,
-                view.partial_v,
-                scale=scale,
-                mask=None,
-            )
-            # Squeeze back to [B, H_q, D]
-            output = output.reshape(output.shape[0], output.shape[1], output.shape[3])
-            
-            trace = {
-                "kernel_name": "mlx_fast_sdp",
-                "metal_used": True,
-                "fallback_used": False,
-                "turbo_mode": "hybrid_dense",
-                "actual_seq_len": view.total_tokens,
-                "hybrid_threshold": self.config.hybrid_threshold,
-            }
-        else:
-            # Page-based online-softmax attention without full-cache materialization.
-            output, trace = self.bridge.execute_paged_online_attention(
-                q_squeezed,
-                view.pages,
-                view.partial_k,
-                view.partial_v,
-                cfg,
-                view.total_tokens,
-                mode=cfg.execution_mode,
-                trace_validation_mode=cfg.trace_validation_mode,
-            )
-            trace["turbo_mode"] = "hybrid_compressed"
+        # Page-based online-softmax attention without full-cache materialization.
+        output, trace = self.bridge.execute_paged_online_attention(
+            q_squeezed,
+            view.pages,
+            view.partial_k,
+            view.partial_v,
+            cfg,
+            view.total_tokens,
+            mode=cfg.execution_mode,
+            trace_validation_mode=cfg.trace_validation_mode,
+        )
 
         # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs internally.
         # In ASYNC_PERFORMANCE mode evaluation is deferred to the caller.
