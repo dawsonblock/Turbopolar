@@ -2,7 +2,7 @@
 
 **Branch:** `repair/r5-7-runtime-and-evidence`  
 **Version:** `0.3.0.dev0`  
-**Last updated:** 2026-06-13 (ALL PHASES COMPLETE)
+**Last updated:** 2026-06-15 (REPAIR R5-7 REVISION 6 IN PROGRESS)
 
 ## Status summary
 
@@ -15,7 +15,9 @@ runtime passes the mode into every attention call, and the forced-decode
 benchmark can run in strict mode. The promotion pipeline expects strict Metal
 evidence fields.
 
-**REPAIR PLAN COMPLETE:** All 14 phases of the repair plan have been completed.
+**REPAIR PLAN IN PROGRESS:** Revision 6 addresses memory telemetry, dirty-tree
+hashing, raw memory artifacts, and workload hashes. Known orchestration and
+governance issues are being repaired.
 
 ### Phases 0-11: Infrastructure and Validation (COMPLETE)
 
@@ -74,8 +76,10 @@ See `docs/PHASES_12_14_STATUS.md` for detailed status.
 - 11 tests for platform validation
 
 **Test Coverage:**
-- **66 new tests added across phases 5-11**
-- All tests passing
+- **66+ new tests added across phases 5-11**
+- Portable tests pass in non-MLX environments; MLX-dependent tests require
+  native Apple Silicon hardware.
+- Telemetry dataclasses are now importable without MLX for CI portability.
 - Comprehensive coverage of all validation logic
 
 ### Next Steps

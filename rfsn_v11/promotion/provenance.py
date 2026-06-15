@@ -80,14 +80,24 @@ def _compute_git_dirty_hash() -> str:
     repo_root = Path(_run(["git", "rev-parse", "--show-toplevel"]) or ".")
 
     def _hash_untracked_entry(entry_path: str, h: Any) -> None:
-        """Recursively hash an untracked file or directory."""
+        """Recursively hash an untracked file or directory.
+
+        Uses canonical framing to avoid ambiguous concatenations:
+        relative path + NUL + content length + NUL + content
+        """
         full_path = repo_root / entry_path
 
+        def _update_file(path_obj: Path, rel_path: str) -> None:
+            data = path_obj.read_bytes()
+            h.update(rel_path.encode())
+            h.update(b"\x00")
+            h.update(str(len(data)).encode())
+            h.update(b"\x00")
+            h.update(data)
+
         if full_path.is_file():
-            # Include normalized relative path and content in hash
-            h.update(f"{entry_path}:".encode())
             try:
-                h.update(full_path.read_bytes())
+                _update_file(full_path, entry_path)
             except Exception as e:
                 # P0: Reject unreadable source files instead of silent fallback
                 raise RuntimeError(
@@ -104,9 +114,8 @@ def _compute_git_dirty_hash() -> str:
                             rel_path = item.relative_to(repo_root).as_posix()
                         except ValueError:
                             rel_path = str(item)
-                        h.update(f"{rel_path}:".encode())
                         try:
-                            h.update(item.read_bytes())
+                            _update_file(item, rel_path)
                         except Exception as e:
                             raise RuntimeError(
                                 "Cannot read untracked source file"
@@ -266,6 +275,7 @@ def capture_provenance(
     memory_workload_hash: str = "",
     fused_decode_workload_hash: str = "",
     cartesian_workload_hash: str = "",
+    teacher_forced_workload_hash: str = "",
 ) -> BenchmarkProvenance:
     """Build a BenchmarkProvenance record from the current environment."""
     git_commit = _run(["git", "rev-parse", "HEAD"])
@@ -394,4 +404,5 @@ def capture_provenance(
         memory_workload_hash=memory_workload_hash,
         fused_decode_workload_hash=fused_decode_workload_hash,
         cartesian_workload_hash=cartesian_workload_hash,
+        teacher_forced_workload_hash=teacher_forced_workload_hash,
     )

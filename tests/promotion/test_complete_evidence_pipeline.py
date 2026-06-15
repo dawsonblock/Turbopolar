@@ -236,15 +236,28 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         """Create a valid memory matrix artifact file."""
         records = []
         for ctx in PromotionGate.REQUIRED_CONTEXTS:
+            # P0: Include raw byte counts for independent ratio recomputation
+            dense_kv = 1000 * ctx
+            turbo_logical = int(dense_kv / 1.90)
+            turbo_allocated = int(dense_kv / 1.80)
+            dense_peak = 2000 * ctx
+            turbo_peak = int(dense_peak / 1.25)
             records.append({
                 "length": ctx,
-                "logical_kv_ratio": 1.90,
-                "persistent_storage_ratio": 1.80,
-                "peak_device_memory_ratio": 1.25,
+                "dense_kv_bytes": dense_kv,
+                "turbo_logical_bytes": turbo_logical,
+                "turbo_allocated_bytes": turbo_allocated,
+                "dense_total_peak_bytes": dense_peak,
+                "turbo_total_peak_bytes": turbo_peak,
+                "logical_kv_ratio": dense_kv / turbo_logical,
+                "persistent_storage_ratio": dense_kv / turbo_allocated,
+                "peak_device_memory_ratio": dense_peak / turbo_peak,
                 "hidden_dense_cache_detected": False,
                 "fallback_count": 0,
                 "fixture_id": f"fixture_{ctx}",
-                "fixture_hash": "f" * 64,
+                "fixture_hash": hashlib.sha256(
+                    f"fixture_{ctx}".encode()
+                ).hexdigest(),
             })
         memory_data = {"records": records}
         path = Path(self.temp_dir) / "memory_matrix.json"
@@ -405,12 +418,18 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
                 kernel_binding_hash="k" * 64,
                 execution_mode="metal_strict",
                 evidence_kind="experimental",
-                token_fixtures_hash="a" * 64,
-                speed_workload_hash="s" * 64,
-                memory_workload_hash="m" * 64,
-                fused_decode_workload_hash="f" * 64,
-                cartesian_workload_hash="c" * 64,
-                teacher_forced_workload_hash="t" * 64,
+                token_fixtures_hash=hashlib.sha256(b"fixtures").hexdigest(),
+                speed_workload_hash=hashlib.sha256(b"speed").hexdigest(),
+                memory_workload_hash=hashlib.sha256(b"memory").hexdigest(),
+                fused_decode_workload_hash=hashlib.sha256(
+                    b"fused"
+                ).hexdigest(),
+                cartesian_workload_hash=hashlib.sha256(
+                    b"cartesian"
+                ).hexdigest(),
+                teacher_forced_workload_hash=hashlib.sha256(
+                    b"teacher"
+                ).hexdigest(),
             ),
         )
 
@@ -464,6 +483,9 @@ class TestCompleteEvidencePipeline(unittest.TestCase):
         """Synthetic evidence should return REVIEW_REQUIRED when valid."""
         evidence = self._create_full_evidence()
         evidence.provenance.evidence_kind = "synthetic_dry_run"
+        # Synthetic dry-run evidence must not carry trace artifacts
+        evidence.fused_decode_report.trace_artifact_path = ""
+        evidence.fused_decode_report.trace_artifact_hash = ""
 
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(

@@ -403,44 +403,110 @@ def _recompute_memory_ratios(
       - contexts_evaluated
       - fallback_calls (total across all contexts)
       - fixture_identities (list of per-context fixture info)
+      - hidden_dense_detected (any record indicates hidden dense cache)
     """
     try:
         records = raw_memory.get("records", [])
         if not records:
             return None
 
-        contexts = [r["length"] for r in records]
-        fallback_calls = sum(r.get("fallback_count", 0) for r in records)
+        contexts = []
+        fallback_calls = 0
+        hidden_dense_detected = False
+        fixture_identities = []
+        long_ratios: Dict[str, List[float]] = {
+            "logical": [], "persistent": [], "peak": []
+        }
 
-        long_records = [r for r in records if r.get("length", 0) >= 8192]
-        if long_records:
-            logical_kv_ratio = min(
-                r["logical_kv_ratio"] for r in long_records
-                if r.get("logical_kv_ratio") is not None
+        for r in records:
+            length = r.get("length")
+            if length is None:
+                continue
+            contexts.append(length)
+
+            # Require raw byte fields for independent recomputation
+            dense_kv = r.get("dense_kv_bytes")
+            turbo_logical = r.get("turbo_logical_bytes")
+            turbo_allocated = r.get("turbo_allocated_bytes")
+            dense_peak = r.get("dense_total_peak_bytes")
+            turbo_peak = r.get("turbo_total_peak_bytes")
+
+            if any(
+                v is None for v in (
+                    dense_kv, turbo_logical, turbo_allocated,
+                    dense_peak, turbo_peak,
+                )
+            ):
+                return None
+
+            if any(
+                v < 0 for v in (
+                    dense_kv, turbo_logical, turbo_allocated,
+                    dense_peak, turbo_peak,
+                )
+            ):
+                return None
+
+            fallback_calls += r.get("fallback_count", 0)
+            if r.get("hidden_dense_cache_detected", False):
+                hidden_dense_detected = True
+
+            # Recompute ratios from byte counts
+            logical_ratio = (
+                dense_kv / turbo_logical if turbo_logical > 0 else 0.0
             )
-            persistent_storage_ratio = min(
-                r["persistent_storage_ratio"] for r in long_records
-                if r.get("persistent_storage_ratio") is not None
+            persistent_ratio = (
+                dense_kv / turbo_allocated if turbo_allocated > 0 else 0.0
             )
-            peak_device_memory_ratio = min(
-                r["peak_device_memory_ratio"] for r in long_records
-                if r.get("peak_device_memory_ratio") is not None
+            peak_ratio = (
+                dense_peak / turbo_peak if turbo_peak > 0 else 0.0
             )
+
+            if length >= 8192:
+                long_ratios["logical"].append(logical_ratio)
+                long_ratios["persistent"].append(persistent_ratio)
+                long_ratios["peak"].append(peak_ratio)
+
+            # Validate fixture identity
+            fixture_id = r.get("fixture_id")
+            fixture_hash = r.get("fixture_hash")
+            if fixture_id:
+                if not fixture_hash or len(fixture_hash) != 64:
+                    return None
+                if not all(
+                    c in "0123456789abcdef" for c in fixture_hash.lower()
+                ):
+                    return None
+                fixture_identities.append({
+                    "context": length,
+                    "fixture_id": fixture_id,
+                    "fixture_hash": fixture_hash,
+                })
+
+        if not contexts:
+            return None
+
+        if long_ratios["logical"]:
+            logical_kv_ratio = min(long_ratios["logical"])
+            persistent_storage_ratio = min(long_ratios["persistent"])
+            peak_device_memory_ratio = min(long_ratios["peak"])
         else:
+            # Fallback to last record if no long contexts
             last = records[-1]
-            logical_kv_ratio = last.get("logical_kv_ratio")
-            persistent_storage_ratio = last.get("persistent_storage_ratio")
-            peak_device_memory_ratio = last.get("peak_device_memory_ratio")
-
-        fixture_identities = [
-            {
-                "context": r.get("length"),
-                "fixture_id": r.get("fixture_id"),
-                "fixture_hash": r.get("fixture_hash"),
-            }
-            for r in records
-            if r.get("fixture_id")
-        ]
+            dense_kv = last.get("dense_kv_bytes", 0)
+            turbo_logical = last.get("turbo_logical_bytes", 1)
+            turbo_allocated = last.get("turbo_allocated_bytes", 1)
+            dense_peak = last.get("dense_total_peak_bytes", 1)
+            turbo_peak = last.get("turbo_total_peak_bytes", 1)
+            logical_kv_ratio = (
+                dense_kv / turbo_logical if turbo_logical > 0 else 0.0
+            )
+            persistent_storage_ratio = (
+                dense_kv / turbo_allocated if turbo_allocated > 0 else 0.0
+            )
+            peak_device_memory_ratio = (
+                dense_peak / turbo_peak if turbo_peak > 0 else 0.0
+            )
 
         return {
             "logical_kv_ratio": logical_kv_ratio,
@@ -449,6 +515,7 @@ def _recompute_memory_ratios(
             "contexts_evaluated": contexts,
             "fallback_calls": fallback_calls,
             "fixture_identities": fixture_identities,
+            "hidden_dense_detected": hidden_dense_detected,
         }
     except (KeyError, TypeError, ValueError):
         return None
@@ -1215,10 +1282,23 @@ class PromotionGate:
                                 f"fallback occurred in strict mode."
                             )
                         # Validate fixture identity per context
-                        if not recomputed["fixture_identities"]:
+                        fixture_contexts = {
+                            f["context"] for f in recomputed["fixture_identities"]
+                        }
+                        if not self.REQUIRED_CONTEXTS.issubset(fixture_contexts):
+                            missing = self.REQUIRED_CONTEXTS - fixture_contexts
                             reasons.append(
-                                "Memory raw matrix lacks per-context "
-                                "fixture identities."
+                                "Memory raw matrix lacks fixture identities "
+                                f"for required contexts: {missing}"
+                            )
+                        # Validate hidden dense cache detection
+                        if (
+                            recomputed["hidden_dense_detected"]
+                            != mr.hidden_dense_cache_detected
+                        ):
+                            reasons.append(
+                                "Memory hidden_dense_cache_detected summary "
+                                "does not match raw matrix records."
                             )
                         # Cross-check summary values
                         tolerance = 1e-6
@@ -1409,23 +1489,17 @@ class PromotionGate:
                     f"{name}_workload_hash must be a full 64-character "
                     f"SHA-256 hex string (got {len(h)} chars)."
                 )
+            elif not all(c in "0123456789abcdef" for c in h.lower()):
+                reasons.append(
+                    f"{name}_workload_hash must be a valid SHA-256 "
+                    f"hexadecimal string."
+                )
         # Cross-family uniqueness: no two workload hashes may be identical
         _non_empty = [h for h in _workload_hashes.values() if h]
         if len(_non_empty) != len(set(_non_empty)):
             reasons.append(
                 "Duplicate workload hash detected across benchmark families; "
                 "each workload must have a unique identity."
-            )
-
-        # Check evidence kind - synthetic evidence is never promotable
-        if pv.evidence_kind != "experimental":
-            return PromotionDecision(
-                state=PromotionState.REVIEW_REQUIRED,
-                reasons=[
-                    "Synthetic or non-experimental evidence is never "
-                    "promotable."
-                ],
-                evidence=evidence,
             )
 
         if pv.git_tree_state == GitTreeState.UNKNOWN:
@@ -1466,7 +1540,18 @@ class PromotionGate:
                 evidence=evidence,
             )
 
-        # 2. Evidence missing or provenance unknown -> INCOMPLETE
+        # 2. Valid synthetic evidence -> REVIEW_REQUIRED
+        if pv.evidence_kind != "experimental":
+            return PromotionDecision(
+                state=PromotionState.REVIEW_REQUIRED,
+                reasons=[
+                    "Synthetic or non-experimental evidence is never "
+                    "promotable."
+                ],
+                evidence=evidence,
+            )
+
+        # 3. Evidence missing or provenance unknown -> INCOMPLETE
         if pv.git_tree_state == GitTreeState.UNKNOWN:
             return PromotionDecision(
                 state=PromotionState.INCOMPLETE,
@@ -1476,7 +1561,7 @@ class PromotionGate:
                 evidence=evidence,
             )
 
-        # 3. Promotion locked -> REVIEW_REQUIRED
+        # 4. Promotion locked -> REVIEW_REQUIRED
         if self.PROMOTION_LOCKED:
             return PromotionDecision(
                 state=PromotionState.REVIEW_REQUIRED,

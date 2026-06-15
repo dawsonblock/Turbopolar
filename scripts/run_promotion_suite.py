@@ -32,6 +32,9 @@ sys.path.insert(0, str(project_root))
 from rfsn_v11.candidates.turbo_polar_config import (  # noqa: E402
     TurboPolarConfig,
 )
+from rfsn_v11.kernels.turbo_polar.execution import (  # noqa: E402
+    ExecutionMode,
+)
 from rfsn_v11.promotion import (  # noqa: E402
     BaselineComparisonReport,
     BenchmarkProvenance,
@@ -1272,6 +1275,7 @@ def main():
         use_int8_radii=True,
         k_angle_bits_deep=8,
         split_dim=0,
+        execution_mode=ExecutionMode.METAL_STRICT,
     )
     config_hash = "dry-run" if args.dry_run else _hash_jsonable(config.__dict__)
     artifact_dir = args.output_dir / f"{timestamp}_{commit}_{config_hash}"
