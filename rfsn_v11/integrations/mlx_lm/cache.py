@@ -207,41 +207,22 @@ class TurboPolarFastCache:
         q_squeezed = q.squeeze(2)  # [B, H_q, D]
         cfg = dataclasses.replace(self.config, attention_scale=scale)
 
-        # HYBRID APPROACH: If no compressed pages (dense mode), use standard dense attention
+        # HYBRID APPROACH: If no compressed pages (dense mode), use MLX's optimized attention
         if not view.pages and view.partial_k is not None:
-            # Manual dense attention implementation using MLX operations
-            # q_squeezed: [B, H_q, D]
-            # view.partial_k: [B, H_kv, T, D]
-            # view.partial_v: [B, H_kv, T, D]
-            
-            B, H_q, D = q_squeezed.shape
-            H_kv = view.partial_k.shape[1]
-            T = view.partial_k.shape[2]
-            
-            # Reshape q for attention: [B, H_q, 1, D]
-            q = mx.expand_dims(q_squeezed, axis=2)
-            
-            # Handle GQA by reshaping for proper broadcasting
-            num_repeats = H_q // H_kv
-            q_reshaped = q.reshape(B, H_kv, num_repeats, 1, D)  # [B, H_kv, num_repeats, 1, D]
-            k_reshaped = view.partial_k.reshape(B, H_kv, 1, T, D)  # [B, H_kv, 1, T, D]
-            
-            # Compute attention scores: [B, H_kv, num_repeats, 1, T]
-            scores = mx.matmul(q_reshaped, mx.transpose(k_reshaped, (0, 1, 2, 4, 3))) * scale
-            
-            # Softmax over sequence dimension
-            attn_weights = mx.softmax(scores, axis=-1)
-            
-            # Apply attention to values
-            v_reshaped = view.partial_v.reshape(B, H_kv, 1, T, D)  # [B, H_kv, 1, T, D]
-            output = mx.matmul(attn_weights, v_reshaped)  # [B, H_kv, num_repeats, 1, D]
-            
-            # Reshape back to [B, H_q, D]
-            output = output.reshape(B, H_q, D)
-            
+            # Use MLX's optimized scaled_dot_product_attention for dense mode
+            # This is much faster than manual implementation
+            q_expanded = mx.expand_dims(q_squeezed, axis=2)  # [B, H_q, 1, D]
+            output = mx.fast.scaled_dot_product_attention(
+                q_expanded,
+                view.partial_k,
+                view.partial_v,
+                scale=scale,
+                mask=None,
+            )
+            output = mx.squeeze(output, axis=2)  # [B, H_q, D]
             trace = {
-                "kernel_name": "manual_dense_attention",
-                "metal_used": False,
+                "kernel_name": "mlx_fast_sdp",
+                "metal_used": True,  # MLX fast SDPA uses Metal
                 "fallback_used": False,
                 "turbo_mode": "hybrid_dense",
                 "actual_seq_len": view.total_tokens,
