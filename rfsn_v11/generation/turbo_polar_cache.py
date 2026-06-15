@@ -297,11 +297,13 @@ class TurboPolarKVCacheRuntime:
     def _append_dense(self, k_new: mx.array, v_new: mx.array):
         """Append tokens in dense mode without compression."""
         B, H, T_new, D = k_new.shape
+        threshold = self.config.hybrid_threshold
         
         if self.dense_k_storage is None:
-            # Initialize dense storage
-            self.dense_k_storage = mx.zeros((B, H, self.config.hybrid_threshold, D), dtype=k_new.dtype)
-            self.dense_v_storage = mx.zeros((B, H, self.config.hybrid_threshold, D), dtype=v_new.dtype)
+            # Initialize dense storage with full threshold size (pre-allocation)
+            # This is faster than growing dynamically
+            self.dense_k_storage = mx.zeros((B, H, threshold, D), dtype=k_new.dtype)
+            self.dense_v_storage = mx.zeros((B, H, threshold, D), dtype=v_new.dtype)
         
         # Append to dense storage
         start = self.actual_seq_len

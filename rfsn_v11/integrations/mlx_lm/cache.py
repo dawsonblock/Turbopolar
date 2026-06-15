@@ -210,19 +210,26 @@ class TurboPolarFastCache:
         # HYBRID APPROACH: If no compressed pages (dense mode), use MLX's optimized attention
         if not view.pages and view.partial_k is not None:
             # Use MLX's optimized scaled_dot_product_attention for dense mode
-            # This is much faster than manual implementation
-            q_expanded = mx.expand_dims(q_squeezed, axis=2)  # [B, H_q, 1, D]
+            # OPTIMIZATION: Avoid unnecessary reshapes by keeping q in proper format
+            # q_squeezed: [B, H_q, D] -> need [B, H_q, 1, D] for SDPA
+            # But we can pass it directly if we adjust the call
+            
+            # Reshape q to [B, H_q, 1, D]
+            q_reshaped = q_squeezed.reshape(q_squeezed.shape[0], q_squeezed.shape[1], 1, q_squeezed.shape[2])
+            
             output = mx.fast.scaled_dot_product_attention(
-                q_expanded,
+                q_reshaped,
                 view.partial_k,
                 view.partial_v,
                 scale=scale,
                 mask=None,
             )
-            output = mx.squeeze(output, axis=2)  # [B, H_q, D]
+            # Squeeze back to [B, H_q, D]
+            output = output.reshape(output.shape[0], output.shape[1], output.shape[3])
+            
             trace = {
                 "kernel_name": "mlx_fast_sdp",
-                "metal_used": True,  # MLX fast SDPA uses Metal
+                "metal_used": True,
                 "fallback_used": False,
                 "turbo_mode": "hybrid_dense",
                 "actual_seq_len": view.total_tokens,
