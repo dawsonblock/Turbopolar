@@ -257,9 +257,14 @@ class TurboPolarKVCacheRuntime:
         L = self.config.block_size
         threshold = self.config.hybrid_threshold
 
-        # HYBRID APPROACH: Check if we should switch from dense to compressed mode
-        if self.in_dense_mode and threshold > 0:
-            if self.actual_seq_len + T_new >= threshold:
+        # HYBRID APPROACH: 
+        # - Use prefill path for batch appends (T_new > 1) - always compress
+        # - Use dense mode for single token appends (T_new == 1) below threshold
+        # - Switch to compressed mode for single token appends at/above threshold
+        is_decode = T_new == 1
+        
+        if is_decode and self.in_dense_mode and threshold > 0:
+            if self.actual_seq_len >= threshold:
                 # Switching to compressed mode - compress dense storage
                 self._switch_to_compressed_mode()
             else:
@@ -267,22 +272,27 @@ class TurboPolarKVCacheRuntime:
                 self._append_dense(k_new, v_new)
                 return
 
-        # COMPRESSED MODE: Use normal compression logic
-        t = 0
-        while t < T_new:
-            space_in_buffer = L - self.partial_length
-            tokens_to_process = min(T_new - t, space_in_buffer)
-            
-            if tokens_to_process > 0:
-                end_idx = self.partial_length + tokens_to_process
-                self.partial_k_buffer[:, :, self.partial_length:end_idx, :] = k_new[:, :, t:t+tokens_to_process, :]
-                self.partial_v_buffer[:, :, self.partial_length:end_idx, :] = v_new[:, :, t:t+tokens_to_process, :]
-                self.partial_length += tokens_to_process
-                self.actual_seq_len += tokens_to_process
-                t += tokens_to_process
-            
-            if self.partial_length >= L:
-                self._flush_tail_block()
+        # COMPRESSED MODE or PREFILL: Use normal compression logic
+        if is_decode:
+            # Single token in compressed mode
+            t = 0
+            while t < T_new:
+                space_in_buffer = L - self.partial_length
+                tokens_to_process = min(T_new - t, space_in_buffer)
+                
+                if tokens_to_process > 0:
+                    end_idx = self.partial_length + tokens_to_process
+                    self.partial_k_buffer[:, :, self.partial_length:end_idx, :] = k_new[:, :, t:t+tokens_to_process, :]
+                    self.partial_v_buffer[:, :, self.partial_length:end_idx, :] = v_new[:, :, t:t+tokens_to_process, :]
+                    self.partial_length += tokens_to_process
+                    self.actual_seq_len += tokens_to_process
+                    t += tokens_to_process
+                
+                if self.partial_length >= L:
+                    self._flush_tail_block()
+        else:
+            # Prefill - use batch compression
+            self._append_prefill(k_new, v_new)
 
     def _append_dense(self, k_new: mx.array, v_new: mx.array):
         """Append tokens in dense mode without compression."""
