@@ -52,6 +52,7 @@ class QuantVPageLayout:
     group_size: int
     codes_shape: Tuple[int, ...]
     scales_shape: Tuple[int, ...]
+    zero_points_shape: Optional[Tuple[int, ...]] = None
 
 
 @dataclass
@@ -75,6 +76,7 @@ class QuantVPage:
     valid_blocks: int
     capacity_blocks: int
     group_size: int = 32
+    zero_points: Optional[mx.array] = None
 
 
 def compute_polar_page_layout(
@@ -112,6 +114,10 @@ def compute_quant_v_page_layout(
 ) -> QuantVPageLayout:
     """Compute an immutable layout from a single reference block."""
     B, H, _, L, D = block.codes.shape
+    num_groups = D // block.group_size
+    zp_shape = None
+    if block.zero_points is not None:
+        zp_shape = (B, H, page_capacity_blocks, L, num_groups)
     return QuantVPageLayout(
         batch_size=B,
         num_kv_heads=H,
@@ -120,7 +126,8 @@ def compute_quant_v_page_layout(
         head_dim=D,
         group_size=block.group_size,
         codes_shape=(B, H, page_capacity_blocks, L, D),
-        scales_shape=(B, H, page_capacity_blocks, L, D // block.group_size),
+        scales_shape=(B, H, page_capacity_blocks, L, num_groups),
+        zero_points_shape=zp_shape,
     )
 
 
@@ -146,12 +153,16 @@ def allocate_quant_v_page(layout: QuantVPageLayout) -> QuantVPage:
     """Allocate a new QuantVPage from an explicit layout."""
     codes = mx.zeros(layout.codes_shape, dtype=mx.int8)
     scales = mx.zeros(layout.scales_shape, dtype=mx.float16)
+    zero_points = None
+    if layout.zero_points_shape is not None:
+        zero_points = mx.zeros(layout.zero_points_shape, dtype=mx.float16)
     return QuantVPage(
         codes=codes,
         scales=scales,
         valid_blocks=0,
         capacity_blocks=layout.page_capacity_blocks,
         group_size=layout.group_size,
+        zero_points=zero_points,
     )
 
 
@@ -441,6 +452,18 @@ class PagedQuantVStorage:
         idx = last_page.valid_blocks
         last_page.codes = _set_block(last_page.codes, idx, block.codes)
         last_page.scales = _set_block(last_page.scales, idx, block.scales)
+        if block.zero_points is not None:
+            if last_page.zero_points is None:
+                # First asymmetric block on a page allocated symmetrically;
+                # allocate zero_points buffer now.
+                B, H, cap, L, D = last_page.codes.shape
+                num_groups = D // block.group_size
+                last_page.zero_points = mx.zeros(
+                    (B, H, cap, L, num_groups), dtype=mx.float16
+                )
+            last_page.zero_points = _set_block(
+                last_page.zero_points, idx, block.zero_points
+            )
         last_page.valid_blocks += 1
         self.total_valid_blocks += 1
 
@@ -455,18 +478,29 @@ class PagedQuantVStorage:
 
         all_codes = []
         all_scales = []
+        all_zp = []
+        has_zp = False
         for page in self.pages:
             if page.valid_blocks == 0:
                 continue
             all_codes.append(page.codes[:, :, :page.valid_blocks, :, :])
             all_scales.append(page.scales[:, :, :page.valid_blocks, :, :])
+            if page.zero_points is not None:
+                has_zp = True
+                all_zp.append(
+                    page.zero_points[:, :, :page.valid_blocks, :, :]
+                )
 
         codes = mx.concatenate(all_codes, axis=2)
         scales = mx.concatenate(all_scales, axis=2)
+        zero_points = None
+        if has_zp:
+            zero_points = mx.concatenate(all_zp, axis=2)
         return QuantizedVBlock(
             codes=codes,
             scales=scales,
             group_size=self.group_size,
+            zero_points=zero_points,
         )
 
     @property
@@ -495,10 +529,16 @@ class PagedQuantVStorage:
             raise IndexError(
                 f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
             )
+        zero_points = None
+        if page.zero_points is not None:
+            zero_points = page.zero_points[
+                :, :, block_index:block_index + 1, :, :
+            ]
         return QuantizedVBlock(
             codes=page.codes[:, :, block_index:block_index + 1, :, :],
             scales=page.scales[:, :, block_index:block_index + 1, :, :],
             group_size=self.group_size,
+            zero_points=zero_points,
         )
 
 

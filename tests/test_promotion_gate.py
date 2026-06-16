@@ -41,6 +41,8 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             num_q_heads=32,
             num_kv_heads=8,
             use_qjl=False,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
 
     def test_cache_append_one_full_block(self):
@@ -53,6 +55,8 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             num_q_heads=4,
             num_kv_heads=4,
             use_qjl=False,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
         k = mx.random.normal(shape=[1, 4, 64, 128])
@@ -76,6 +80,8 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             num_q_heads=4,
             num_kv_heads=4,
             use_qjl=False,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
         k = mx.random.normal(shape=[1, 4, 65, 128])
@@ -97,6 +103,8 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             num_q_heads=4,
             num_kv_heads=4,
             use_qjl=False,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         for T in (1, 32, 63):
             cache = TurboPolarKVCacheRuntime(config)
@@ -254,6 +262,8 @@ class TestTurboPolarPromotionGate(unittest.TestCase):
             num_q_heads=4,
             num_kv_heads=4,
             use_qjl=False,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
         k = mx.random.normal(shape=[1, 4, 65, 128])

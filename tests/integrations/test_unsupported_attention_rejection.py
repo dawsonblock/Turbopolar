@@ -51,10 +51,10 @@ class TestUnsupportedAttentionRejection(unittest.TestCase):
             self.cache.decode_attention(q, k, v, scale=self.config.attention_scale)
 
     def test_unsupported_head_dim_rejected(self):
-        q = mx.random.normal((1, 8, 1, 64)).astype(mx.float16)
-        k = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
-        v = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
-        with self.assertRaisesRegex(NotImplementedError, "head_dim == 128"):
+        q = mx.random.normal((1, 8, 1, 256)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 1, 256)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 1, 256)).astype(mx.float16)
+        with self.assertRaisesRegex(NotImplementedError, "head_dim == 64 or 128"):
             self.cache.decode_attention(q, k, v, scale=self.config.attention_scale)
 
     def test_gqa_ratio_must_divide(self):

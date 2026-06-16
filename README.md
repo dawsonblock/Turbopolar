@@ -1,15 +1,18 @@
 # TurboPolar
 
-A compressed KV cache for Llama-style models on MLX / Apple Silicon.
+A **Memory-Tiering Cache for Extreme Contexts** on MLX / Apple Silicon.
 
-This is **research alpha software**. TurboPolar has a strict compressed-page and dense-tail Metal prototype with synthetic multi-page GQA coverage. Real-model long-context, speed, memory, and comparative-value evidence remains incomplete. Promotion remains locked. Do not use it in production.
+TurboPolar is an Adaptive Hybrid Cache that keeps the active working context in fast dense memory while archiving historical tokens into compressed polar pages. For contexts under 4K tokens, decode uses pure dense attention with zero overhead. At 16K+ tokens, the compressed tier activates, trading a controlled amount of speed for massive memory savings.
+
+This is **research alpha software**. Real-model long-context evidence, speed benchmarking, and comparative-value analysis remain incomplete. Promotion remains locked. Do not use it in production.
 
 ## What it does
 
-- Compresses the key cache using polar quantization (magnitude + angle codes).
-- Stores values in grouped int8.
-- Concatenates all compressed pages into a single contiguous arena, dispatches ONE Metal attention call for the full compressed history, then one dense-tail Metal call. No per-page Python loop or state merge at decode time.
-- Targets Llama-style GQA models with `head_dim == 128` and `block_size == 64`.
+- **Adaptive Hybrid Architecture**: A dense working window (up to 4K tokens) plus compressed polar pages for historical context.
+- **Polar quantization** for keys (magnitude + angle codes) and grouped int8 for values.
+- **True Paged Dispatch**: Each compressed page is dispatched independently with lazy MLX fusion into a single GPU command buffer. No monolithic arena copy, no per-page Python state merge.
+- **Batched flushing**: When the dense window fills, the oldest 2K tokens are compressed in one batch rather than one block at a time.
+- Targets Llama-style GQA models with `head_dim == 64 or 128` and `block_size == 64`.
 
 ## Supported configuration
 
@@ -17,19 +20,21 @@ TurboPolar currently supports a narrow configuration:
 
 - **Framework:** MLX + mlx-lm on Apple Silicon
 - **Model:** Llama-style GQA
-- **Head dimension:** 128
+- **Head dimension:** 64 or 128
 - **Block size:** 64
 - **Value storage:** grouped int8 (`storage_mode="kv_quant"`)
 - **Mode:** single-batch autoregressive decode
 - **Attention:** standard full causal GQA
 - **QJL:** disabled
+- **Dense tail capacity:** 4096 tokens (configurable)
+- **Flush batch size:** 2048 tokens (configurable)
 
 Anything outside this scope is unsupported and will raise an error. See `docs/SUPPORTED_CONFIGURATION.md` for the full contract.
 
 ## What it does not do
 
 - Run arbitrary models or architectures.
-- Support `head_dim` other than 128.
+- Support `head_dim` other than 64 or 128.
 - Support `block_size` other than 64.
 - Support QJL, sliding-window attention, continuous batching, speculative decoding, or multi-user serving.
 - Guarantee production readiness.
@@ -106,14 +111,14 @@ rfsn_v11/
 
 ## Current limitations
 
-- `head_dim` must be 128.
+- `head_dim` must be 64 or 128.
 - `block_size` is fixed at 64.
-- Only `v_bits == 8` is allowed.
+- Only `v_bits == 8` is allowed (asymmetric zero-point quantization is implemented in Python but requires a Metal kernel update to activate).
 - Only `storage_mode == "kv_quant"` is allowed.
 - QJL is disabled and unsupported.
 - Single-batch decode only.
 - Only one Llama implementation has been validated.
-- Promotion is locked until the full evidence matrix passes.
+- Promotion is locked until Phases 1-4 pass the full evidence matrix.
 
 ## Development status
 

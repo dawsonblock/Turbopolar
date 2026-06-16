@@ -34,6 +34,8 @@ class TestFastCacheMixed(unittest.TestCase):
             use_int8_radii=True,
             k_angle_bits_deep=8,
             split_dim=0,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         self.cache = TurboPolarFastCache(self.config)
         self.cache.reset_execution_stats()

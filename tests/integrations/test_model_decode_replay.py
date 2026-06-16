@@ -83,9 +83,13 @@ class TestModelDecodeReplay(unittest.TestCase):
             use_int8_radii=True,
             k_angle_bits_deep=8,
             split_dim=0,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         adapter = TurboPolarLlamaAdapter(turbo_config)
-        turbo_cache = make_turbo_caches(num_layers, 4, 2, 128, use_qjl=False)
+        turbo_cache = make_turbo_caches(
+            num_layers, 4, 2, 128, use_qjl=False, config=turbo_config
+        )
         # Reset once via the bridge (singleton); do not sum per-cache stats.
         turbo_cache[0].reset_execution_stats()
 
@@ -156,9 +160,13 @@ class TestModelDecodeReplay(unittest.TestCase):
             use_int8_radii=True,
             k_angle_bits_deep=8,
             split_dim=0,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         adapter = TurboPolarLlamaAdapter(turbo_config)
-        turbo_cache = make_turbo_caches(2, 4, 2, 128, use_qjl=False)
+        turbo_cache = make_turbo_caches(
+            2, 4, 2, 128, use_qjl=False, config=turbo_config
+        )
 
         adapter.install(model)
         try:
@@ -194,11 +202,14 @@ class TestModelDecodeReplay(unittest.TestCase):
             k_angle_bits_deep=8,
             split_dim=0,
             execution_mode=ExecutionMode.METAL_STRICT,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         adapter = TurboPolarLlamaAdapter(turbo_config)
         turbo_cache = make_turbo_caches(
             num_layers, 4, 2, 128, use_qjl=False,
             execution_mode=ExecutionMode.METAL_STRICT,
+            config=turbo_config,
         )
         # Reset singleton stats once via any cache.
         turbo_cache[0].reset_execution_stats()

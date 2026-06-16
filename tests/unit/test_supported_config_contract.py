@@ -25,12 +25,14 @@ class TestSupportedConfigContract(unittest.TestCase):
         self.assertFalse(cfg.validate_finite_inputs)
         self.assertEqual(cfg.finite_audit_interval, 0)
 
-    def test_head_dim_64_rejected(self):
-        with self.assertRaisesRegex(ValueError, "head_dim=128"):
-            TurboPolarConfig(head_dim=64, block_size=64, num_q_heads=4, num_kv_heads=4)
+    def test_head_dim_64_accepted(self):
+        cfg = TurboPolarConfig(
+            head_dim=64, block_size=64, num_q_heads=4, num_kv_heads=4
+        )
+        self.assertEqual(cfg.head_dim, 64)
 
     def test_head_dim_256_rejected(self):
-        with self.assertRaisesRegex(ValueError, "head_dim=128"):
+        with self.assertRaisesRegex(ValueError, "head_dim=64 or 128"):
             TurboPolarConfig(head_dim=256, block_size=64, num_q_heads=4, num_kv_heads=4)
 
     def test_block_size_not_64_rejected(self):

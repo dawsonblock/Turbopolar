@@ -25,6 +25,8 @@ def _make_config():
         k_angle_bits_level1=8,
         k_angle_bits_deep=8,
         storage_mode="kv_quant",
+        dense_tail_capacity=64,
+        flush_batch_size=64,
     )
 
 
@@ -367,6 +369,8 @@ class TestMetalStrictGQA:
             k_angle_bits_level1=8,
             k_angle_bits_deep=8,
             storage_mode="kv_quant",
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
 
@@ -389,6 +393,8 @@ class TestMetalStrictGQA:
             k_angle_bits_level1=8,
             k_angle_bits_deep=8,
             storage_mode="kv_quant",
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
 
@@ -411,6 +417,8 @@ class TestMetalStrictGQA:
             k_angle_bits_level1=8,
             k_angle_bits_deep=8,
             storage_mode="kv_quant",
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
 

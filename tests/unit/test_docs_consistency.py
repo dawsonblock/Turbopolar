@@ -33,7 +33,7 @@ class TestDocsConsistency:
         # Invalid configs must raise.
         import pytest
         with pytest.raises(ValueError):
-            validate_supported_configuration(replace(valid, head_dim=64))
+            validate_supported_configuration(replace(valid, head_dim=32))
         with pytest.raises(ValueError):
             validate_supported_configuration(replace(valid, block_size=32))
         with pytest.raises(NotImplementedError):

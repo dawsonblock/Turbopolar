@@ -20,6 +20,8 @@ def _make_config():
         use_int8_radii=True,
         k_angle_bits_level1=8,
         k_angle_bits_deep=8,
+        dense_tail_capacity=64,
+        flush_batch_size=64,
     )
 
 

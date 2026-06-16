@@ -28,8 +28,8 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
       - Sliding window: unsupported
       - Speculative decoding: unsupported
     """
-    if config.head_dim != 128:
-        raise ValueError("TurboPolar requires head_dim=128")
+    if config.head_dim not in (64, 128):
+        raise ValueError("TurboPolar requires head_dim=64 or 128")
     if config.block_size != 64:
         raise ValueError("TurboPolar requires block_size=64")
     if config.page_capacity_blocks != 16:
@@ -101,7 +101,13 @@ class TurboPolarConfig:
     # flushing to compressed storage.  Larger values reduce per-decode
     # overhead (the primary speed bottleneck) at the cost of more memory.
     # Must be >= block_size and a multiple of block_size so flushes are clean.
-    dense_tail_capacity: int = 64
+    dense_tail_capacity: int = 4096
+    # Flush batch size: how many tokens to compress and flush at once when
+    # the dense tail reaches capacity.  Must be a multiple of block_size,
+    # >= block_size, and <= dense_tail_capacity.
+    # Default is half the dense tail so the most recent tokens always stay
+    # in fast dense memory.
+    flush_batch_size: int = 2048
     # Page pool preallocation: how many empty pages to pre-allocate after the
     # first compressed block is stored.  Eliminates per-decode Metal allocator
     # fragmentation at long contexts.  0 = disabled (allocate on demand).
@@ -115,9 +121,9 @@ class TurboPolarConfig:
         if self.num_q_heads % self.num_kv_heads != 0:
             raise ValueError("num_q_heads must be divisible by num_kv_heads")
 
-        if self.head_dim != 128:
+        if self.head_dim not in (64, 128):
             raise ValueError(
-                "TurboPolar fused MLX path currently requires head_dim=128"
+                "TurboPolar fused MLX path currently requires head_dim=64 or 128"
             )
         if self.block_size != 64:
             raise ValueError(
@@ -171,6 +177,21 @@ class TurboPolarConfig:
             raise ValueError(
                 f"dense_tail_capacity ({self.dense_tail_capacity}) must be a "
                 f"multiple of block_size ({self.block_size})"
+            )
+        if self.flush_batch_size < self.block_size:
+            raise ValueError(
+                f"flush_batch_size ({self.flush_batch_size}) must be >= "
+                f"block_size ({self.block_size})"
+            )
+        if self.flush_batch_size % self.block_size != 0:
+            raise ValueError(
+                f"flush_batch_size ({self.flush_batch_size}) must be a "
+                f"multiple of block_size ({self.block_size})"
+            )
+        if self.flush_batch_size > self.dense_tail_capacity:
+            raise ValueError(
+                f"flush_batch_size ({self.flush_batch_size}) must be <= "
+                f"dense_tail_capacity ({self.dense_tail_capacity})"
             )
         if self.page_pool_prealloc < 0:
             raise ValueError("page_pool_prealloc must be non-negative")

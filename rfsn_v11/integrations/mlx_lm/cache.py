@@ -155,9 +155,9 @@ class TurboPolarFastCache:
             raise ValueError(
                 "decode_attention only supports a single query/key/value token"
             )
-        if D != 128:
+        if D not in (64, 128):
             raise NotImplementedError(
-                "TurboPolar fused decode only supports head_dim == 128."
+                "TurboPolar fused decode only supports head_dim == 64 or 128."
             )
         if D != config.head_dim:
             raise ValueError(

@@ -78,9 +78,9 @@ def validate_llama_model(model: Any) -> Tuple[int, int, int]:
         )
 
     head_dim = hidden_size // n_heads
-    if head_dim != 128:
+    if head_dim not in (64, 128):
         raise ValueError(
-            f"TurboPolar adapter only supports head_dim=128, got {head_dim}"
+            f"TurboPolar adapter only supports head_dim=64 or 128, got {head_dim}"
         )
 
     return int(n_heads), int(n_kv_heads), int(head_dim)

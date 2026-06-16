@@ -595,12 +595,15 @@ def _fused_fallback_total(report: FusedDecodeReport) -> int:
 
 
 class PromotionGate:
-    """Evaluate PromotionEvidence and render a single PromotionDecision."""
+    """Evaluate PromotionEvidence and render a single PromotionDecision.
 
-    # Locked until the strict no-fallback Metal suite passes end-to-end.
-    # A correct fallback result does not prove the Metal implementation
-    # works. This must remain True until all evidence systems are
-    # scientifically trustworthy.
+    TurboPolar v0.4.0.dev0 — Adaptive Tiered KV Cache.
+    Three-tier architecture planned: hot dense window + warm decompressed
+    page cache + selectively activated cold compressed pages.
+    """
+
+    # Locked until Milestones 1-5 pass the native Apple Silicon automated
+    # suite. See engineering plan: Adaptive Tiered KV Cache.
     PROMOTION_LOCKED = True
 
     # Correctness thresholds
@@ -613,12 +616,17 @@ class PromotionGate:
     MAX_PPL_DELTA = 0.02
 
     # Memory thresholds
+    # Convention: ratio = dense / turbo.  A value > 1 means TurboPolar uses
+    # LESS memory than dense.  1.20 => TurboPolar peak <= 83% of dense peak.
     LOGICAL_KV_RATIO = 1.85
     PERSISTENT_STORAGE_RATIO = 1.75
     PEAK_MEMORY_RATIO_8192 = 1.20
 
-    # Speed thresholds
-    MAX_REGRESSION_AT_4096_PLUS = 0.97  # no more than 3% regression
+    # Speed thresholds — Tiered Architecture profile (Milestone 1):
+    # Zero degradation below dense hot capacity (4K default).
+    MAX_REGRESSION_AT_4096_PLUS = 1.00
+    # Acceptable degradation (< 30%) at extreme long contexts (16K+).
+    MIN_RATIO_AT_16384_PLUS = 0.70
     MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT = 1.05
     MIN_MEDIAN_RATIO_AT_8192_PLUS = 1.03
 
@@ -1334,6 +1342,22 @@ class PromotionGate:
                 f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < "
                 f"{self.MIN_MEDIAN_RATIO_AT_8192_PLUS}"
             )
+
+        # Hybrid Architecture: 16384+ must not regress > 30%
+        # (computed from raw per-context timings if 16384 present).
+        if 16384 in sr.contexts_evaluated:
+            turbo_16k = sr.turbo_decode_tok_s.get(16384, [])
+            dense_16k = sr.dense_decode_tok_s.get(16384, [])
+            if turbo_16k and dense_16k:
+                ratio_16k = float(
+                    mx.median(mx.array(turbo_16k)).item()
+                    / max(mx.median(mx.array(dense_16k)).item(), 1e-9)
+                )
+                if ratio_16k < self.MIN_RATIO_AT_16384_PLUS:
+                    reasons.append(
+                        f"16384+ speed ratio {ratio_16k:.3f} < "
+                        f"{self.MIN_RATIO_AT_16384_PLUS}"
+                    )
 
         # Memory
         mr = evidence.memory_report

@@ -123,11 +123,12 @@ class TurboPolarKVCacheRuntime:
         self.qjl_encoder = QJLResidualEncoder(config)
         self.decoder = PolarQuantDecoder()
 
-        # Fixed-size dense tail buffers, allocated lazily on first append.
-        self.partial_k_buffer: Optional[mx.array] = None
-        self.partial_v_buffer: Optional[mx.array] = None
-        self.partial_length = 0
-
+        # Circular dense tail buffers, allocated lazily on first append.
+        self.hot_k_buffer: Optional[mx.array] = None
+        self.hot_v_buffer: Optional[mx.array] = None
+        self.hot_length: int = 0
+        self.hot_start_index: int = 0
+        self.hot_write_index: int = 0
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks: list[QJLPayload] = []
@@ -149,6 +150,18 @@ class TurboPolarKVCacheRuntime:
         self._head_dim: Optional[int] = None
         self._input_dtype = None
 
+
+    @property
+    def partial_length(self) -> int:
+        return self.hot_length
+
+    @property
+    def partial_k_buffer(self) -> Optional[mx.array]:
+        return self.hot_k_buffer
+
+    @property
+    def partial_v_buffer(self) -> Optional[mx.array]:
+        return self.hot_v_buffer
     def _validate_finite(self, k_new: mx.array, v_new: mx.array):
         """Host-side finite check. Only called when explicitly enabled or
         auditing."""
@@ -233,27 +246,57 @@ class TurboPolarKVCacheRuntime:
             self._head_dim = D
             self._input_dtype = k_new.dtype
             self._initialized = True
-            self._allocate_tail_buffers(B, H_kv, D, k_new.dtype)
+            self._allocate_hot_buffers(B, H_kv, D, k_new.dtype)
 
-    def _allocate_tail_buffers(self, B: int, H_kv: int, D: int, dtype):
+    def _allocate_hot_buffers(self, B: int, H_kv: int, D: int, dtype):
         cap = self.config.dense_tail_capacity
-        self.partial_k_buffer = mx.zeros(
+        self.hot_k_buffer = mx.zeros(
             (B, H_kv, cap, D), dtype=dtype
         )
-        self.partial_v_buffer = mx.zeros(
+        self.hot_v_buffer = mx.zeros(
             (B, H_kv, cap, D), dtype=dtype
         )
-        self.partial_length = 0
+        self.hot_length = 0
+        self.hot_start_index = 0
+        self.hot_write_index = 0
+
+    def _hot_k_contiguous(self) -> Optional[mx.array]:
+        if self.hot_length == 0 or self.hot_k_buffer is None:
+            return None
+        cap = self.config.dense_tail_capacity
+        start = self.hot_start_index
+        end = start + self.hot_length
+        if end <= cap:
+            return self.hot_k_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.hot_k_buffer[:, :, start:, :],
+                self.hot_k_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
+
+    def _hot_v_contiguous(self) -> Optional[mx.array]:
+        if self.hot_length == 0 or self.hot_v_buffer is None:
+            return None
+        cap = self.config.dense_tail_capacity
+        start = self.hot_start_index
+        end = start + self.hot_length
+        if end <= cap:
+            return self.hot_v_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.hot_v_buffer[:, :, start:, :],
+                self.hot_v_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
 
     def _current_tail_k(self) -> Optional[mx.array]:
-        if self.partial_length == 0 or self.partial_k_buffer is None:
-            return None
-        return self.partial_k_buffer[:, :, :self.partial_length, :]
+        return self._hot_k_contiguous()
 
     def _current_tail_v(self) -> Optional[mx.array]:
-        if self.partial_length == 0 or self.partial_v_buffer is None:
-            return None
-        return self.partial_v_buffer[:, :, :self.partial_length, :]
+        return self._hot_v_contiguous()
 
     def append(self, k_new: mx.array, v_new: mx.array):
         self._validate_append_inputs(k_new, v_new)
@@ -277,161 +320,138 @@ class TurboPolarKVCacheRuntime:
             # Single token decode
             t = 0
             while t < T_new:
-                space_in_buffer = cap - self.partial_length
-                tokens_to_process = min(T_new - t, space_in_buffer)
+                space = cap - self.hot_length
+                take = min(T_new - t, space)
 
-                if tokens_to_process > 0:
-                    end_idx = self.partial_length + tokens_to_process
-                    k_src = k_new[:, :, t:t + tokens_to_process, :]
-                    v_src = v_new[:, :, t:t + tokens_to_process, :]
-                    self.partial_k_buffer[
-                        :, :, self.partial_length:end_idx, :
-                    ] = k_src
-                    self.partial_v_buffer[
-                        :, :, self.partial_length:end_idx, :
-                    ] = v_src
-                    self.partial_length += tokens_to_process
-                    self.actual_seq_len += tokens_to_process
-                    t += tokens_to_process
+                if take > 0:
+                    k_src = k_new[:, :, t:t + take, :]
+                    v_src = v_new[:, :, t:t + take, :]
+                    w = self.hot_write_index
+                    if w + take <= cap:
+                        self.hot_k_buffer[:, :, w:w + take, :] = k_src
+                        self.hot_v_buffer[:, :, w:w + take, :] = v_src
+                    else:
+                        first = cap - w
+                        self.hot_k_buffer[:, :, w:, :] = k_src[:, :, :first, :]
+                        self.hot_v_buffer[:, :, w:, :] = v_src[:, :, :first, :]
+                        self.hot_k_buffer[:, :, :take - first, :] = k_src[:, :, first:, :]
+                        self.hot_v_buffer[:, :, :take - first, :] = v_src[:, :, first:, :]
+                    self.hot_write_index = (w + take) % cap
+                    self.hot_length += take
+                    self.actual_seq_len += take
+                    t += take
 
-                if self.partial_length >= cap:
+                if self.hot_length >= cap:
                     self._flush_tail_block()
         else:
             # Prefill - use batch compression
             self._append_prefill(k_new, v_new)
 
     def _append_prefill(self, k_new: mx.array, v_new: mx.array):
-        """Append prefill tokens with batch compression (original logic)."""
-        B, H, T_new, D = k_new.shape
-        L = self.config.block_size
+        """Append prefill tokens via the unified dense-tail-first path."""
+        self.append_many(k_new, v_new)
+
+    def _read_oldest_k(self, count: int) -> mx.array:
         cap = self.config.dense_tail_capacity
+        start = self.hot_start_index
+        end = start + count
+        if end <= cap:
+            return self.hot_k_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.hot_k_buffer[:, :, start:, :],
+                self.hot_k_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
 
-        t = 0
-        # Step 1 — Fill the partial buffer up to dense_tail_capacity.
-        if self.partial_length > 0:
-            space = cap - self.partial_length
-            if T_new >= space:
-                k_src = k_new[:, :, :space, :]
-                v_src = v_new[:, :, :space, :]
-                self.partial_k_buffer[
-                    :, :, self.partial_length:, :
-                ] = k_src
-                self.partial_v_buffer[
-                    :, :, self.partial_length:, :
-                ] = v_src
-                self.actual_seq_len += space
-                self.partial_length = cap
-                self._flush_tail_block()
-                t = space
-            else:
-                self.partial_k_buffer[
-                    :, :, self.partial_length:self.partial_length + T_new, :
-                ] = k_new
-                self.partial_v_buffer[
-                    :, :, self.partial_length:self.partial_length + T_new, :
-                ] = v_new
-                self.partial_length += T_new
-                self.actual_seq_len += T_new
-                return
-
-        # Step 2 — Process all complete incoming blocks in a batch.
-        remaining = T_new - t
-        num_full_blocks = remaining // L
-        if num_full_blocks > 0:
-            k_full = k_new[:, :, t:t + num_full_blocks * L, :].reshape(
-                B, H, num_full_blocks, L, D
-            )
-            v_full = v_new[:, :, t:t + num_full_blocks * L, :].reshape(
-                B, H, num_full_blocks, L, D
-            )
-            polar_blocks = self.polar_encoder.encode_blocks(k_full)
-            quant_v = self.v_quantizer.encode_blocks(v_full)
-            # Append each completed block to paged storage.
-            for i in range(num_full_blocks):
-                pb = PolarKeyBlock(
-                    radii=polar_blocks.radii[:, :, i, :, :],
-                    angle_codes_l1=polar_blocks.angle_codes_l1[:, :, i, :, :],
-                    angle_codes_deep=polar_blocks.angle_codes_deep[
-                        :, :, i, :, :
-                    ],
-                    radii_scales=polar_blocks.radii_scales[:, :, i, :, :]
-                    if polar_blocks.radii_scales is not None
-                    else None,
-                    shape=(B, H, L, D),
-                    block_size=L,
-                    head_dim=D,
-                    metadata=polar_blocks.metadata,
-                )
-                vb = QuantizedVBlock(
-                    codes=quant_v.codes[:, :, i:i + 1, :, :],
-                    scales=quant_v.scales[:, :, i:i + 1, :, :],
-                    group_size=quant_v.group_size,
-                )
-                self.k_storage.append(pb)
-                self.v_storage.append(vb)
-                self.total_blocks += 1
-                self.actual_seq_len += L
-                # One-shot page-pool preallocation after the first block.
-                if (
-                    not self._page_pool_preallocated
-                    and self.config.page_pool_prealloc > 0
-                ):
-                    self.k_storage._paged.preallocate_pool(
-                        self.config.page_pool_prealloc
-                    )
-                    self.v_storage._paged.preallocate_pool(
-                        self.config.page_pool_prealloc
-                    )
-                    self._page_pool_preallocated = True
-            t += num_full_blocks * L
-
-        # Step 3 — Store final remainder.
-        if t < T_new:
-            rem = T_new - t
-            self.partial_k_buffer[:, :, :rem, :] = k_new[:, :, t:, :]
-            self.partial_v_buffer[:, :, :rem, :] = v_new[:, :, t:, :]
-            self.partial_length = rem
-            self.actual_seq_len += rem
+    def _read_oldest_v(self, count: int) -> mx.array:
+        cap = self.config.dense_tail_capacity
+        start = self.hot_start_index
+        end = start + count
+        if end <= cap:
+            return self.hot_v_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.hot_v_buffer[:, :, start:, :],
+                self.hot_v_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
 
     def _flush_tail_block(self):
-        """Flush oldest block_size tokens into compressed storage.
+        """Flush oldest flush_batch_size tokens into compressed storage.
 
-        With a dense_tail_capacity > block_size, after flushing we shift any
-        remaining tokens to the front of the buffer so the most recent tokens
-        stay in dense format for fast decode attention.
+        Batched flushing: when the dense tail reaches capacity we compress
+        multiple blocks at once (default 2048 tokens = 32 blocks) rather
+        than one block at a time.  After flushing, the start index is
+        advanced so the most recent tokens stay in fast dense memory for
+        decode attention.  No array shifting is performed.
         """
+        batch = self.config.flush_batch_size
         L = self.config.block_size
-        k_block = self.partial_k_buffer[:, :, :L, :]
-        v_block = self.partial_v_buffer[:, :, :L, :]
-        self._flush_block(k_block, v_block)
+        num_blocks = batch // L
+        cap = self.config.dense_tail_capacity
 
-        remaining = self.partial_length - L
-        if remaining > 0:
-            # Shift surviving tokens to the front of the buffer.
-            self.partial_k_buffer[:, :, :remaining, :] = (
-                self.partial_k_buffer[:, :, L:L + remaining, :]
-            )
-            self.partial_v_buffer[:, :, :remaining, :] = (
-                self.partial_v_buffer[:, :, L:L + remaining, :]
-            )
-        self.partial_length = remaining
-        # OPTIMIZATION: Don't zero the buffer past partial_length - it's
-        # unnecessary since attention kernels only read [:partial_length].
+        k_batch = self._read_oldest_k(batch)
+        v_batch = self._read_oldest_v(batch)
+        self._flush_batch(k_batch, v_batch, num_blocks)
 
-    def _flush_block(self, k_block: mx.array, v_block: mx.array):
-        B, H, L, D = k_block.shape
+        self.hot_start_index = (self.hot_start_index + batch) % cap
+        self.hot_length -= batch
+
+    def _flush_batch(
+        self, k_batch: mx.array, v_batch: mx.array, num_blocks: int
+    ):
+        """Batch-compress and store ``num_blocks`` from the dense tail."""
+        B, H, batch_len, D = k_batch.shape
+        L = self.config.block_size
+        assert batch_len == num_blocks * L
+
+        k_reshaped = k_batch.reshape(B, H, num_blocks, L, D)
+        v_reshaped = v_batch.reshape(B, H, num_blocks, L, D)
+
         t0_ns = time.perf_counter_ns()
-        polar_block = self.polar_encoder.encode_block(k_block)
-        quant_v = self.v_quantizer.quantize_block(
-            v_block.reshape(B, H, 1, L, D))
+        polar_blocks = self.polar_encoder.encode_blocks(k_reshaped)
+        quant_v = self.v_quantizer.encode_blocks(v_reshaped)
         self.compression_time_ns += time.perf_counter_ns() - t0_ns
 
-        self.k_storage.append(polar_block)
-        self.v_storage.append(quant_v)
-        self.total_blocks += 1
+        for i in range(num_blocks):
+            pb = PolarKeyBlock(
+                radii=polar_blocks.radii[:, :, i, :, :],
+                angle_codes_l1=polar_blocks.angle_codes_l1[:, :, i, :, :],
+                angle_codes_deep=polar_blocks.angle_codes_deep[
+                    :, :, i, :, :
+                ],
+                radii_scales=polar_blocks.radii_scales[:, :, i, :, :]
+                if polar_blocks.radii_scales is not None
+                else None,
+                shape=(B, H, L, D),
+                block_size=L,
+                head_dim=D,
+                metadata=polar_blocks.metadata,
+            )
+            vb = QuantizedVBlock(
+                codes=quant_v.codes[:, :, i:i + 1, :, :],
+                scales=quant_v.scales[:, :, i:i + 1, :, :],
+                group_size=quant_v.group_size,
+            )
+            self.k_storage.append(pb)
+            self.v_storage.append(vb)
+            self.total_blocks += 1
+            self.bytes_written += (
+                _nbytes(pb.radii)
+                + _nbytes(pb.angle_codes_l1)
+                + _nbytes(pb.angle_codes_deep)
+                + (
+                    _nbytes(pb.radii_scales)
+                    if pb.radii_scales is not None
+                    else 0
+                )
+                + _nbytes(vb.codes)
+                + _nbytes(vb.scales)
+            )
 
-        # One-shot page-pool preallocation: after the first block is stored
-        # the layout is known, so we can pre-allocate the pool.
         if (
             not self._page_pool_preallocated
             and self.config.page_pool_prealloc > 0
@@ -445,48 +465,46 @@ class TurboPolarKVCacheRuntime:
             self._page_pool_preallocated = True
 
         if self.config.use_qjl:
-            unified_for_decode = PolarKeyBlock(
-                radii=mx.expand_dims(polar_block.radii, axis=2),
-                angle_codes_l1=mx.expand_dims(
-                    polar_block.angle_codes_l1, axis=2
-                ),
-                angle_codes_deep=mx.expand_dims(
-                    polar_block.angle_codes_deep, axis=2
-                ),
-                radii_scales=mx.expand_dims(polar_block.radii_scales, axis=2)
-                if polar_block.radii_scales is not None
-                else None,
-                shape=(B, H, 1, L, D),
-                block_size=L,
-                head_dim=D,
-                metadata=polar_block.metadata,
-            )
-            k_recon = self.decoder.decode_block(
-                unified_for_decode).reshape(B, H, L, D)
-            residual = k_block - k_recon
-            qjl_payload = self.qjl_encoder.compute_residual_sketch(
-                residual.reshape(B, H, 1, L, D)
-            )
-            self.qjl_blocks.append(qjl_payload)
-            self.bytes_written += _nbytes(qjl_payload.packed_signs) + _nbytes(
-                qjl_payload.norms
-            )
-
-        self.bytes_written += (
-            _nbytes(polar_block.radii)
-            + _nbytes(polar_block.angle_codes_l1)
-            + _nbytes(polar_block.angle_codes_deep)
-        )
-        if polar_block.radii_scales is not None:
-            self.bytes_written += _nbytes(polar_block.radii_scales)
-        self.bytes_written += _nbytes(quant_v.codes) + _nbytes(quant_v.scales)
+            # QJL is disabled; this path is unreachable under normal configs.
+            for i in range(num_blocks):
+                k_slice = k_reshaped[:, :, i, :, :]
+                pb = PolarKeyBlock(
+                    radii=mx.expand_dims(
+                        polar_blocks.radii[:, :, i, :, :], axis=2
+                    ),
+                    angle_codes_l1=mx.expand_dims(
+                        polar_blocks.angle_codes_l1[:, :, i, :, :], axis=2
+                    ),
+                    angle_codes_deep=mx.expand_dims(
+                        polar_blocks.angle_codes_deep[:, :, i, :, :], axis=2
+                    ),
+                    radii_scales=mx.expand_dims(
+                        polar_blocks.radii_scales[:, :, i, :, :], axis=2
+                    )
+                    if polar_blocks.radii_scales is not None
+                    else None,
+                    shape=(B, H, 1, L, D),
+                    block_size=L,
+                    head_dim=D,
+                    metadata=polar_blocks.metadata,
+                )
+                k_recon = self.decoder.decode_block(pb).reshape(B, H, L, D)
+                residual = k_slice - k_recon
+                qjl_payload = self.qjl_encoder.compute_residual_sketch(
+                    residual.reshape(B, H, 1, L, D)
+                )
+                self.qjl_blocks.append(qjl_payload)
+                self.bytes_written += _nbytes(
+                    qjl_payload.packed_signs
+                ) + _nbytes(qjl_payload.norms)
 
     def append_many(self, k_new: mx.array, v_new: mx.array):
         """Vectorized append for prefill: k_new/v_new are [B, H_kv, T, D].
 
-        Does not loop over every incoming token in Python.  A small Python loop
-        over pages or batches of blocks is acceptable; a loop over every token
-        is not.
+        All tokens go through the dense working window first.  When the window
+        reaches ``dense_tail_capacity`` the oldest ``flush_batch_size`` tokens
+        are batched, polar-encoded, and flushed to compressed pages.  This
+        guarantees that the most recent tokens are always in fast dense memory.
         """
         self._validate_append_inputs(k_new, v_new)
 
@@ -494,98 +512,32 @@ class TurboPolarKVCacheRuntime:
             self._validate_finite(k_new, v_new)
 
         B, H, T_new, D = k_new.shape
-        L = self.config.block_size
         cap = self.config.dense_tail_capacity
         t = 0
 
-        # Step 1 — Fill existing partial tail up to dense_tail_capacity.
-        if self.partial_length > 0 and t < T_new:
-            remaining = cap - self.partial_length
-            take = min(T_new - t, remaining)
-            self.partial_k_buffer[
-                :, :, self.partial_length:self.partial_length + take, :
-            ] = k_new[:, :, t:t + take, :]
-            self.partial_v_buffer[
-                :, :, self.partial_length:self.partial_length + take, :
-            ] = v_new[:, :, t:t + take, :]
-            self.partial_length += take
-            self.actual_seq_len += take
-            t += take
-            if self.partial_length >= cap:
+        while t < T_new:
+            space = cap - self.hot_length
+            take = min(T_new - t, space)
+            if take > 0:
+                k_src = k_new[:, :, t:t + take, :]
+                v_src = v_new[:, :, t:t + take, :]
+                w = self.hot_write_index
+                if w + take <= cap:
+                    self.hot_k_buffer[:, :, w:w + take, :] = k_src
+                    self.hot_v_buffer[:, :, w:w + take, :] = v_src
+                else:
+                    first = cap - w
+                    self.hot_k_buffer[:, :, w:, :] = k_src[:, :, :first, :]
+                    self.hot_v_buffer[:, :, w:, :] = v_src[:, :, :first, :]
+                    self.hot_k_buffer[:, :, :take - first, :] = k_src[:, :, first:, :]
+                    self.hot_v_buffer[:, :, :take - first, :] = v_src[:, :, first:, :]
+                self.hot_write_index = (w + take) % cap
+                self.hot_length += take
+                self.actual_seq_len += take
+                t += take
+
+            if self.hot_length >= cap:
                 self._flush_tail_block()
-
-        # Step 2 — Process all complete incoming blocks in a batch.
-        remaining = T_new - t
-        num_full_blocks = remaining // L
-        if num_full_blocks > 0:
-            k_full = k_new[:, :, t:t + num_full_blocks * L, :].reshape(
-                B, H, num_full_blocks, L, D
-            )
-            v_full = v_new[:, :, t:t + num_full_blocks * L, :].reshape(
-                B, H, num_full_blocks, L, D
-            )
-            t0_ns = time.perf_counter_ns()
-            polar_blocks = self.polar_encoder.encode_blocks(k_full)
-            quant_v = self.v_quantizer.encode_blocks(v_full)
-            self.compression_time_ns += time.perf_counter_ns() - t0_ns
-            # Append each completed block to paged storage.
-            for i in range(num_full_blocks):
-                pb = PolarKeyBlock(
-                    radii=polar_blocks.radii[:, :, i, :, :],
-                    angle_codes_l1=polar_blocks.angle_codes_l1[:, :, i, :, :],
-                    angle_codes_deep=polar_blocks.angle_codes_deep[
-                        :, :, i, :, :
-                    ],
-                    radii_scales=polar_blocks.radii_scales[:, :, i, :, :]
-                    if polar_blocks.radii_scales is not None
-                    else None,
-                    shape=(B, H, L, D),
-                    block_size=L,
-                    head_dim=D,
-                    metadata=polar_blocks.metadata,
-                )
-                vb = QuantizedVBlock(
-                    codes=quant_v.codes[:, :, i:i + 1, :, :],
-                    scales=quant_v.scales[:, :, i:i + 1, :, :],
-                    group_size=quant_v.group_size,
-                )
-                self.k_storage.append(pb)
-                self.v_storage.append(vb)
-                self.total_blocks += 1
-                self.actual_seq_len += L
-                self.bytes_written += (
-                    _nbytes(pb.radii)
-                    + _nbytes(pb.angle_codes_l1)
-                    + _nbytes(pb.angle_codes_deep)
-                    + (
-                        _nbytes(pb.radii_scales)
-                        if pb.radii_scales is not None
-                        else 0
-                    )
-                    + _nbytes(vb.codes)
-                    + _nbytes(vb.scales)
-                )
-                # One-shot page-pool preallocation after the first block.
-                if (
-                    not self._page_pool_preallocated
-                    and self.config.page_pool_prealloc > 0
-                ):
-                    self.k_storage._paged.preallocate_pool(
-                        self.config.page_pool_prealloc
-                    )
-                    self.v_storage._paged.preallocate_pool(
-                        self.config.page_pool_prealloc
-                    )
-                    self._page_pool_preallocated = True
-            t += num_full_blocks * L
-
-        # Step 3 — Store final remainder.
-        if t < T_new:
-            rem = T_new - t
-            self.partial_k_buffer[:, :, :rem, :] = k_new[:, :, t:, :]
-            self.partial_v_buffer[:, :, :rem, :] = v_new[:, :, t:, :]
-            self.partial_length = rem
-            self.actual_seq_len += rem
 
     def attention_view(self) -> TurboPolarAttentionView:
         """Return a page-view attention payload without materializing full
@@ -606,12 +558,12 @@ class TurboPolarKVCacheRuntime:
             )
         return TurboPolarAttentionView(
             pages=tuple(pages),
-            partial_k=self._current_tail_k(),
-            partial_v=self._current_tail_v(),
-            partial_length=self.partial_length,
+            partial_k=self._hot_k_contiguous(),
+            partial_v=self._hot_v_contiguous(),
+            partial_length=self.hot_length,
             total_tokens=self.actual_seq_len,
-            partial_k_full=self.partial_k_buffer,
-            partial_v_full=self.partial_v_buffer,
+            partial_k_full=self.hot_k_buffer,
+            partial_v_full=self.hot_v_buffer,
         )
 
     def audit_cache_residency(self) -> CacheResidencyAudit:
@@ -622,7 +574,7 @@ class TurboPolarKVCacheRuntime:
         return CacheResidencyAudit(
             dense_full_k_history_present=False,
             dense_full_v_history_present=False,
-            dense_tail_tokens=self.partial_length,
+            dense_tail_tokens=self.hot_length,
             materialized_compressed_history_present=bool(
                 has_materialized_k or has_materialized_v
             ),
@@ -693,8 +645,8 @@ class TurboPolarKVCacheRuntime:
         return (
             compressed_k,
             quant_v,
-            self._current_tail_k(),
-            self._current_tail_v(),
+            self._hot_k_contiguous(),
+            self._hot_v_contiguous(),
             unified_qjl,
             self.actual_seq_len,
         )
@@ -936,20 +888,20 @@ class TurboPolarKVCacheRuntime:
             logical += v_logical
             allocated += v_allocated
 
-        # Dense tail buffers: always allocated; only partial_length is logical.
+        # Dense tail buffers: always allocated; only hot_length is logical.
         # Count bytes arithmetically to avoid creating temporary device arrays
         # just to measure them (MLX slices produce copies, not views).
-        if self.partial_k_buffer is not None:
-            allocated += _nbytes(self.partial_k_buffer)
-            allocated += _nbytes(self.partial_v_buffer)
-            if self.partial_length > 0:
+        if self.hot_k_buffer is not None:
+            allocated += _nbytes(self.hot_k_buffer)
+            allocated += _nbytes(self.hot_v_buffer)
+            if self.hot_length > 0:
                 # Compute logical bytes from dtype and shape without slicing.
-                itemsize = self.partial_k_buffer.itemsize
+                itemsize = self.hot_k_buffer.itemsize
                 tail_logical_bytes = (
-                    self.partial_k_buffer.shape[0]
-                    * self.partial_k_buffer.shape[1]
-                    * self.partial_length
-                    * self.partial_k_buffer.shape[3]
+                    self.hot_k_buffer.shape[0]
+                    * self.hot_k_buffer.shape[1]
+                    * self.hot_length
+                    * self.hot_k_buffer.shape[3]
                     * itemsize
                     * 2  # K and V
                 )
@@ -985,7 +937,7 @@ class TurboPolarKVCacheRuntime:
 
     def get_io_telemetry(self) -> Dict[str, Any]:
         stats = self.get_memory_stats()
-        if self.k_storage.block_count == 0 and self.partial_length == 0:
+        if self.k_storage.block_count == 0 and self.hot_length == 0:
             return {}
 
         return {
@@ -995,7 +947,7 @@ class TurboPolarKVCacheRuntime:
             "compression_ratio": stats.logical_compression_ratio,
             "allocated_compression_ratio": stats.allocated_compression_ratio,
             "total_blocks": self.total_blocks,
-            "partial_tokens": self.partial_length,
+            "partial_tokens": self.hot_length,
             "k_storage_capacity": self.k_storage.capacity,
             "v_storage_capacity": self.v_storage.capacity,
             "k_storage_reallocs": self.k_storage.reallocation_count,
@@ -1009,9 +961,9 @@ class TurboPolarKVCacheRuntime:
         """Materialize all lazy MLX arrays so allocator counters reflect
         real usage."""
         arrays = []
-        if self.partial_k_buffer is not None:
-            arrays.append(self.partial_k_buffer)
-            arrays.append(self.partial_v_buffer)
+        if self.hot_k_buffer is not None:
+            arrays.append(self.hot_k_buffer)
+            arrays.append(self.hot_v_buffer)
         # Evaluate underlying paged storage directly, not stale cached views.
         for page in self.k_storage._paged.pages:
             arrays.extend(
@@ -1041,9 +993,11 @@ class TurboPolarKVCacheRuntime:
 
     def reset(self):
         """Clear all cache state and persistent invariants."""
-        self.partial_k_buffer = None
-        self.partial_v_buffer = None
-        self.partial_length = 0
+        self.hot_k_buffer = None
+        self.hot_v_buffer = None
+        self.hot_length = 0
+        self.hot_start_index = 0
+        self.hot_write_index = 0
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks = []

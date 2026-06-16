@@ -19,6 +19,8 @@ class TestCacheInvariants(unittest.TestCase):
             block_size=64,
             num_q_heads=4,
             num_kv_heads=4,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
 
     def _valid_kv(self, B=1, H_kv=4, T=1, D=128, dtype=mx.float16):
@@ -88,6 +90,8 @@ class TestCacheInvariants(unittest.TestCase):
             num_q_heads=4,
             num_kv_heads=4,
             validate_finite_inputs=True,
+            dense_tail_capacity=64,
+            flush_batch_size=64,
         )
         cache = TurboPolarKVCacheRuntime(config)
         k, v = self._valid_kv(T=2)
