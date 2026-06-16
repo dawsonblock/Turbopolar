@@ -1,8 +1,9 @@
 # TurboPolar Development Status
 
 **Branch:** `repair/r5-7-runtime-and-evidence`  
-**Version:** `0.3.0.dev0`  
-**Last updated:** 2026-06-15 (REPAIR R5-7 Rev11)
+**Version:** `0.4.0.dev0`  
+**Architecture:** Adaptive Tiered KV Cache v1  
+**Last updated:** 2026-06-15 (REPAIR R5-7 Rev16)
 
 ---
 
@@ -30,6 +31,7 @@ validated on native Apple Silicon with the required model and pinned software st
 | P1-10 | `make_turbo_caches` clones the exact immutable config via `dataclasses.replace` |
 | P1-11 | `validate_trace_topology` exposes stats at top level for backward compatibility |
 | P1-12 | `scripts/` is now a proper Python package; `_build_provenance` is importable |
+| Arch | Circular dense hot window replaces shift-based tail (Milestone 1) |
 | Arch | All compressed pages concatenated into one arena; Metal called ONCE per decode step |
 | Arch | 256-entry constant-memory cos/sin LUT replaces per-token transcendental calls for 8-bit angles |
 
@@ -56,7 +58,7 @@ the speed gate can be revisited.
 The single supported promotion configuration is:
 
 - MLX ≥ 0.31.2 + mlx-lm ≥ 0.19.0 on Apple Silicon (M1/M2/M3/M4)
-- Llama-style GQA with `head_dim=128`, `block_size=64`
+- Llama-style GQA with `head_dim=64` or `128`, `block_size=64`
 - `k_angle_bits_level1=8`, `k_angle_bits_deep=8`
 - `split_dim=0` (all 64 pairs use deep bucket)
 - `storage_mode="kv_quant"`, `v_bits=8`, `group_size=32`
@@ -117,4 +119,4 @@ make promote MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
 make evidence-markdown
 ```
 
-Note: `Llama-3.2-1B` has `head_dim=64` and is **unsupported** by this release.
+Note: `Llama-3.2-1B` (`head_dim=64`) is supported as of v0.4.0.dev0.

@@ -241,6 +241,11 @@ class TurboPolarFastCache:
             tail_k_full=view.partial_k_full,
             tail_v_full=view.partial_v_full,
             tail_length=view.partial_length,
+            warm_k=view.warm_k,
+            warm_v=view.warm_v,
+            warm_length=view.warm_length,
+            warm_k_full=view.warm_k_full,
+            warm_v_full=view.warm_v_full,
         )
 
         # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs

@@ -206,18 +206,12 @@ def validate_quant_v_page_shape(page: QuantVPage, layout: QuantVPageLayout) -> N
 
 @dataclass
 class PagedPolarKStorage:
-    """Paged storage for compressed key blocks.
+    """Paged storage for compressed key blocks using field-specific slab storage.
 
-    Pages are allocated on demand from an explicit immutable layout.  When a page
-    fills, a new empty page is allocated from the same layout; previously filled
-    pages are never copied.
-
-    Page-pool preallocation: call ``preallocate_pool(n)`` after the first block
-    is appended (so the layout is known) to pre-allocate ``n`` empty pages.
-    This eliminates per-decode Metal allocator fragmentation at long contexts.
+    Internally uses one large preallocated array per field that grows by doubling.
+    Virtual pages are sliced from the slab on demand.
     """
 
-    pages: List[PolarKPage] = field(default_factory=list)
     layout: Optional[PolarPageLayout] = None
     block_size: int = 0
     head_dim: int = 0
@@ -227,6 +221,38 @@ class PagedPolarKStorage:
     total_valid_blocks: int = 0
     _page_pool: List[PolarKPage] = field(default_factory=list, repr=False)
     _pool_prealloc_size: int = field(default=0, repr=False)
+    _slab_radii: Optional[mx.array] = field(default=None, repr=False)
+    _slab_angle_l1: Optional[mx.array] = field(default=None, repr=False)
+    _slab_angle_deep: Optional[mx.array] = field(default=None, repr=False)
+    _slab_radii_scales: Optional[mx.array] = field(default=None, repr=False)
+    _capacity_blocks: int = field(default=0, repr=False)
+    _page_capacity: int = field(default=DEFAULT_PAGE_CAPACITY_BLOCKS, repr=False)
+
+    @property
+    def pages(self) -> List[PolarKPage]:
+        """Return fresh virtual PolarKPage objects sliced from the slab."""
+        if self._slab_radii is None:
+            return []
+        virtual_pages: List[PolarKPage] = []
+        num_pages = (
+            self.total_valid_blocks + self._page_capacity - 1
+        ) // self._page_capacity
+        for i in range(num_pages):
+            start = i * self._page_capacity
+            end = start + self._page_capacity
+            valid_in_page = min(self._page_capacity, self.total_valid_blocks - start)
+            page = PolarKPage(
+                radii=self._slab_radii[:, :, start:end, :, :],
+                angle_codes_l1=self._slab_angle_l1[:, :, start:end, :, :],
+                angle_codes_deep=self._slab_angle_deep[:, :, start:end, :, :],
+                radii_scales=self._slab_radii_scales[:, :, start:end, :, :]
+                if self._slab_radii_scales is not None
+                else None,
+                valid_blocks=valid_in_page,
+                capacity_blocks=self._page_capacity,
+            )
+            virtual_pages.append(page)
+        return virtual_pages
 
     def preallocate_pool(self, num_pages: int):
         """Pre-allocate ``num_pages`` empty pages from the current layout.
@@ -245,86 +271,129 @@ class PagedPolarKStorage:
         needed = num_pages - len(self._page_pool)
         for _ in range(needed):
             self._page_pool.append(allocate_polar_page(self.layout))
+        needed_capacity = num_pages * self._page_capacity
+        if self._capacity_blocks < needed_capacity:
+            self._grow_slab_to(needed_capacity)
 
-    def _allocate_page(self):
-        if self.layout is None:
-            raise RuntimeError("PagedPolarKStorage layout not set")
-        if self._page_pool:
-            page = self._page_pool.pop()
-            page.valid_blocks = 0
-            self.pages.append(page)
+    def _slab_shape(
+        self, page_shape: Tuple[int, ...], capacity_blocks: int
+    ) -> Tuple[int, ...]:
+        return page_shape[:2] + (capacity_blocks,) + page_shape[3:]
+
+    def _init_slabs(self, capacity_blocks: int):
+        self._capacity_blocks = capacity_blocks
+        self._slab_radii = mx.zeros(
+            self._slab_shape(self.layout.radii_shape, capacity_blocks),
+            dtype=mx.int8,
+        )
+        self._slab_angle_l1 = mx.zeros(
+            self._slab_shape(self.layout.angle_l1_shape, capacity_blocks),
+            dtype=mx.uint8,
+        )
+        self._slab_angle_deep = mx.zeros(
+            self._slab_shape(self.layout.angle_deep_shape, capacity_blocks),
+            dtype=mx.uint8,
+        )
+        self._slab_radii_scales = None
+        if self.layout.radii_scales_shape is not None:
+            self._slab_radii_scales = mx.zeros(
+                self._slab_shape(self.layout.radii_scales_shape, capacity_blocks),
+                dtype=mx.float16,
+            )
+
+    def _extend_slab(self, slab: mx.array, new_capacity: int) -> mx.array:
+        old_capacity = slab.shape[2]
+        extension_shape = list(slab.shape)
+        extension_shape[2] = new_capacity - old_capacity
+        extension = mx.zeros(tuple(extension_shape), dtype=slab.dtype)
+        return mx.concatenate([slab, extension], axis=2)
+
+    def _grow_slab_to(self, new_capacity: int):
+        if new_capacity <= self._capacity_blocks:
+            return
+        # Track bytes copied from old slabs
+        for arr in (self._slab_radii, self._slab_angle_l1, self._slab_angle_deep):
+            self.bytes_copied_during_growth += _nbytes(arr)
+        if self._slab_radii_scales is not None:
+            self.bytes_copied_during_growth += _nbytes(self._slab_radii_scales)
+
+        self._slab_radii = self._extend_slab(self._slab_radii, new_capacity)
+        self._slab_angle_l1 = self._extend_slab(self._slab_angle_l1, new_capacity)
+        self._slab_angle_deep = self._extend_slab(self._slab_angle_deep, new_capacity)
+        if self._slab_radii_scales is not None:
+            self._slab_radii_scales = self._extend_slab(
+                self._slab_radii_scales, new_capacity
+            )
+        self._capacity_blocks = new_capacity
+
+    def _grow_slabs(self):
+        if self._capacity_blocks == 0:
+            self._init_slabs(self._page_capacity)
         else:
-            page = allocate_polar_page(self.layout)
-            self.pages.append(page)
-        self.page_allocations += 1
+            self._grow_slab_to(self._capacity_blocks * 2)
 
     def append(self, block: PolarKeyBlock):
-        if not self.pages:
+        if self._slab_radii is None:
             self.metadata = block.metadata
             self.block_size = block.block_size
             self.head_dim = block.head_dim
-            self.layout = compute_polar_page_layout(block, DEFAULT_PAGE_CAPACITY_BLOCKS)
-            self._allocate_page()
+            self.layout = compute_polar_page_layout(
+                block, DEFAULT_PAGE_CAPACITY_BLOCKS
+            )
+            self._init_slabs(self._page_capacity)
+            self.page_allocations = 1
 
-        last_page = self.pages[-1]
-        if last_page.valid_blocks >= last_page.capacity_blocks:
-            self._allocate_page()
-            last_page = self.pages[-1]
+        if self.total_valid_blocks >= self._capacity_blocks:
+            self._grow_slabs()
 
-        idx = last_page.valid_blocks
-        # block fields are 4-D [B, H, L, ...]; page fields are 5-D [B, H, C, L, ...]
-        last_page.radii = _set_block(
-            last_page.radii, idx, mx.expand_dims(block.radii, axis=2)
+        if self.total_valid_blocks > 0 and self.total_valid_blocks % self._page_capacity == 0:
+            if self._page_pool:
+                self._page_pool.pop()
+            self.page_allocations += 1
+
+        idx = self.total_valid_blocks
+        # block fields are 4-D [B, H, L, ...]; slab fields are 5-D [B, H, C, L, ...]
+        self._slab_radii = _set_block(
+            self._slab_radii, idx, mx.expand_dims(block.radii, axis=2)
         )
-        last_page.angle_codes_l1 = _set_block(
-            last_page.angle_codes_l1, idx, mx.expand_dims(block.angle_codes_l1, axis=2)
+        self._slab_angle_l1 = _set_block(
+            self._slab_angle_l1, idx, mx.expand_dims(block.angle_codes_l1, axis=2)
         )
-        last_page.angle_codes_deep = _set_block(
-            last_page.angle_codes_deep,
+        self._slab_angle_deep = _set_block(
+            self._slab_angle_deep,
             idx,
             mx.expand_dims(block.angle_codes_deep, axis=2),
         )
         if block.radii_scales is not None:
-            last_page.radii_scales = _set_block(
-                last_page.radii_scales, idx, mx.expand_dims(block.radii_scales, axis=2)
+            self._slab_radii_scales = _set_block(
+                self._slab_radii_scales,
+                idx,
+                mx.expand_dims(block.radii_scales, axis=2),
             )
-        last_page.valid_blocks += 1
         self.total_valid_blocks += 1
 
     def debug_materialize_all_blocks(self, shape: Tuple[int, ...]) -> PolarKeyBlock:
-        """Return a single PolarKeyBlock by concatenating all valid pages.
+        """Return a single PolarKeyBlock by slicing the slab.
 
         This is a debug/export utility only.  Production kernels must process
         pages directly without this concatenation step.
         """
-        if not self.pages or self.total_valid_blocks == 0:
+        if self._slab_radii is None or self.total_valid_blocks == 0:
             raise ValueError("No compressed blocks to materialize")
 
-        all_radii = []
-        all_angle_l1 = []
-        all_angle_deep = []
-        all_scales = []
-        for page in self.pages:
-            if page.valid_blocks == 0:
-                continue
-            all_radii.append(page.radii[:, :, :page.valid_blocks, :, :])
-            all_angle_l1.append(page.angle_codes_l1[:, :, :page.valid_blocks, :, :])
-            all_angle_deep.append(
-                page.angle_codes_deep[:, :, :page.valid_blocks, :, :]
-            )
-            if page.radii_scales is not None:
-                all_scales.append(page.radii_scales[:, :, :page.valid_blocks, :, :])
-
-        radii = mx.concatenate(all_radii, axis=2)
-        angle_l1 = mx.concatenate(all_angle_l1, axis=2)
-        angle_deep = mx.concatenate(all_angle_deep, axis=2)
-        radii_scales = mx.concatenate(all_scales, axis=2) if all_scales else None
-
         return PolarKeyBlock(
-            radii=radii,
-            angle_codes_l1=angle_l1,
-            angle_codes_deep=angle_deep,
-            radii_scales=radii_scales,
+            radii=self._slab_radii[:, :, : self.total_valid_blocks, :, :],
+            angle_codes_l1=self._slab_angle_l1[
+                :, :, : self.total_valid_blocks, :, :
+            ],
+            angle_codes_deep=self._slab_angle_deep[
+                :, :, : self.total_valid_blocks, :, :
+            ],
+            radii_scales=self._slab_radii_scales[
+                :, :, : self.total_valid_blocks, :, :
+            ]
+            if self._slab_radii_scales is not None
+            else None,
             shape=shape,
             block_size=self.block_size,
             head_dim=self.head_dim,
@@ -333,7 +402,11 @@ class PagedPolarKStorage:
 
     @property
     def page_count(self) -> int:
-        return len(self.pages)
+        if self._slab_radii is None:
+            return 0
+        return (
+            self.total_valid_blocks + self._page_capacity - 1
+        ) // self._page_capacity
 
     def get_memory_stats(self) -> Tuple[int, int]:
         """Return (logical_payload_bytes, allocated_capacity_bytes).
@@ -345,37 +418,42 @@ class PagedPolarKStorage:
         """
         logical = 0
         allocated = 0
-        for page in self.pages:
-            for arr in (page.radii, page.angle_codes_l1, page.angle_codes_deep):
-                arr_bytes = _nbytes(arr)
-                allocated += arr_bytes
-                if page.valid_blocks > 0:
-                    # Compute valid fraction arithmetically.
-                    logical += arr_bytes * page.valid_blocks // arr.shape[2]
-            if page.radii_scales is not None:
-                rs_bytes = _nbytes(page.radii_scales)
-                allocated += rs_bytes
-                if page.valid_blocks > 0:
-                    logical += rs_bytes * page.valid_blocks // page.radii_scales.shape[2]
+        for arr in (self._slab_radii, self._slab_angle_l1, self._slab_angle_deep):
+            arr_bytes = _nbytes(arr)
+            allocated += arr_bytes
+            if self.total_valid_blocks > 0:
+                # Compute valid fraction arithmetically.
+                logical += arr_bytes * self.total_valid_blocks // arr.shape[2]
+        if self._slab_radii_scales is not None:
+            rs_bytes = _nbytes(self._slab_radii_scales)
+            allocated += rs_bytes
+            if self.total_valid_blocks > 0:
+                logical += rs_bytes * self.total_valid_blocks // self._slab_radii_scales.shape[2]
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> PolarKeyBlock:
         """Return a single PolarKeyBlock from a specific page and block index."""
-        page = self.pages[page_index]
-        if block_index >= page.valid_blocks:
+        flat_idx = page_index * self._page_capacity + block_index
+        page_valid = min(
+            self._page_capacity,
+            self.total_valid_blocks - page_index * self._page_capacity,
+        )
+        if page_valid <= 0 or block_index >= page_valid:
             raise IndexError(
-                f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
+                f"Block index {block_index} out of range (page has {page_valid} valid blocks)"
             )
         return PolarKeyBlock(
-            radii=page.radii[:, :, block_index:block_index + 1, :, :],
-            angle_codes_l1=page.angle_codes_l1[
-                :, :, block_index:block_index + 1, :, :
+            radii=self._slab_radii[:, :, flat_idx : flat_idx + 1, :, :],
+            angle_codes_l1=self._slab_angle_l1[
+                :, :, flat_idx : flat_idx + 1, :, :
             ],
-            angle_codes_deep=page.angle_codes_deep[
-                :, :, block_index:block_index + 1, :, :
+            angle_codes_deep=self._slab_angle_deep[
+                :, :, flat_idx : flat_idx + 1, :, :
             ],
-            radii_scales=page.radii_scales[:, :, block_index:block_index + 1, :, :]
-            if page.radii_scales is not None
+            radii_scales=self._slab_radii_scales[
+                :, :, flat_idx : flat_idx + 1, :, :
+            ]
+            if self._slab_radii_scales is not None
             else None,
             shape=(
                 self.layout.batch_size,
@@ -391,13 +469,12 @@ class PagedPolarKStorage:
 
 @dataclass
 class PagedQuantVStorage:
-    """Paged storage for quantized value blocks.
+    """Paged storage for quantized value blocks using field-specific slab storage.
 
-    Page-pool preallocation: call ``preallocate_pool(n)`` after the first block
-    is appended (so the layout is known) to pre-allocate ``n`` empty pages.
+    Internally uses one large preallocated array per field that grows by doubling.
+    Virtual pages are sliced from the slab on demand.
     """
 
-    pages: List[QuantVPage] = field(default_factory=list)
     layout: Optional[QuantVPageLayout] = None
     group_size: int = 32
     page_allocations: int = 0
@@ -405,6 +482,37 @@ class PagedQuantVStorage:
     total_valid_blocks: int = 0
     _page_pool: List[QuantVPage] = field(default_factory=list, repr=False)
     _pool_prealloc_size: int = field(default=0, repr=False)
+    _slab_codes: Optional[mx.array] = field(default=None, repr=False)
+    _slab_scales: Optional[mx.array] = field(default=None, repr=False)
+    _slab_zero_points: Optional[mx.array] = field(default=None, repr=False)
+    _capacity_blocks: int = field(default=0, repr=False)
+    _page_capacity: int = field(default=DEFAULT_PAGE_CAPACITY_BLOCKS, repr=False)
+
+    @property
+    def pages(self) -> List[QuantVPage]:
+        """Return fresh virtual QuantVPage objects sliced from the slab."""
+        if self._slab_codes is None:
+            return []
+        virtual_pages: List[QuantVPage] = []
+        num_pages = (
+            self.total_valid_blocks + self._page_capacity - 1
+        ) // self._page_capacity
+        for i in range(num_pages):
+            start = i * self._page_capacity
+            end = start + self._page_capacity
+            valid_in_page = min(self._page_capacity, self.total_valid_blocks - start)
+            page = QuantVPage(
+                codes=self._slab_codes[:, :, start:end, :, :],
+                scales=self._slab_scales[:, :, start:end, :, :],
+                valid_blocks=valid_in_page,
+                capacity_blocks=self._page_capacity,
+                group_size=self.group_size,
+                zero_points=self._slab_zero_points[:, :, start:end, :, :]
+                if self._slab_zero_points is not None
+                else None,
+            )
+            virtual_pages.append(page)
+        return virtual_pages
 
     def preallocate_pool(self, num_pages: int):
         """Pre-allocate ``num_pages`` empty pages from the current layout.
@@ -423,89 +531,115 @@ class PagedQuantVStorage:
         needed = num_pages - len(self._page_pool)
         for _ in range(needed):
             self._page_pool.append(allocate_quant_v_page(self.layout))
+        needed_capacity = num_pages * self._page_capacity
+        if self._capacity_blocks < needed_capacity:
+            self._grow_slab_to(needed_capacity)
 
-    def _allocate_page(self):
-        if self.layout is None:
-            raise RuntimeError("PagedQuantVStorage layout not set")
-        if self._page_pool:
-            page = self._page_pool.pop()
-            page.valid_blocks = 0
-            self.pages.append(page)
+    def _slab_shape(
+        self, page_shape: Tuple[int, ...], capacity_blocks: int
+    ) -> Tuple[int, ...]:
+        return page_shape[:2] + (capacity_blocks,) + page_shape[3:]
+
+    def _init_slabs(self, capacity_blocks: int):
+        self._capacity_blocks = capacity_blocks
+        self._slab_codes = mx.zeros(
+            self._slab_shape(self.layout.codes_shape, capacity_blocks),
+            dtype=mx.int8,
+        )
+        self._slab_scales = mx.zeros(
+            self._slab_shape(self.layout.scales_shape, capacity_blocks),
+            dtype=mx.float16,
+        )
+        self._slab_zero_points = None
+
+    def _extend_slab(self, slab: mx.array, new_capacity: int) -> mx.array:
+        old_capacity = slab.shape[2]
+        extension_shape = list(slab.shape)
+        extension_shape[2] = new_capacity - old_capacity
+        extension = mx.zeros(tuple(extension_shape), dtype=slab.dtype)
+        return mx.concatenate([slab, extension], axis=2)
+
+    def _grow_slab_to(self, new_capacity: int):
+        if new_capacity <= self._capacity_blocks:
+            return
+        # Track bytes copied from old slabs
+        for arr in (self._slab_codes, self._slab_scales):
+            self.bytes_copied_during_growth += _nbytes(arr)
+        if self._slab_zero_points is not None:
+            self.bytes_copied_during_growth += _nbytes(self._slab_zero_points)
+
+        self._slab_codes = self._extend_slab(self._slab_codes, new_capacity)
+        self._slab_scales = self._extend_slab(self._slab_scales, new_capacity)
+        if self._slab_zero_points is not None:
+            self._slab_zero_points = self._extend_slab(
+                self._slab_zero_points, new_capacity
+            )
+        self._capacity_blocks = new_capacity
+
+    def _grow_slabs(self):
+        if self._capacity_blocks == 0:
+            self._init_slabs(self._page_capacity)
         else:
-            page = allocate_quant_v_page(self.layout)
-            self.pages.append(page)
-        self.page_allocations += 1
+            self._grow_slab_to(self._capacity_blocks * 2)
 
     def append(self, block: QuantizedVBlock):
-        if not self.pages:
+        if self._slab_codes is None:
             self.group_size = block.group_size
             self.layout = compute_quant_v_page_layout(
                 block, DEFAULT_PAGE_CAPACITY_BLOCKS
             )
-            self._allocate_page()
+            self._init_slabs(self._page_capacity)
+            self.page_allocations = 1
 
-        last_page = self.pages[-1]
-        if last_page.valid_blocks >= last_page.capacity_blocks:
-            self._allocate_page()
-            last_page = self.pages[-1]
+        if self.total_valid_blocks >= self._capacity_blocks:
+            self._grow_slabs()
 
-        idx = last_page.valid_blocks
-        last_page.codes = _set_block(last_page.codes, idx, block.codes)
-        last_page.scales = _set_block(last_page.scales, idx, block.scales)
+        if self.total_valid_blocks > 0 and self.total_valid_blocks % self._page_capacity == 0:
+            if self._page_pool:
+                self._page_pool.pop()
+            self.page_allocations += 1
+
+        idx = self.total_valid_blocks
+        self._slab_codes = _set_block(self._slab_codes, idx, block.codes)
+        self._slab_scales = _set_block(self._slab_scales, idx, block.scales)
         if block.zero_points is not None:
-            if last_page.zero_points is None:
-                # First asymmetric block on a page allocated symmetrically;
-                # allocate zero_points buffer now.
-                B, H, cap, L, D = last_page.codes.shape
+            if self._slab_zero_points is None:
+                B, H, cap, L, D = self._slab_codes.shape
                 num_groups = D // block.group_size
-                last_page.zero_points = mx.zeros(
-                    (B, H, cap, L, num_groups), dtype=mx.float16
+                self._slab_zero_points = mx.zeros(
+                    (B, H, self._capacity_blocks, L, num_groups), dtype=mx.float16
                 )
-            last_page.zero_points = _set_block(
-                last_page.zero_points, idx, block.zero_points
+            self._slab_zero_points = _set_block(
+                self._slab_zero_points, idx, block.zero_points
             )
-        last_page.valid_blocks += 1
         self.total_valid_blocks += 1
 
     def debug_materialize_all_blocks(self) -> QuantizedVBlock:
-        """Return a single QuantizedVBlock by concatenating all valid pages.
+        """Return a single QuantizedVBlock by slicing the slab.
 
         This is a debug/export utility only.  Production kernels must process
         pages directly without this concatenation step.
         """
-        if not self.pages or self.total_valid_blocks == 0:
+        if self._slab_codes is None or self.total_valid_blocks == 0:
             raise ValueError("No quantized V blocks to materialize")
 
-        all_codes = []
-        all_scales = []
-        all_zp = []
-        has_zp = False
-        for page in self.pages:
-            if page.valid_blocks == 0:
-                continue
-            all_codes.append(page.codes[:, :, :page.valid_blocks, :, :])
-            all_scales.append(page.scales[:, :, :page.valid_blocks, :, :])
-            if page.zero_points is not None:
-                has_zp = True
-                all_zp.append(
-                    page.zero_points[:, :, :page.valid_blocks, :, :]
-                )
-
-        codes = mx.concatenate(all_codes, axis=2)
-        scales = mx.concatenate(all_scales, axis=2)
-        zero_points = None
-        if has_zp:
-            zero_points = mx.concatenate(all_zp, axis=2)
+        has_zp = self._slab_zero_points is not None
         return QuantizedVBlock(
-            codes=codes,
-            scales=scales,
+            codes=self._slab_codes[:, :, : self.total_valid_blocks, :, :],
+            scales=self._slab_scales[:, :, : self.total_valid_blocks, :, :],
             group_size=self.group_size,
-            zero_points=zero_points,
+            zero_points=self._slab_zero_points[:, :, : self.total_valid_blocks, :, :]
+            if has_zp
+            else None,
         )
 
     @property
     def page_count(self) -> int:
-        return len(self.pages)
+        if self._slab_codes is None:
+            return 0
+        return (
+            self.total_valid_blocks + self._page_capacity - 1
+        ) // self._page_capacity
 
     def get_memory_stats(self) -> Tuple[int, int]:
         """Return (logical_payload_bytes, allocated_capacity_bytes).
@@ -514,29 +648,32 @@ class PagedQuantVStorage:
         """
         logical = 0
         allocated = 0
-        for page in self.pages:
-            for arr in (page.codes, page.scales):
-                arr_bytes = _nbytes(arr)
-                allocated += arr_bytes
-                if page.valid_blocks > 0:
-                    logical += arr_bytes * page.valid_blocks // arr.shape[2]
+        for arr in (self._slab_codes, self._slab_scales):
+            arr_bytes = _nbytes(arr)
+            allocated += arr_bytes
+            if self.total_valid_blocks > 0:
+                logical += arr_bytes * self.total_valid_blocks // arr.shape[2]
         return logical, allocated
 
     def get_page_block(self, page_index: int, block_index: int) -> QuantizedVBlock:
         """Return a single QuantizedVBlock from a specific page and block index."""
-        page = self.pages[page_index]
-        if block_index >= page.valid_blocks:
+        flat_idx = page_index * self._page_capacity + block_index
+        page_valid = min(
+            self._page_capacity,
+            self.total_valid_blocks - page_index * self._page_capacity,
+        )
+        if page_valid <= 0 or block_index >= page_valid:
             raise IndexError(
-                f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
+                f"Block index {block_index} out of range (page has {page_valid} valid blocks)"
             )
         zero_points = None
-        if page.zero_points is not None:
-            zero_points = page.zero_points[
-                :, :, block_index:block_index + 1, :, :
+        if self._slab_zero_points is not None:
+            zero_points = self._slab_zero_points[
+                :, :, flat_idx : flat_idx + 1, :, :
             ]
         return QuantizedVBlock(
-            codes=page.codes[:, :, block_index:block_index + 1, :, :],
-            scales=page.scales[:, :, block_index:block_index + 1, :, :],
+            codes=self._slab_codes[:, :, flat_idx : flat_idx + 1, :, :],
+            scales=self._slab_scales[:, :, flat_idx : flat_idx + 1, :, :],
             group_size=self.group_size,
             zero_points=zero_points,
         )

@@ -731,6 +731,11 @@ class MetalKernelBridge:
         tail_k_full: Optional[mx.array] = None,
         tail_v_full: Optional[mx.array] = None,
         tail_length: Optional[int] = None,
+        warm_k: Optional[mx.array] = None,
+        warm_v: Optional[mx.array] = None,
+        warm_length: Optional[int] = None,
+        warm_k_full: Optional[mx.array] = None,
+        warm_v_full: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Page-based online-softmax attention without full-cache materialization.
 
@@ -748,13 +753,19 @@ class MetalKernelBridge:
             tail_k_full: full pre-allocated K tail buffer (avoids mx.contiguous copy).
             tail_v_full: full pre-allocated V tail buffer (avoids mx.contiguous copy).
             tail_length: actual number of valid tokens in the tail.
+            warm_k: [B, H_kv, T_warm, D] dense warm cache keys, or None.
+            warm_v: [B, H_kv, T_warm, D] dense warm cache values, or None.
+            warm_length: actual valid tokens in warm cache.
+            warm_k_full: full pre-allocated warm K buffer.
+            warm_v_full: full pre-allocated warm V buffer.
 
         Returns:
             [B, H_q, D] attention output and execution trace dict.
         """
         if mode is ExecutionMode.REFERENCE:
             return self._execute_paged_online_attention_reference(
-                q, pages, tail_k, tail_v, config, actual_seq_len
+                q, pages, tail_k, tail_v, config, actual_seq_len,
+                warm_k=warm_k, warm_v=warm_v,
             )
         if mode is ExecutionMode.METAL_STRICT:
             return self._execute_paged_online_attention_metal_strict(
@@ -763,6 +774,10 @@ class MetalKernelBridge:
                 tail_k_full=tail_k_full,
                 tail_v_full=tail_v_full,
                 tail_length=tail_length,
+                warm_k=warm_k, warm_v=warm_v,
+                warm_length=warm_length,
+                warm_k_full=warm_k_full,
+                warm_v_full=warm_v_full,
             )
         # DEVELOPMENT_AUTO: try strict, fall back to reference on documented
         # Metal availability/dispatch failures only. Programming errors propagate.
@@ -773,12 +788,17 @@ class MetalKernelBridge:
                 tail_k_full=tail_k_full,
                 tail_v_full=tail_v_full,
                 tail_length=tail_length,
+                warm_k=warm_k, warm_v=warm_v,
+                warm_length=warm_length,
+                warm_k_full=warm_k_full,
+                warm_v_full=warm_v_full,
             )
         except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError) as _exc:
             self._stats.full_attention_fallbacks += 1
             self._stats.fallback_calls += 1
             out, trace = self._execute_paged_online_attention_reference(
-                q, pages, tail_k, tail_v, config, actual_seq_len
+                q, pages, tail_k, tail_v, config, actual_seq_len,
+                warm_k=warm_k, warm_v=warm_v,
             )
             trace["fallback_used"] = True
             trace["fallback_reason"] = f"{_exc.__class__.__name__}: {_exc}"
@@ -792,6 +812,8 @@ class MetalKernelBridge:
         tail_v: Optional[mx.array],
         config,
         actual_seq_len: int,
+        warm_k: Optional[mx.array] = None,
+        warm_v: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Reference implementation using dense MLX attention."""
         B, H_q, D = q.shape[0], q.shape[1], config.head_dim
@@ -836,6 +858,15 @@ class MetalKernelBridge:
             )
             state = self._online_softmax_combine(state, scores, v_dense)
             total_tokens += valid_blocks * config.block_size
+        # Warm dense cache (between cold and hot).
+        if warm_k is not None and warm_k.shape[2] > 0:
+            H_kv = warm_k.shape[1]
+            nq = H_q // H_kv
+            wk = mx.repeat(warm_k, nq, axis=1)
+            wv = mx.repeat(warm_v, nq, axis=1)
+            scores = mx.sum(q[:, :, None, :] * wk, axis=-1) * config.attention_scale
+            state = self._online_softmax_combine(state, scores, wv)
+            total_tokens += warm_k.shape[2]
         if tail_k is not None and tail_k.shape[2] > 0:
             H_kv = tail_k.shape[1]
             nq = H_q // H_kv
@@ -868,6 +899,11 @@ class MetalKernelBridge:
         tail_k_full: Optional[mx.array] = None,
         tail_v_full: Optional[mx.array] = None,
         tail_length: Optional[int] = None,
+        warm_k: Optional[mx.array] = None,
+        warm_v: Optional[mx.array] = None,
+        warm_length: Optional[int] = None,
+        warm_k_full: Optional[mx.array] = None,
+        warm_v_full: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Strict Metal path: any missing kernel or dispatch error is fatal.
 
@@ -957,6 +993,34 @@ class MetalKernelBridge:
                 "paged_dispatch": True,
             })
 
+        # Warm dense cache via Metal raw-state kernel (between cold and hot).
+        warm_metal = False
+        _use_warm_k = warm_k_full if warm_k_full is not None else warm_k
+        _use_warm_v = warm_v_full if warm_v_full is not None else warm_v
+        _use_warm_len = warm_length if warm_length is not None else (
+            warm_k.shape[2] if warm_k is not None else 0
+        )
+        if _use_warm_k is not None and _use_warm_len > 0:
+            if self._kernel_dense_tail_raw is None:
+                raise MetalExecutionRequiredError(
+                    "Dense-tail raw-state Metal kernel is unavailable."
+                )
+            try:
+                warm_weighted, warm_max, warm_exp = self._execute_dense_tail_raw(
+                    q, _use_warm_k, _use_warm_v, config,
+                    evaluate_outputs=False,
+                    tail_length=_use_warm_len,
+                )
+            except Exception as _exc:
+                raise MetalKernelDispatchError(
+                    f"Warm dense raw-state Metal kernel dispatch failed: {_exc}"
+                ) from _exc
+            state = self._online_softmax_combine_raw(
+                state, warm_max, warm_exp, warm_weighted
+            )
+            total_tokens += _use_warm_len
+            warm_metal = True
+
         # Dense tail via Metal raw-state kernel.
         # If full pre-allocated buffers are provided, use them to avoid
         # mx.contiguous copy of the sliced tail on every decode step.
@@ -996,6 +1060,8 @@ class MetalKernelBridge:
         # or immediately in async mode (graph construction succeeded).
         for _ in page_traces:
             self._stats.compressed_page_dispatches += 1
+        if warm_metal:
+            self._stats.dense_tail_dispatches += 1
         if dense_tail_metal:
             self._stats.dense_tail_dispatches += 1
         self._stats.attention_invocations += 1
@@ -1008,8 +1074,9 @@ class MetalKernelBridge:
             "kernel_name": "paged_online_attention_full_metal",
             "execution_mode": "metal_strict",
             "metal_used": True,
-            "attn_metal_used": len(page_traces) > 0 or dense_tail_metal,
+            "attn_metal_used": len(page_traces) > 0 or warm_metal or dense_tail_metal,
             "dense_tail_metal": dense_tail_metal,
+            "warm_metal": warm_metal,
             "fallback_used": False,
             "qjl_used": False,
             "quant_v_used": True,

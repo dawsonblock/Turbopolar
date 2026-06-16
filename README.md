@@ -2,13 +2,13 @@
 
 A **Memory-Tiering Cache for Extreme Contexts** on MLX / Apple Silicon.
 
-TurboPolar is an Adaptive Hybrid Cache that keeps the active working context in fast dense memory while archiving historical tokens into compressed polar pages. For contexts under 4K tokens, decode uses pure dense attention with zero overhead. At 16K+ tokens, the compressed tier activates, trading a controlled amount of speed for massive memory savings.
+TurboPolar v0.4.0.dev0 is an **Adaptive Tiered KV Cache**. It keeps the active working context in a fast dense hot window while archiving historical tokens into compressed polar pages. For contexts under 4K tokens, decode uses pure dense attention with zero overhead. At 16K+ tokens, the compressed cold tier activates, trading a controlled amount of speed for massive memory savings.
 
 This is **research alpha software**. Real-model long-context evidence, speed benchmarking, and comparative-value analysis remain incomplete. Promotion remains locked. Do not use it in production.
 
 ## What it does
 
-- **Adaptive Hybrid Architecture**: A dense working window (up to 4K tokens) plus compressed polar pages for historical context.
+- **Adaptive Tiered Architecture** (Milestone 1): A dense hot window (up to 4K tokens) plus compressed polar cold pages for historical context. Warm cache tier planned for Milestone 3.
 - **Polar quantization** for keys (magnitude + angle codes) and grouped int8 for values.
 - **True Paged Dispatch**: Each compressed page is dispatched independently with lazy MLX fusion into a single GPU command buffer. No monolithic arena copy, no per-page Python state merge.
 - **Batched flushing**: When the dense window fills, the oldest 2K tokens are compressed in one batch rather than one block at a time.

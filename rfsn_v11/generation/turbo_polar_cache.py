@@ -26,7 +26,13 @@ class CompressedPageView:
 
 @dataclass
 class TurboPolarAttentionView:
-    """Full attention payload for page-based processing."""
+    """Full attention payload for page-based processing.
+
+    Three-tier ordering (oldest to newest for causal attention):
+      1. ``pages``  — cold compressed pages
+      2. ``warm_*`` — warm dense cache (recently flushed, uncompressed)
+      3. ``partial_*`` — hot dense tail (most recent tokens)
+    """
 
     pages: tuple[CompressedPageView, ...]
     partial_k: Optional[mx.array]
@@ -37,6 +43,12 @@ class TurboPolarAttentionView:
     # mx.contiguous copy on every Metal decode dispatch.
     partial_k_full: Optional[mx.array] = None
     partial_v_full: Optional[mx.array] = None
+    # Warm-cache dense buffers (uncompressed, between cold and hot).
+    warm_k: Optional[mx.array] = None
+    warm_v: Optional[mx.array] = None
+    warm_length: int = 0
+    warm_k_full: Optional[mx.array] = None
+    warm_v_full: Optional[mx.array] = None
 
 
 @dataclass
@@ -129,6 +141,14 @@ class TurboPolarKVCacheRuntime:
         self.hot_length: int = 0
         self.hot_start_index: int = 0
         self.hot_write_index: int = 0
+
+        # Warm-cache dense buffers (uncompressed tier between hot and cold).
+        self.warm_k_buffer: Optional[mx.array] = None
+        self.warm_v_buffer: Optional[mx.array] = None
+        self.warm_length: int = 0
+        self.warm_start_index: int = 0
+        self.warm_write_index: int = 0
+
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks: list[QJLPayload] = []
@@ -298,6 +318,91 @@ class TurboPolarKVCacheRuntime:
     def _current_tail_v(self) -> Optional[mx.array]:
         return self._hot_v_contiguous()
 
+    def _allocate_warm_buffers(self, B: int, H_kv: int, D: int, dtype):
+        cap_tokens = self.config.warm_cache_capacity_blocks * self.config.block_size
+        self.warm_k_buffer = mx.zeros(
+            (B, H_kv, cap_tokens, D), dtype=dtype
+        )
+        self.warm_v_buffer = mx.zeros(
+            (B, H_kv, cap_tokens, D), dtype=dtype
+        )
+        self.warm_length = 0
+        self.warm_start_index = 0
+        self.warm_write_index = 0
+
+    def _warm_k_contiguous(self) -> Optional[mx.array]:
+        if self.warm_length == 0 or self.warm_k_buffer is None:
+            return None
+        cap = self.config.warm_cache_capacity_blocks * self.config.block_size
+        start = self.warm_start_index
+        end = start + self.warm_length
+        if end <= cap:
+            return self.warm_k_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.warm_k_buffer[:, :, start:, :],
+                self.warm_k_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
+
+    def _warm_v_contiguous(self) -> Optional[mx.array]:
+        if self.warm_length == 0 or self.warm_v_buffer is None:
+            return None
+        cap = self.config.warm_cache_capacity_blocks * self.config.block_size
+        start = self.warm_start_index
+        end = start + self.warm_length
+        if end <= cap:
+            return self.warm_v_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.warm_v_buffer[:, :, start:, :],
+                self.warm_v_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
+
+    def _read_oldest_warm_k(self, count: int) -> mx.array:
+        cap = self.config.warm_cache_capacity_blocks * self.config.block_size
+        start = self.warm_start_index
+        end = start + count
+        if end <= cap:
+            return self.warm_k_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.warm_k_buffer[:, :, start:, :],
+                self.warm_k_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
+
+    def _read_oldest_warm_v(self, count: int) -> mx.array:
+        cap = self.config.warm_cache_capacity_blocks * self.config.block_size
+        start = self.warm_start_index
+        end = start + count
+        if end <= cap:
+            return self.warm_v_buffer[:, :, start:end, :]
+        return mx.concatenate(
+            [
+                self.warm_v_buffer[:, :, start:, :],
+                self.warm_v_buffer[:, :, :end - cap, :],
+            ],
+            axis=2,
+        )
+
+    def _compress_warm_oldest(self, num_tokens: int):
+        """Compress oldest ``num_tokens`` from warm into cold storage,
+        then advance warm_start_index."""
+        L = self.config.block_size
+        assert num_tokens % L == 0, "warm overflow must be block-aligned"
+        num_blocks = num_tokens // L
+        k_batch = self._read_oldest_warm_k(num_tokens)
+        v_batch = self._read_oldest_warm_v(num_tokens)
+        self._flush_batch(k_batch, v_batch, num_blocks)
+        cap_tokens = self.config.warm_cache_capacity_blocks * L
+        self.warm_start_index = (self.warm_start_index + num_tokens) % cap_tokens
+        self.warm_length -= num_tokens
+
     def append(self, k_new: mx.array, v_new: mx.array):
         self._validate_append_inputs(k_new, v_new)
 
@@ -387,6 +492,9 @@ class TurboPolarKVCacheRuntime:
         than one block at a time.  After flushing, the start index is
         advanced so the most recent tokens stay in fast dense memory for
         decode attention.  No array shifting is performed.
+
+        If the warm-cache tier is enabled, uncompressed blocks are written
+        to warm first; warm overflow is compressed to cold.
         """
         batch = self.config.flush_batch_size
         L = self.config.block_size
@@ -395,10 +503,48 @@ class TurboPolarKVCacheRuntime:
 
         k_batch = self._read_oldest_k(batch)
         v_batch = self._read_oldest_v(batch)
-        self._flush_batch(k_batch, v_batch, num_blocks)
+
+        if self.config.warm_cache_capacity_blocks > 0:
+            self._flush_to_warm(k_batch, v_batch, num_blocks)
+        else:
+            self._flush_batch(k_batch, v_batch, num_blocks)
 
         self.hot_start_index = (self.hot_start_index + batch) % cap
         self.hot_length -= batch
+
+    def _flush_to_warm(
+        self, k_batch: mx.array, v_batch: mx.array, num_blocks: int
+    ):
+        """Write uncompressed batch to warm cache; compress warm overflow
+        to cold storage."""
+        B, H, batch_len, D = k_batch.shape
+        L = self.config.block_size
+        if self.warm_k_buffer is None:
+            self._allocate_warm_buffers(B, H, D, k_batch.dtype)
+
+        warm_cap_tokens = self.config.warm_cache_capacity_blocks * L
+        # If warm would overflow, compress oldest blocks to cold first.
+        if self.warm_length + batch_len > warm_cap_tokens:
+            overflow = self.warm_length + batch_len - warm_cap_tokens
+            overflow_tokens = ((overflow + L - 1) // L) * L
+            self._compress_warm_oldest(overflow_tokens)
+
+        # Write batch into warm circular buffer at warm_write_index.
+        cap = warm_cap_tokens
+        written = 0
+        while written < batch_len:
+            space = cap - self.warm_write_index
+            take = min(batch_len - written, space)
+            if take > 0:
+                self.warm_k_buffer[
+                    :, :, self.warm_write_index:self.warm_write_index + take, :
+                ] = k_batch[:, :, written:written + take, :]
+                self.warm_v_buffer[
+                    :, :, self.warm_write_index:self.warm_write_index + take, :
+                ] = v_batch[:, :, written:written + take, :]
+                self.warm_write_index = (self.warm_write_index + take) % cap
+                written += take
+        self.warm_length += batch_len
 
     def _flush_batch(
         self, k_batch: mx.array, v_batch: mx.array, num_blocks: int
@@ -564,6 +710,11 @@ class TurboPolarKVCacheRuntime:
             total_tokens=self.actual_seq_len,
             partial_k_full=self.hot_k_buffer,
             partial_v_full=self.hot_v_buffer,
+            warm_k=self._warm_k_contiguous(),
+            warm_v=self._warm_v_contiguous(),
+            warm_length=self.warm_length,
+            warm_k_full=self.warm_k_buffer,
+            warm_v_full=self.warm_v_buffer,
         )
 
     def audit_cache_residency(self) -> CacheResidencyAudit:
@@ -574,7 +725,7 @@ class TurboPolarKVCacheRuntime:
         return CacheResidencyAudit(
             dense_full_k_history_present=False,
             dense_full_v_history_present=False,
-            dense_tail_tokens=self.hot_length,
+            dense_tail_tokens=self.hot_length + self.warm_length,
             materialized_compressed_history_present=bool(
                 has_materialized_k or has_materialized_v
             ),
@@ -792,16 +943,91 @@ class TurboPolarKVCacheRuntime:
 
     def _maybe_encode_partial(self) -> Optional[Dict[str, Any]]:
         """Encode the partial tail padded to a full block, returning
-        unified-shape tensors."""
+        unified-shape tensors.
+
+        With the circular-buffer hot window, the tail may contain
+        up to dense_tail_capacity tokens.  If the tail already
+        contains one or more full blocks, we encode those blocks
+        and leave only the remainder as the true partial.
+        """
         tail_k = self._current_tail_k()
         if tail_k is None:
             return None
         B, H, T_part, D = tail_k.shape
         L = self.config.block_size
+        tail_v = self._current_tail_v()
+        if tail_v is None:
+            return None
+
+        if T_part >= L:
+            # Hot window contains full block(s).  Encode the oldest
+            # full block(s) into a temporary multi-block payload.
+            num_full = T_part // L
+            rem = T_part % L
+            k_full = tail_k[:, :, :num_full * L, :].reshape(
+                B, H, num_full, L, D
+            )
+            v_full = tail_v[:, :, :num_full * L, :].reshape(
+                B, H, num_full, L, D
+            )
+            polar_blocks = self.polar_encoder.encode_blocks(k_full)
+            quant_v = self.v_quantizer.encode_blocks(v_full)
+            if rem > 0:
+                k_rem = tail_k[:, :, num_full * L:, :]
+                v_rem = tail_v[:, :, num_full * L:, :]
+                pad = L - rem
+                k_pad = mx.pad(k_rem, [(0, 0), (0, 0), (0, pad), (0, 0)])
+                v_pad = mx.pad(v_rem, [(0, 0), (0, 0), (0, pad), (0, 0)])
+                pb = self.polar_encoder.encode_block(k_pad)
+                qv = self.v_quantizer.quantize_block(
+                    v_pad.reshape(B, H, 1, L, D)
+                )
+                radii = mx.concatenate([
+                    polar_blocks.radii,
+                    mx.expand_dims(pb.radii, axis=2),
+                ], axis=2)
+                angle_l1 = mx.concatenate([
+                    polar_blocks.angle_codes_l1,
+                    mx.expand_dims(pb.angle_codes_l1, axis=2),
+                ], axis=2)
+                angle_deep = mx.concatenate([
+                    polar_blocks.angle_codes_deep,
+                    mx.expand_dims(pb.angle_codes_deep, axis=2),
+                ], axis=2)
+                radii_scales = None
+                if polar_blocks.radii_scales is not None:
+                    rs_pb = pb.radii_scales
+                    if rs_pb is not None:
+                        radii_scales = mx.concatenate([
+                            polar_blocks.radii_scales,
+                            mx.expand_dims(rs_pb, axis=2),
+                        ], axis=2)
+                quant_v = QuantizedVBlock(
+                    codes=mx.concatenate([
+                        quant_v.codes, qv.codes], axis=2),
+                    scales=mx.concatenate([
+                        quant_v.scales, qv.scales], axis=2),
+                    group_size=quant_v.group_size,
+                )
+            else:
+                radii = polar_blocks.radii
+                angle_l1 = polar_blocks.angle_codes_l1
+                angle_deep = polar_blocks.angle_codes_deep
+                radii_scales = polar_blocks.radii_scales
+            return {
+                "radii": radii,
+                "angle_l1": angle_l1,
+                "angle_deep": angle_deep,
+                "radii_scales": radii_scales,
+                "quant_v": quant_v,
+                "metadata": polar_blocks.metadata,
+                "qjl": None,
+            }
+
         pad = L - T_part
         pad_width = [(0, 0), (0, 0), (0, pad), (0, 0)]
         k_padded = mx.pad(tail_k, pad_width)
-        v_padded = mx.pad(self._current_tail_v(), pad_width)
+        v_padded = mx.pad(tail_v, pad_width)
 
         polar_block = self.polar_encoder.encode_block(k_padded)
         radii = mx.expand_dims(polar_block.radii, axis=2)
@@ -910,6 +1136,23 @@ class TurboPolarKVCacheRuntime:
             else:
                 dense_tail = 0
 
+        # Warm-cache buffers (also dense, always allocated).
+        if self.warm_k_buffer is not None:
+            allocated += _nbytes(self.warm_k_buffer)
+            allocated += _nbytes(self.warm_v_buffer)
+            if self.warm_length > 0:
+                itemsize = self.warm_k_buffer.itemsize
+                warm_logical_bytes = (
+                    self.warm_k_buffer.shape[0]
+                    * self.warm_k_buffer.shape[1]
+                    * self.warm_length
+                    * self.warm_k_buffer.shape[3]
+                    * itemsize
+                    * 2
+                )
+                logical += warm_logical_bytes
+                dense_tail += warm_logical_bytes
+
         # QJL payloads.
         for qjl in self.qjl_blocks:
             logical += _nbytes(qjl.packed_signs) + _nbytes(qjl.norms)
@@ -964,6 +1207,9 @@ class TurboPolarKVCacheRuntime:
         if self.hot_k_buffer is not None:
             arrays.append(self.hot_k_buffer)
             arrays.append(self.hot_v_buffer)
+        if self.warm_k_buffer is not None:
+            arrays.append(self.warm_k_buffer)
+            arrays.append(self.warm_v_buffer)
         # Evaluate underlying paged storage directly, not stale cached views.
         for page in self.k_storage._paged.pages:
             arrays.extend(
@@ -998,6 +1244,11 @@ class TurboPolarKVCacheRuntime:
         self.hot_length = 0
         self.hot_start_index = 0
         self.hot_write_index = 0
+        self.warm_k_buffer = None
+        self.warm_v_buffer = None
+        self.warm_length = 0
+        self.warm_start_index = 0
+        self.warm_write_index = 0
         self.k_storage = PolarKBlockStorage()
         self.v_storage = QuantVBlockStorage()
         self.qjl_blocks = []

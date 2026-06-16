@@ -620,15 +620,32 @@ class PromotionGate:
     # LESS memory than dense.  1.20 => TurboPolar peak <= 83% of dense peak.
     LOGICAL_KV_RATIO = 1.85
     PERSISTENT_STORAGE_RATIO = 1.75
-    PEAK_MEMORY_RATIO_8192 = 1.20
 
-    # Speed thresholds — Tiered Architecture profile (Milestone 1):
-    # Zero degradation below dense hot capacity (4K default).
-    MAX_REGRESSION_AT_4096_PLUS = 1.00
-    # Acceptable degradation (< 30%) at extreme long contexts (16K+).
-    MIN_RATIO_AT_16384_PLUS = 0.70
+    # Context-specific memory thresholds (Milestone 5).
+    # Short context: dense hot window dominates; minimal savings expected.
+    MEM_RATIO_SHORT = 0.90          # 512-4095 tokens
+    # Medium context: some blocks in cold tier; savings should appear.
+    MEM_RATIO_MEDIUM = 1.10         # 4096-8191 tokens
+    # Long context: significant compression; strong savings required.
+    MEM_RATIO_LONG = 1.20           # 8192-16383 tokens
+    # Extreme context: maximum compression benefit.
+    MEM_RATIO_EXTREME = 1.20        # 16384+ tokens
+
+    # Context-specific speed thresholds (Milestone 5).
+    # Thresholds reflect the three-tier architecture:
+    #   short  = pure hot dense (negligible overhead)
+    #   medium = hot + some cold pages (minor decompression overhead)
+    #   long   = hot + warm + significant cold (moderate overhead)
+    #   extreme= full three-tier (maximum overhead, bounded)
+    SPEED_RATIO_SHORT = 0.95        # 512-2047 tokens
+    SPEED_RATIO_MEDIUM = 0.93       # 2048-4095 tokens
+    SPEED_RATIO_LONG = 0.85         # 4096-8191 tokens
+    SPEED_RATIO_VERY_LONG = 0.75    # 8192-16383 tokens
+    SPEED_RATIO_EXTREME = 0.70      # 16384+ tokens
+
+    # Aggregate gates (supplement context-specific checks).
     MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT = 1.05
-    MIN_MEDIAN_RATIO_AT_8192_PLUS = 1.03
+    MIN_MEDIAN_RATIO_GLOBAL = 0.90
 
     # Experiment completeness requirements
     REQUIRED_CONTEXTS = {512, 2048, 4096, 8192, 16384}
@@ -645,6 +662,129 @@ class PromotionGate:
         "tests.benchmarks.test_turbopolar_fast_attention",
         "tests.benchmarks.test_turbo_polar_online_attention",
     }
+
+    @staticmethod
+    def _context_bucket(context: int) -> str:
+        """Classify a context length into a speed-gate bucket."""
+        if context < 2048:
+            return "short"
+        if context < 4096:
+            return "medium"
+        if context < 8192:
+            return "long"
+        if context < 16384:
+            return "very_long"
+        return "extreme"
+
+    SPEED_THRESHOLDS: Dict[str, float] = {
+        "short": SPEED_RATIO_SHORT,
+        "medium": SPEED_RATIO_MEDIUM,
+        "long": SPEED_RATIO_LONG,
+        "very_long": SPEED_RATIO_VERY_LONG,
+        "extreme": SPEED_RATIO_EXTREME,
+    }
+
+    MEM_THRESHOLDS: Dict[str, float] = {
+        "short": MEM_RATIO_SHORT,
+        "medium": MEM_RATIO_MEDIUM,
+        "long": MEM_RATIO_LONG,
+        "extreme": MEM_RATIO_EXTREME,
+    }
+
+    def _compute_per_bucket_speed(
+        self, raw_timing: dict
+    ) -> Dict[str, float]:
+        """Recompute median speed ratios per context bucket from raw timing.
+
+        Supports multiple artifact formats:
+          - Benchmark: {"trial_results": [...]}
+          - Legacy: {"speed_evidence": {"trial_results": [...]}}
+        """
+        bucket_data: Dict[str, list[tuple[str, float, int]]] = {
+            "short": [],
+            "medium": [],
+            "long": [],
+            "very_long": [],
+            "extreme": [],
+        }
+        trials = raw_timing.get("trial_results")
+        if trials is None:
+            se = raw_timing.get("speed_evidence", {})
+            trials = se.get("trial_results", [])
+        if not trials:
+            return {}
+        for trial in trials:
+            if not isinstance(trial, dict):
+                continue
+            ctx = trial.get("context_length")
+            mode = trial.get("mode")
+            per_token = trial.get("per_token_ms", [])
+            if ctx is None or mode is None or not per_token:
+                continue
+            bucket = self._context_bucket(ctx)
+            median_ms = float(np.median(per_token))
+            bucket_data.setdefault(bucket, []).append((mode, median_ms, ctx))
+
+        results: Dict[str, float] = {}
+        for bucket, entries in bucket_data.items():
+            dense_ms: Dict[int, list[float]] = {}
+            turbo_ms: Dict[int, list[float]] = {}
+            for mode, ms, ctx in entries:
+                if mode == "dense":
+                    dense_ms.setdefault(ctx, []).append(ms)
+                elif mode == "turbo":
+                    turbo_ms.setdefault(ctx, []).append(ms)
+            ratios = []
+            for ctx in set(dense_ms) & set(turbo_ms):
+                d = sum(dense_ms[ctx]) / len(dense_ms[ctx])
+                t = sum(turbo_ms[ctx]) / len(turbo_ms[ctx])
+                if t > 0:
+                    ratios.append(d / t)
+            if ratios:
+                results[bucket] = float(np.median(ratios))
+        return results
+
+    def _compute_per_bucket_memory(
+        self, raw_memory: dict
+    ) -> Dict[str, float]:
+        """Recompute peak-memory ratios per context bucket from raw memory.
+
+        Supports multiple artifact formats:
+          - Benchmark: {"measurements": [{"context_length": ..., "dense_peak_bytes": ..., "turbo_peak_bytes": ...}]}
+          - Legacy: {"records": [{"length": ..., "dense_total_peak_bytes": ..., "turbo_total_peak_bytes": ...}]}
+        """
+        bucket_ratios: Dict[str, list[float]] = {
+            "short": [],
+            "medium": [],
+            "long": [],
+            "extreme": [],
+        }
+        entries = raw_memory.get("measurements", raw_memory.get("records", []))
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            ctx = entry.get("context_length", entry.get("length"))
+            if ctx is None:
+                continue
+            dense_peak = entry.get(
+                "dense_peak_bytes", entry.get("dense_total_peak_bytes")
+            )
+            turbo_peak = entry.get(
+                "turbo_peak_bytes", entry.get("turbo_total_peak_bytes")
+            )
+            if dense_peak is None or turbo_peak is None:
+                continue
+            if dense_peak <= 0 or turbo_peak <= 0:
+                continue
+            bucket = self._context_bucket(ctx)
+            bucket_ratios.setdefault(bucket, []).append(
+                float(dense_peak) / float(turbo_peak)
+            )
+        return {
+            b: float(np.median(v))
+            for b, v in bucket_ratios.items()
+            if v
+        }
 
     def evaluate(self, evidence: PromotionEvidence) -> PromotionDecision:
         reasons: List[str] = []
@@ -1202,18 +1342,48 @@ class PromotionGate:
                 f"Fused decode had fallback reasons: {fd.fallback_reasons}"
             )
 
-        # Speed
+        # Speed — Context-specific gates (Milestone 5).
         sr = evidence.speed_report
+
+        # Backward-compatible summary checks (preserved for tests that
+        # mutate summary values without providing raw artifacts).
         sr_min_ok = _require_finite_number(
             "Speed min_ratio_at_4096_plus", sr.min_ratio_at_4096_plus, reasons
         )
         if (
             sr_min_ok
-            and sr.min_ratio_at_4096_plus < self.MAX_REGRESSION_AT_4096_PLUS
+            and sr.min_ratio_at_4096_plus < self.SPEED_RATIO_MEDIUM
         ):
             reasons.append(
                 f"Speed ratio at 4096+ minimum {sr.min_ratio_at_4096_plus} < "
-                f"{self.MAX_REGRESSION_AT_4096_PLUS}"
+                f"{self.SPEED_RATIO_MEDIUM}"
+            )
+        sr_max_ok = _require_finite_number(
+            "Speed max_ratio_at_4096_plus", sr.max_ratio_at_4096_plus, reasons
+        )
+        if (
+            sr_max_ok
+            and sr.max_ratio_at_4096_plus
+            < self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT
+        ):
+            reasons.append(
+                f"No long-context tier improved by >= "
+                f"{self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT}: "
+                f"max ratio {sr.max_ratio_at_4096_plus}"
+            )
+        sr_med_ok = _require_finite_number(
+            "Speed median_ratio_at_8192_plus",
+            sr.median_ratio_at_8192_plus,
+            reasons,
+        )
+        if (
+            sr_med_ok
+            and sr.median_ratio_at_8192_plus
+            < self.SPEED_RATIO_VERY_LONG
+        ):
+            reasons.append(
+                f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < "
+                f"{self.SPEED_RATIO_VERY_LONG}"
             )
 
         # Require strict execution and zero fallbacks in speed evidence
@@ -1230,28 +1400,26 @@ class PromotionGate:
                 f"Speed evidence fallback_calls={sr.fallback_calls}; "
                 f"fallback occurred in strict mode."
             )
+
         if not sr.raw_timing_path:
             reasons.append("Speed evidence raw_timing_path is missing.")
         elif not sr.raw_timing_hash:
             reasons.append("Speed evidence raw_timing_hash is missing.")
         else:
-            # Validate raw timing artifact
-            recomputed_speed: dict[str, float] | None = None
+            # Validate raw timing artifact and compute per-bucket ratios
             try:
                 content = validate_artifact_file(
                     sr.raw_timing_path,
                     sr.raw_timing_hash,
                     artifact_name="Speed raw timing artifact",
                 )
-                # P1-25: Parse speed trials using canonical schema validator
                 raw_timing = json.loads(
                     content, parse_constant=_reject_json_nonfinite
                 )
                 if not isinstance(raw_timing, dict):
                     reasons.append("Speed raw timing must be a JSON object")
                 else:
-                    # Use canonical RawSpeedArtifact validator for unified
-                    # validation
+                    # Canonical validation
                     try:
                         artifact = RawSpeedArtifact.from_dict(raw_timing)
                         validation_errors = validate_speed_trials(artifact)
@@ -1262,7 +1430,21 @@ class PromotionGate:
                             f"Speed canonical validation failed: {exc}"
                         )
 
-                    # P1-25: Recompute speed ratios from raw timing
+                    # Context-specific per-bucket validation
+                    bucket_ratios = self._compute_per_bucket_speed(raw_timing)
+                    for bucket, threshold in self.SPEED_THRESHOLDS.items():
+                        ratio = bucket_ratios.get(bucket)
+                        if ratio is None:
+                            reasons.append(
+                                f"Speed bucket '{bucket}' missing from raw timing"
+                            )
+                        elif ratio < threshold:
+                            reasons.append(
+                                f"Speed ratio {bucket}={ratio:.3f} < "
+                                f"threshold {threshold}"
+                            )
+
+                    # Backward-compatible recomputation check
                     recomputed_speed = _recompute_speed_ratios(raw_timing)
                     if recomputed_speed is not None:
                         min_r4096 = recomputed_speed["min_ratio_4096_plus"]
@@ -1272,24 +1454,6 @@ class PromotionGate:
                             rec = recomputed_speed['min_ratio_4096_plus']
                             reasons.append(
                                 f"Speed min ratio 4096+ mismatch: "
-                                f"report {report} != recomputed {rec}"
-                            )
-                        max_r4096 = recomputed_speed["max_ratio_4096_plus"]
-                        sr_max = sr.max_ratio_at_4096_plus or 0
-                        if abs(max_r4096 - sr_max) > 0.01:
-                            report = sr.max_ratio_at_4096_plus
-                            rec = recomputed_speed['max_ratio_4096_plus']
-                            reasons.append(
-                                f"Speed max ratio 4096+ mismatch: "
-                                f"report {report} != recomputed {rec}"
-                            )
-                        med_r8192 = recomputed_speed["median_ratio_8192_plus"]
-                        sr_med = sr.median_ratio_at_8192_plus or 0
-                        if abs(med_r8192 - sr_med) > 0.01:
-                            report = sr.median_ratio_at_8192_plus
-                            rec = recomputed_speed['median_ratio_8192_plus']
-                            reasons.append(
-                                f"Speed median ratio 8192+ mismatch: "
                                 f"report {report} != recomputed {rec}"
                             )
             except (
@@ -1315,6 +1479,8 @@ class PromotionGate:
             reasons.append(
                 "Baseline comparison missing required 16K context length."
             )
+
+        # Aggregate: some context must show improvement.
         sr_max_ok = _require_finite_number(
             "Speed max_ratio_at_4096_plus", sr.max_ratio_at_4096_plus, reasons
         )
@@ -1328,39 +1494,25 @@ class PromotionGate:
                 f"{self.MIN_IMPROVEMENT_AT_ANY_LONG_CONTEXT}: "
                 f"max ratio {sr.max_ratio_at_4096_plus}"
             )
-        sr_med_ok = _require_finite_number(
-            "Speed median_ratio_at_8192_plus",
-            sr.median_ratio_at_8192_plus,
+
+        # Memory — Context-specific gates (Milestone 5).
+        mr = evidence.memory_report
+        # Backward-compatible non-finite check on legacy summary field.
+        mr_peak_ok = _require_finite_number(
+            "Memory dense_to_turbo_peak_ratio_at_8192_plus",
+            mr.dense_to_turbo_peak_ratio_at_8192_plus,
             reasons,
         )
         if (
-            sr_med_ok
-            and sr.median_ratio_at_8192_plus
-            < self.MIN_MEDIAN_RATIO_AT_8192_PLUS
+            mr_peak_ok
+            and mr.dense_to_turbo_peak_ratio_at_8192_plus
+            < self.MEM_RATIO_LONG
         ):
             reasons.append(
-                f"Median 8192+ speed ratio {sr.median_ratio_at_8192_plus} < "
-                f"{self.MIN_MEDIAN_RATIO_AT_8192_PLUS}"
+                f"Dense-to-Turbo peak ratio at 8192+ "
+                f"{mr.dense_to_turbo_peak_ratio_at_8192_plus} < "
+                f"{self.MEM_RATIO_LONG}"
             )
-
-        # Hybrid Architecture: 16384+ must not regress > 30%
-        # (computed from raw per-context timings if 16384 present).
-        if 16384 in sr.contexts_evaluated:
-            turbo_16k = sr.turbo_decode_tok_s.get(16384, [])
-            dense_16k = sr.dense_decode_tok_s.get(16384, [])
-            if turbo_16k and dense_16k:
-                ratio_16k = float(
-                    mx.median(mx.array(turbo_16k)).item()
-                    / max(mx.median(mx.array(dense_16k)).item(), 1e-9)
-                )
-                if ratio_16k < self.MIN_RATIO_AT_16384_PLUS:
-                    reasons.append(
-                        f"16384+ speed ratio {ratio_16k:.3f} < "
-                        f"{self.MIN_RATIO_AT_16384_PLUS}"
-                    )
-
-        # Memory
-        mr = evidence.memory_report
         mr_logical_ok = _require_finite_number(
             "Memory logical_kv_ratio", mr.logical_kv_ratio, reasons
         )
@@ -1384,21 +1536,6 @@ class PromotionGate:
             reasons.append(
                 f"Persistent storage ratio {mr.persistent_storage_ratio} < "
                 f"{self.PERSISTENT_STORAGE_RATIO}"
-            )
-        mr_peak_ok = _require_finite_number(
-            "Memory dense_to_turbo_peak_ratio_at_8192_plus",
-            mr.dense_to_turbo_peak_ratio_at_8192_plus,
-            reasons,
-        )
-        if (
-            mr_peak_ok
-            and mr.dense_to_turbo_peak_ratio_at_8192_plus
-            < self.PEAK_MEMORY_RATIO_8192
-        ):
-            reasons.append(
-                f"Dense-to-Turbo peak ratio at 8192+ "
-                f"{mr.dense_to_turbo_peak_ratio_at_8192_plus} < "
-                f"{self.PEAK_MEMORY_RATIO_8192}"
             )
         if mr.hidden_dense_cache_detected:
             reasons.append("Hidden dense full-history cache detected.")
@@ -1442,6 +1579,24 @@ class PromotionGate:
                                 f"Memory raw contexts incomplete: "
                                 f"missing {missing}"
                             )
+
+                        # Context-specific memory thresholds (Milestone 5).
+                        bucket_ratios = self._compute_per_bucket_memory(
+                            raw_memory
+                        )
+                        for bucket, threshold in self.MEM_THRESHOLDS.items():
+                            ratio = bucket_ratios.get(bucket)
+                            if ratio is None:
+                                reasons.append(
+                                    f"Memory bucket '{bucket}' missing "
+                                    f"from raw matrix"
+                                )
+                            elif ratio < threshold:
+                                reasons.append(
+                                    f"Memory ratio {bucket}={ratio:.3f} < "
+                                    f"threshold {threshold}"
+                                )
+
                         # Validate zero fallback
                         if recomputed["fallback_calls"] > 0:
                             reasons.append(

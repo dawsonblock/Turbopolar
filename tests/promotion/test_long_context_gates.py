@@ -84,7 +84,8 @@ class TestLongContextGates(unittest.TestCase):
         )
 
     def test_3pct_regression_at_4096_blocks(self):
-        evidence = self._evidence_with_speed(min_ratio_at_4096_plus=0.95)
+        # With context-specific gates, medium bucket threshold is 0.93.
+        evidence = self._evidence_with_speed(min_ratio_at_4096_plus=0.90)
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(any("4096+ minimum" in r for r in decision.reasons))
@@ -98,7 +99,8 @@ class TestLongContextGates(unittest.TestCase):
         )
 
     def test_low_median_at_8192_blocks(self):
-        evidence = self._evidence_with_speed(median_ratio_at_8192_plus=1.01)
+        # With context-specific gates, very_long bucket threshold is 0.75.
+        evidence = self._evidence_with_speed(median_ratio_at_8192_plus=0.70)
         decision = PromotionGate().evaluate(evidence)
         self.assertEqual(decision.state, PromotionState.FAILED)
         self.assertTrue(any("8192+" in r for r in decision.reasons))

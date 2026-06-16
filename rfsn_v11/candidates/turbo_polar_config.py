@@ -112,6 +112,11 @@ class TurboPolarConfig:
     # first compressed block is stored.  Eliminates per-decode Metal allocator
     # fragmentation at long contexts.  0 = disabled (allocate on demand).
     page_pool_prealloc: int = 0
+    # Warm-cache capacity in blocks.  Uncompressed dense blocks evicted from
+    # the hot window are kept here before being compressed to cold storage.
+    # 0 = disabled (backward compatible).  Must be a multiple of
+    # ``flush_batch_size // block_size`` for clean batch transitions.
+    warm_cache_capacity_blocks: int = 0
 
     def __post_init__(self):
         if self.num_q_heads <= 0:
@@ -195,6 +200,10 @@ class TurboPolarConfig:
             )
         if self.page_pool_prealloc < 0:
             raise ValueError("page_pool_prealloc must be non-negative")
+        if self.warm_cache_capacity_blocks < 0:
+            raise ValueError(
+                "warm_cache_capacity_blocks must be non-negative"
+            )
 
         # Normalize execution_mode to enum for type safety.
         mode = self.execution_mode
