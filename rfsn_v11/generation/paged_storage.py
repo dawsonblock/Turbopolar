@@ -200,6 +200,10 @@ class PagedPolarKStorage:
     Pages are allocated on demand from an explicit immutable layout.  When a page
     fills, a new empty page is allocated from the same layout; previously filled
     pages are never copied.
+
+    Page-pool preallocation: call ``preallocate_pool(n)`` after the first block
+    is appended (so the layout is known) to pre-allocate ``n`` empty pages.
+    This eliminates per-decode Metal allocator fragmentation at long contexts.
     """
 
     pages: List[PolarKPage] = field(default_factory=list)
@@ -210,12 +214,37 @@ class PagedPolarKStorage:
     page_allocations: int = 0
     bytes_copied_during_growth: int = 0
     total_valid_blocks: int = 0
+    _page_pool: List[PolarKPage] = field(default_factory=list, repr=False)
+    _pool_prealloc_size: int = field(default=0, repr=False)
+
+    def preallocate_pool(self, num_pages: int):
+        """Pre-allocate ``num_pages`` empty pages from the current layout.
+
+        Must be called after at least one block has been appended so the layout
+        is established.  Pages are drawn from this pool before new allocations.
+        """
+        if self.layout is None:
+            raise RuntimeError(
+                "PagedPolarKStorage: cannot preallocate pool before layout "
+                "is known. Append at least one block first."
+            )
+        if num_pages <= 0:
+            return
+        self._pool_prealloc_size = num_pages
+        needed = num_pages - len(self._page_pool)
+        for _ in range(needed):
+            self._page_pool.append(allocate_polar_page(self.layout))
 
     def _allocate_page(self):
         if self.layout is None:
             raise RuntimeError("PagedPolarKStorage layout not set")
-        page = allocate_polar_page(self.layout)
-        self.pages.append(page)
+        if self._page_pool:
+            page = self._page_pool.pop()
+            page.valid_blocks = 0
+            self.pages.append(page)
+        else:
+            page = allocate_polar_page(self.layout)
+            self.pages.append(page)
         self.page_allocations += 1
 
     def append(self, block: PolarKeyBlock):
@@ -267,13 +296,13 @@ class PagedPolarKStorage:
         for page in self.pages:
             if page.valid_blocks == 0:
                 continue
-            all_radii.append(page.radii[:, :, : page.valid_blocks, :, :])
-            all_angle_l1.append(page.angle_codes_l1[:, :, : page.valid_blocks, :, :])
+            all_radii.append(page.radii[:, :, :page.valid_blocks, :, :])
+            all_angle_l1.append(page.angle_codes_l1[:, :, :page.valid_blocks, :, :])
             all_angle_deep.append(
-                page.angle_codes_deep[:, :, : page.valid_blocks, :, :]
+                page.angle_codes_deep[:, :, :page.valid_blocks, :, :]
             )
             if page.radii_scales is not None:
-                all_scales.append(page.radii_scales[:, :, : page.valid_blocks, :, :])
+                all_scales.append(page.radii_scales[:, :, :page.valid_blocks, :, :])
 
         radii = mx.concatenate(all_radii, axis=2)
         angle_l1 = mx.concatenate(all_angle_l1, axis=2)
@@ -327,14 +356,14 @@ class PagedPolarKStorage:
                 f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
             )
         return PolarKeyBlock(
-            radii=page.radii[:, :, block_index : block_index + 1, :, :],
+            radii=page.radii[:, :, block_index:block_index + 1, :, :],
             angle_codes_l1=page.angle_codes_l1[
-                :, :, block_index : block_index + 1, :, :
+                :, :, block_index:block_index + 1, :, :
             ],
             angle_codes_deep=page.angle_codes_deep[
-                :, :, block_index : block_index + 1, :, :
+                :, :, block_index:block_index + 1, :, :
             ],
-            radii_scales=page.radii_scales[:, :, block_index : block_index + 1, :, :]
+            radii_scales=page.radii_scales[:, :, block_index:block_index + 1, :, :]
             if page.radii_scales is not None
             else None,
             shape=(
@@ -351,7 +380,11 @@ class PagedPolarKStorage:
 
 @dataclass
 class PagedQuantVStorage:
-    """Paged storage for quantized value blocks."""
+    """Paged storage for quantized value blocks.
+
+    Page-pool preallocation: call ``preallocate_pool(n)`` after the first block
+    is appended (so the layout is known) to pre-allocate ``n`` empty pages.
+    """
 
     pages: List[QuantVPage] = field(default_factory=list)
     layout: Optional[QuantVPageLayout] = None
@@ -359,12 +392,37 @@ class PagedQuantVStorage:
     page_allocations: int = 0
     bytes_copied_during_growth: int = 0
     total_valid_blocks: int = 0
+    _page_pool: List[QuantVPage] = field(default_factory=list, repr=False)
+    _pool_prealloc_size: int = field(default=0, repr=False)
+
+    def preallocate_pool(self, num_pages: int):
+        """Pre-allocate ``num_pages`` empty pages from the current layout.
+
+        Must be called after at least one block has been appended so the layout
+        is established.  Pages are drawn from this pool before new allocations.
+        """
+        if self.layout is None:
+            raise RuntimeError(
+                "PagedQuantVStorage: cannot preallocate pool before layout "
+                "is known. Append at least one block first."
+            )
+        if num_pages <= 0:
+            return
+        self._pool_prealloc_size = num_pages
+        needed = num_pages - len(self._page_pool)
+        for _ in range(needed):
+            self._page_pool.append(allocate_quant_v_page(self.layout))
 
     def _allocate_page(self):
         if self.layout is None:
             raise RuntimeError("PagedQuantVStorage layout not set")
-        page = allocate_quant_v_page(self.layout)
-        self.pages.append(page)
+        if self._page_pool:
+            page = self._page_pool.pop()
+            page.valid_blocks = 0
+            self.pages.append(page)
+        else:
+            page = allocate_quant_v_page(self.layout)
+            self.pages.append(page)
         self.page_allocations += 1
 
     def append(self, block: QuantizedVBlock):
@@ -400,8 +458,8 @@ class PagedQuantVStorage:
         for page in self.pages:
             if page.valid_blocks == 0:
                 continue
-            all_codes.append(page.codes[:, :, : page.valid_blocks, :, :])
-            all_scales.append(page.scales[:, :, : page.valid_blocks, :, :])
+            all_codes.append(page.codes[:, :, :page.valid_blocks, :, :])
+            all_scales.append(page.scales[:, :, :page.valid_blocks, :, :])
 
         codes = mx.concatenate(all_codes, axis=2)
         scales = mx.concatenate(all_scales, axis=2)
@@ -438,8 +496,8 @@ class PagedQuantVStorage:
                 f"Block index {block_index} out of range (page has {page.valid_blocks} valid blocks)"
             )
         return QuantizedVBlock(
-            codes=page.codes[:, :, block_index : block_index + 1, :, :],
-            scales=page.scales[:, :, block_index : block_index + 1, :, :],
+            codes=page.codes[:, :, block_index:block_index + 1, :, :],
+            scales=page.scales[:, :, block_index:block_index + 1, :, :],
             group_size=self.group_size,
         )
 
@@ -451,5 +509,5 @@ def _set_block(dest: mx.array, idx: int, src: mx.array) -> mx.array:
             f"Block index {idx} out of range for destination array "
             f"with shape {dest.shape} (axis 2)"
         )
-    dest[:, :, idx : idx + 1, ...] = src
+    dest[:, :, idx:idx + 1, ...] = src
     return dest

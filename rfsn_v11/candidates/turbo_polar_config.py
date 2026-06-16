@@ -2,7 +2,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Any
 
-from rfsn_v11.kernels.turbo_polar.execution import ExecutionMode, TraceValidationMode
+from rfsn_v11.kernels.turbo_polar.execution import (
+    ExecutionMode,
+    TraceValidationMode,
+)
 
 
 def validate_supported_configuration(config: "TurboPolarConfig") -> None:
@@ -42,7 +45,9 @@ def validate_supported_configuration(config: "TurboPolarConfig") -> None:
     if config.attention_scale <= 0:
         raise ValueError("attention_scale must be positive")
     if config.k_angle_bits_level1 != 8:
-        raise ValueError("Supported configuration requires 8-bit level-1 angles")
+        raise ValueError(
+            "Supported configuration requires 8-bit level-1 angles"
+        )
     if config.k_angle_bits_deep != 8:
         raise ValueError("Supported configuration requires 8-bit deep angles")
 
@@ -88,8 +93,19 @@ class TurboPolarConfig:
     validate_finite_inputs: bool = False
     finite_audit_interval: int = 0
     execution_mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO
-    trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE
+    trace_validation_mode: TraceValidationMode = (
+        TraceValidationMode.SYNCHRONOUS_EVIDENCE
+    )
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Dense-tail capacity: how many recent tokens to keep in dense fp16 before
+    # flushing to compressed storage.  Larger values reduce per-decode
+    # overhead (the primary speed bottleneck) at the cost of more memory.
+    # Must be >= block_size and a multiple of block_size so flushes are clean.
+    dense_tail_capacity: int = 64
+    # Page pool preallocation: how many empty pages to pre-allocate after the
+    # first compressed block is stored.  Eliminates per-decode Metal allocator
+    # fragmentation at long contexts.  0 = disabled (allocate on demand).
+    page_pool_prealloc: int = 0
 
     def __post_init__(self):
         if self.num_q_heads <= 0:
@@ -109,7 +125,7 @@ class TurboPolarConfig:
             )
         if self.page_capacity_blocks != 16:
             raise ValueError(
-                "TurboPolar fused MLX path currently requires page_capacity_blocks=16"
+                "TurboPolar requires page_capacity_blocks=16"
             )
         if self.use_qjl:
             raise NotImplementedError(
@@ -117,11 +133,11 @@ class TurboPolarConfig:
             )
         if self.storage_mode != "kv_quant":
             raise ValueError(
-                "TurboPolar only supports storage_mode='kv_quant' in this release"
+                "TurboPolar only supports storage_mode='kv_quant'"
             )
         if self.v_bits != 8:
             raise ValueError(
-                "v_bits must be 8 (4-bit V quantization is not yet implemented)"
+                "v_bits must be 8 (4-bit V quantization not yet implemented)"
             )
 
         if self.k_angle_bits_level1 not in (4, 8):
@@ -132,7 +148,9 @@ class TurboPolarConfig:
         if self.qjl_proj_dim <= 0:
             raise ValueError("qjl_proj_dim must be positive")
         if self.qjl_proj_dim % 8 != 0:
-            raise ValueError("qjl_proj_dim must be divisible by 8 for bit packing")
+            raise ValueError(
+                "qjl_proj_dim must be divisible by 8 for bit packing"
+            )
 
         if (
             self.split_dim < 0
@@ -144,13 +162,27 @@ class TurboPolarConfig:
         if self.finite_audit_interval < 0:
             raise ValueError("finite_audit_interval must be non-negative")
 
+        if self.dense_tail_capacity < self.block_size:
+            raise ValueError(
+                f"dense_tail_capacity ({self.dense_tail_capacity}) must be >= "
+                f"block_size ({self.block_size})"
+            )
+        if self.dense_tail_capacity % self.block_size != 0:
+            raise ValueError(
+                f"dense_tail_capacity ({self.dense_tail_capacity}) must be a "
+                f"multiple of block_size ({self.block_size})"
+            )
+        if self.page_pool_prealloc < 0:
+            raise ValueError("page_pool_prealloc must be non-negative")
+
         # Normalize execution_mode to enum for type safety.
         mode = self.execution_mode
         if isinstance(mode, str):
             mode = ExecutionMode(mode)
         if not isinstance(mode, ExecutionMode):
             raise TypeError(
-                f"execution_mode must be an ExecutionMode, got {type(mode).__name__}"
+                "execution_mode must be an ExecutionMode, got "
+                f"{type(mode).__name__}"
             )
         object.__setattr__(self, "execution_mode", mode)
 
@@ -160,7 +192,8 @@ class TurboPolarConfig:
             trace_mode = TraceValidationMode(trace_mode)
         if not isinstance(trace_mode, TraceValidationMode):
             raise TypeError(
-                f"trace_validation_mode must be a TraceValidationMode, got {type(trace_mode).__name__}"
+                "trace_validation_mode must be a TraceValidationMode, got "
+                f"{type(trace_mode).__name__}"
             )
         object.__setattr__(self, "trace_validation_mode", trace_mode)
 

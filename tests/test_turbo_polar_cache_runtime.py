@@ -279,6 +279,210 @@ class TestTurboPolarCacheRuntime(unittest.TestCase):
         self.assertEqual(cache.actual_seq_len, 65)
         self.assertEqual(cache.partial_length, 1)
 
+    def test_dense_tail_capacity_validation(self):
+        with self.assertRaises(ValueError):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                dense_tail_capacity=32,  # < block_size
+                num_q_heads=4,
+                num_kv_heads=4,
+            )
+        with self.assertRaises(ValueError):
+            TurboPolarConfig(
+                head_dim=128,
+                block_size=64,
+                dense_tail_capacity=100,  # not multiple of 64
+                num_q_heads=4,
+                num_kv_heads=4,
+            )
+
+    def test_dense_tail_512_decode_accumulates(self):
+        """With dense_tail_capacity=512, decode tokens accumulate until 512."""
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            dense_tail_capacity=512,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        # Prefill 64 tokens (one block → compressed)
+        k = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        v = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        cache.append(k, v)
+        self.assertEqual(cache.total_blocks, 1)
+
+        # Decode 511 tokens; they should all stay in the dense tail
+        for i in range(511):
+            kt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            vt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            cache.append(kt, vt)
+
+        # 64 compressed + 511 dense = 575 total
+        self.assertEqual(cache.actual_seq_len, 575)
+        # No additional blocks flushed yet (511 < 512)
+        self.assertEqual(cache.total_blocks, 1)
+        # Partial tail should have 511 tokens
+        self.assertEqual(cache.partial_length, 511)
+
+        # One more decode token triggers flush of oldest 64
+        kt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+        vt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+        cache.append(kt, vt)
+
+        # Now 575 + 1 = 576 total, 2 blocks compressed, tail = 512 - 64 = 448
+        self.assertEqual(cache.actual_seq_len, 576)
+        self.assertEqual(cache.total_blocks, 2)
+        self.assertEqual(cache.partial_length, 448)
+
+    def test_dense_tail_512_shift_on_flush(self):
+        """After flush, remaining tokens are shifted to front of buffer."""
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            dense_tail_capacity=512,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        # Prefill 64 tokens
+        k = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        v = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        cache.append(k, v)
+
+        # Decode 512 tokens to fill the tail exactly
+        decode_k = []
+        decode_v = []
+        for _ in range(512):
+            kt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            vt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            decode_k.append(kt)
+            decode_v.append(vt)
+            cache.append(kt, vt)
+
+        # Flush triggered: partial_length should be 512 - 64 = 448
+        self.assertEqual(cache.partial_length, 448)
+
+        # Verify the dense tail contains the LAST 448 decode tokens
+        tail_k = cache._current_tail_k()
+        self.assertIsNotNone(tail_k)
+        self.assertEqual(tail_k.shape, (1, 4, 448, 128))
+
+        # Compare with the original tensors (last 448 tokens)
+        expected_k = mx.concatenate(decode_k, axis=2)[:, :, -448:, :]
+        diff = float(mx.mean(mx.abs(tail_k - expected_k)))
+        self.assertLess(diff, 1e-4)
+
+    def test_dense_tail_512_prefill_then_decode(self):
+        """Prefill stores compressed; decode accumulates in dense tail."""
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            dense_tail_capacity=512,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        # Prefill 640 tokens = 10 blocks
+        k = mx.random.normal((1, 4, 640, 128), dtype=mx.float16)
+        v = mx.random.normal((1, 4, 640, 128), dtype=mx.float16)
+        cache.append(k, v)
+        self.assertEqual(cache.total_blocks, 10)
+        self.assertEqual(cache.partial_length, 0)
+        self.assertEqual(cache.actual_seq_len, 640)
+
+        # Decode 200 tokens
+        for _ in range(200):
+            kt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            vt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            cache.append(kt, vt)
+        self.assertEqual(cache.actual_seq_len, 840)
+        self.assertEqual(cache.total_blocks, 10)
+        self.assertEqual(cache.partial_length, 200)
+
+    def test_page_pool_preallocation(self):
+        """Page pool preallocation eliminates per-append allocations."""
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            dense_tail_capacity=64,
+            page_pool_prealloc=4,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        # Prefill 256 tokens = 4 blocks
+        k = mx.random.normal((1, 4, 256, 128), dtype=mx.float16)
+        v = mx.random.normal((1, 4, 256, 128), dtype=mx.float16)
+        cache.append(k, v)
+
+        # After first block, pool should be preallocated
+        self.assertTrue(cache._page_pool_preallocated)
+        # K storage should have 4 valid blocks in 1 page (capacity=16)
+        self.assertEqual(cache.k_storage._paged.total_valid_blocks, 4)
+        self.assertEqual(cache.k_storage._paged.page_count, 1)
+        # All 4 prealloc pages are still in the pool (none used yet)
+        self.assertEqual(len(cache.k_storage._paged._page_pool), 4)
+
+        # Append 60 more blocks to fill the first page (4 + 60 = 64 = 4 pages)
+        for _ in range(60):
+            kt = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+            vt = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+            cache.append(kt, vt)
+
+        # Now we have 4 pages; the first was allocated before the pool,
+        # the next 3 came from the pool.
+        self.assertEqual(cache.k_storage._paged.page_count, 4)
+        self.assertEqual(len(cache.k_storage._paged._page_pool), 1)
+
+        # One more block triggers a 5th page allocation; pool exhausted
+        kt = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        vt = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        cache.append(kt, vt)
+        self.assertEqual(len(cache.k_storage._paged._page_pool), 0)
+
+    def test_memory_stats_dense_tail_512(self):
+        """Memory stats must correctly account for larger dense tail buffer."""
+        config = TurboPolarConfig(
+            head_dim=128,
+            block_size=64,
+            dense_tail_capacity=512,
+            num_q_heads=4,
+            num_kv_heads=4,
+            use_qjl=False,
+        )
+        cache = TurboPolarKVCacheRuntime(config)
+        # Prefill 64 tokens
+        k = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        v = mx.random.normal((1, 4, 64, 128), dtype=mx.float16)
+        cache.append(k, v)
+
+        stats = cache.get_memory_stats()
+        # Dense tail allocated bytes should be for the full 512-token buffer
+        # (K+V).  1 * 4 * 512 * 128 * 2 bytes (fp16) * 2 (K+V)
+        expected_dense_tail_alloc = 1 * 4 * 512 * 128 * 2 * 2
+        self.assertEqual(stats.dense_tail_bytes, 0)  # partial_length = 0
+        # allocated includes the full buffer
+        self.assertGreaterEqual(
+            stats.allocated_capacity_bytes, expected_dense_tail_alloc
+        )
+
+        # Decode 10 tokens
+        for _ in range(10):
+            kt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            vt = mx.random.normal((1, 4, 1, 128), dtype=mx.float16)
+            cache.append(kt, vt)
+
+        stats = cache.get_memory_stats()
+        # Logical dense tail bytes = 10 tokens
+        expected_dense_tail_logical = 1 * 4 * 10 * 128 * 2 * 2
+        self.assertEqual(stats.dense_tail_bytes, expected_dense_tail_logical)
+
 
 if __name__ == "__main__":
     unittest.main()
