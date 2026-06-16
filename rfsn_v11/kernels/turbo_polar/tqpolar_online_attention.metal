@@ -224,7 +224,8 @@ kernel void tqpolar_online_attention_dense_v(
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
     float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    threadgroup float shared_scores[64];
+    // Threadgroup memory required only for q_norm (QJL path).
+    // shared_scores removed: scores stay in registers via per-token online-softmax.
     threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
@@ -239,15 +240,15 @@ kernel void tqpolar_online_attention_dense_v(
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
     for (uint s = 0; s < total_blocks; s++) {
+        // Hoist the per-block radii scale read outside the token loop.
+        float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx >= actual_seq_len) {
-                if (tid == 0) {
-                    shared_scores[l] = -INFINITY;
-                }
                 continue;
             }
-            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
@@ -277,8 +278,9 @@ kernel void tqpolar_online_attention_dense_v(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            float total_polar_score = simd_sum(private_sum);
-            float qjl_term = _tqpolar_qjl_correction(
+            // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
+            float score = simd_sum(private_sum);
+            score += _tqpolar_qjl_correction(
                 b, q_head, kv_head, s, l,
                 qjl_packed_signs, qjl_norms, q_proj_signs,
                 qjl_proj_dim, qjl_bytes,
@@ -288,43 +290,23 @@ kernel void tqpolar_online_attention_dense_v(
                 stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
                 stride_qp_b, stride_qp_h
             );
-            if (tid == 0) {
-                shared_scores[l] = total_polar_score + qjl_term;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float block_max = -INFINITY;
-        for (uint l = 0; l < block_size; l++) {
-            block_max = max(block_max, shared_scores[l]);
-        }
-        float m_new = max(m_stat, block_max);
-        float alpha = exp(m_stat - m_new);
-        float l_block = 0.0f;
-        for (uint l = 0; l < block_size; l++) {
-            uint global_tok_idx = s * block_size + l;
-            if (global_tok_idx < actual_seq_len) {
-                l_block += exp(shared_scores[l] - m_new);
-            }
-        }
-        float l_new = l_stat * alpha + l_block;
+            // Per-token online-softmax update. All 32 threads execute identically
+            // since score is broadcast by simd_sum. No threadgroup barriers needed.
+            float m_new = max(m_stat, score);
+            float alpha = exp(m_stat - m_new);
+            float exp_score = exp(score - m_new);
 
-        for (uint k = 0; k < num_elements_per_thread; k++) {
-            uint d = tid + k * 32;
-            float v_sum = 0.0f;
-            for (uint l = 0; l < block_size; l++) {
-                uint global_tok_idx = s * block_size + l;
-                if (global_tok_idx < actual_seq_len) {
-                    float p = exp(shared_scores[l] - m_new);
-                    uint offset_v = b * stride_v_b + kv_head * stride_v_h + s * stride_v_s + l * stride_v_l + d;
-                    v_sum += p * float(v_dense[offset_v]);
-                }
+            // Update V accumulator: each thread owns head_dim/32 distinct output elements.
+            for (uint k = 0; k < num_elements_per_thread; k++) {
+                uint d = tid + k * 32;
+                uint offset_v = b * stride_v_b + kv_head * stride_v_h + s * stride_v_s + l * stride_v_l + d;
+                acc[k] = acc[k] * alpha + exp_score * float(v_dense[offset_v]);
             }
-            acc[k] = acc[k] * alpha + v_sum;
+
+            l_stat = l_stat * alpha + exp_score;
+            m_stat = m_new;
         }
-        m_stat = m_new;
-        l_stat = l_new;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     for (uint k = 0; k < num_elements_per_thread; k++) {
@@ -389,7 +371,8 @@ kernel void tqpolar_online_attention_quant_v(
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
     float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    threadgroup float shared_scores[64];
+    // Threadgroup memory required only for q_norm (QJL path).
+    // shared_scores removed: scores stay in registers via per-token online-softmax.
     threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
@@ -404,15 +387,15 @@ kernel void tqpolar_online_attention_quant_v(
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
     for (uint s = 0; s < total_blocks; s++) {
+        // Hoist the per-block radii scale read outside the token loop.
+        float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx >= actual_seq_len) {
-                if (tid == 0) {
-                    shared_scores[l] = -INFINITY;
-                }
                 continue;
             }
-            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
@@ -442,8 +425,9 @@ kernel void tqpolar_online_attention_quant_v(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            float total_polar_score = simd_sum(private_sum);
-            float qjl_term = _tqpolar_qjl_correction(
+            // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
+            float score = simd_sum(private_sum);
+            score += _tqpolar_qjl_correction(
                 b, q_head, kv_head, s, l,
                 qjl_packed_signs, qjl_norms, q_proj_signs,
                 qjl_proj_dim, qjl_bytes,
@@ -453,48 +437,26 @@ kernel void tqpolar_online_attention_quant_v(
                 stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
                 stride_qp_b, stride_qp_h
             );
-            if (tid == 0) {
-                shared_scores[l] = total_polar_score + qjl_term;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float block_max = -INFINITY;
-        for (uint l = 0; l < block_size; l++) {
-            block_max = max(block_max, shared_scores[l]);
-        }
-        float m_new = max(m_stat, block_max);
-        float alpha = exp(m_stat - m_new);
-        float l_block = 0.0f;
-        for (uint l = 0; l < block_size; l++) {
-            uint global_tok_idx = s * block_size + l;
-            if (global_tok_idx < actual_seq_len) {
-                l_block += exp(shared_scores[l] - m_new);
-            }
-        }
-        float l_new = l_stat * alpha + l_block;
+            // Per-token online-softmax update. All 32 threads execute identically
+            // since score is broadcast by simd_sum. No threadgroup barriers needed.
+            float m_new = max(m_stat, score);
+            float alpha = exp(m_stat - m_new);
+            float exp_score = exp(score - m_new);
 
-        for (uint k = 0; k < num_elements_per_thread; k++) {
-            uint d = tid + k * 32;
-            float v_sum = 0.0f;
-            uint group_idx = d / group_size;
-            for (uint l = 0; l < block_size; l++) {
-                uint global_tok_idx = s * block_size + l;
-                if (global_tok_idx < actual_seq_len) {
-                    float p = exp(shared_scores[l] - m_new);
-                    uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
-                    uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
-                    int8_t v_code = v_codes[offset_vc];
-                    float v_scale = v_scales[offset_vs];
-                    float dequantized_v = float(v_code) * v_scale;
-                    v_sum += p * dequantized_v;
-                }
+            // Update V accumulator: each thread owns head_dim/32 distinct output elements.
+            for (uint k = 0; k < num_elements_per_thread; k++) {
+                uint d = tid + k * 32;
+                uint group_idx = d / group_size;
+                uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
+                uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
+                float dequantized_v = float(v_codes[offset_vc]) * float(v_scales[offset_vs]);
+                acc[k] = acc[k] * alpha + exp_score * dequantized_v;
             }
-            acc[k] = acc[k] * alpha + v_sum;
+
+            l_stat = l_stat * alpha + exp_score;
+            m_stat = m_new;
         }
-        m_stat = m_new;
-        l_stat = l_new;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     for (uint k = 0; k < num_elements_per_thread; k++) {
@@ -567,7 +529,8 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
     float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    threadgroup float shared_scores[64];
+    // Threadgroup memory required only for q_norm (QJL path).
+    // shared_scores removed: scores stay in registers via per-token online-softmax.
     threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
@@ -583,15 +546,15 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
 
     // Phase 1: compressed completed blocks.
     for (uint s = 0; s < total_blocks; s++) {
+        // Hoist the per-block radii scale read outside the token loop.
+        float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx >= actual_seq_len) {
-                if (tid == 0) {
-                    shared_scores[l] = -INFINITY;
-                }
                 continue;
             }
-            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
@@ -621,8 +584,9 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            float total_polar_score = simd_sum(private_sum);
-            float qjl_term = _tqpolar_qjl_correction(
+            // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
+            float score = simd_sum(private_sum);
+            score += _tqpolar_qjl_correction(
                 b, q_head, kv_head, s, l,
                 qjl_packed_signs, qjl_norms, q_proj_signs,
                 qjl_proj_dim, qjl_bytes,
@@ -632,51 +596,30 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
                 stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
                 stride_qp_b, stride_qp_h
             );
-            if (tid == 0) {
-                shared_scores[l] = total_polar_score + qjl_term;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float block_max = -INFINITY;
-        for (uint l = 0; l < block_size; l++) {
-            block_max = max(block_max, shared_scores[l]);
-        }
-        float m_new = max(m_stat, block_max);
-        float alpha = exp(m_stat - m_new);
-        float l_block = 0.0f;
-        for (uint l = 0; l < block_size; l++) {
-            uint global_tok_idx = s * block_size + l;
-            if (global_tok_idx < actual_seq_len) {
-                l_block += exp(shared_scores[l] - m_new);
-            }
-        }
-        float l_new = l_stat * alpha + l_block;
+            // Per-token online-softmax update. All 32 threads execute identically
+            // since score is broadcast by simd_sum. No threadgroup barriers needed.
+            float m_new = max(m_stat, score);
+            float alpha = exp(m_stat - m_new);
+            float exp_score = exp(score - m_new);
 
-        for (uint k = 0; k < num_elements_per_thread; k++) {
-            uint d = tid + k * 32;
-            float v_sum = 0.0f;
-            uint group_idx = d / group_size;
-            for (uint l = 0; l < block_size; l++) {
-                uint global_tok_idx = s * block_size + l;
-                if (global_tok_idx < actual_seq_len) {
-                    float p = exp(shared_scores[l] - m_new);
-                    uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
-                    uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
-                    int8_t v_code = v_codes[offset_vc];
-                    float v_scale = v_scales[offset_vs];
-                    float dequantized_v = float(v_code) * v_scale;
-                    v_sum += p * dequantized_v;
-                }
+            // Update V accumulator: each thread owns head_dim/32 distinct output elements.
+            for (uint k = 0; k < num_elements_per_thread; k++) {
+                uint d = tid + k * 32;
+                uint group_idx = d / group_size;
+                uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
+                uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
+                float dequantized_v = float(v_codes[offset_vc]) * float(v_scales[offset_vs]);
+                acc[k] = acc[k] * alpha + exp_score * dequantized_v;
             }
-            acc[k] = acc[k] * alpha + v_sum;
+
+            l_stat = l_stat * alpha + exp_score;
+            m_stat = m_new;
         }
-        m_stat = m_new;
-        l_stat = l_new;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     // Phase 2: dense partial tail.
+    // simd_sum broadcasts the score to all threads; no shared memory needed.
     for (uint t = 0; t < tail_length; t++) {
         uint global_tok_idx = total_blocks * block_size + t;
         if (global_tok_idx >= actual_seq_len) {
@@ -689,26 +632,19 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
             float q_val = q[b * stride_q_b + q_head * stride_q_h + j];
             private_sum += q_val * k_val * float(attention_scale);
         }
-        float total_score = simd_sum(private_sum);
-        if (tid == 0) {
-            shared_scores[0] = total_score;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        float score = shared_scores[0];
+        float score = simd_sum(private_sum);
 
         float m_new = max(m_stat, score);
         float alpha = exp(m_stat - m_new);
-        float l_new = l_stat * alpha + exp(score - m_new);
+        float exp_score = exp(score - m_new);
 
         for (uint k = 0; k < num_elements_per_thread; k++) {
             uint d = tid + k * 32;
             uint offset_v = b * stride_tv_b + kv_head * stride_tv_h + t * stride_tv_l + d * stride_tv_d;
-            float v_val = float(tail_v[offset_v]);
-            acc[k] = acc[k] * alpha + exp(score - m_new) * v_val;
+            acc[k] = acc[k] * alpha + exp_score * float(tail_v[offset_v]);
         }
+        l_stat = l_stat * alpha + exp_score;
         m_stat = m_new;
-        l_stat = l_new;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     for (uint k = 0; k < num_elements_per_thread; k++) {
@@ -842,7 +778,8 @@ kernel void tqpolar_online_attention_quant_v_raw(
     float m_stat = -INFINITY;
     float l_stat = 0.0f;
     float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    threadgroup float shared_scores[64];
+    // Threadgroup memory required only for q_norm (QJL path).
+    // shared_scores removed: scores stay in registers via per-token online-softmax.
     threadgroup float shared_q_norm[1];
 
     if (tid == 0 && use_qjl != 0) {
@@ -857,15 +794,15 @@ kernel void tqpolar_online_attention_quant_v_raw(
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
     for (uint s = 0; s < total_blocks; s++) {
+        // Hoist the per-block radii scale read outside the token loop.
+        float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+
         for (uint l = 0; l < block_size; l++) {
             uint global_tok_idx = s * block_size + l;
             if (global_tok_idx >= actual_seq_len) {
-                if (tid == 0) {
-                    shared_scores[l] = -INFINITY;
-                }
                 continue;
             }
-            float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
+            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
             float private_sum = 0.0f;
             for (uint j = tid; j < half_d; j += 32) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
@@ -895,8 +832,9 @@ kernel void tqpolar_online_attention_quant_v_raw(
                 float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
                 private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
             }
-            float total_polar_score = simd_sum(private_sum);
-            float qjl_term = _tqpolar_qjl_correction(
+            // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
+            float score = simd_sum(private_sum);
+            score += _tqpolar_qjl_correction(
                 b, q_head, kv_head, s, l,
                 qjl_packed_signs, qjl_norms, q_proj_signs,
                 qjl_proj_dim, qjl_bytes,
@@ -906,48 +844,27 @@ kernel void tqpolar_online_attention_quant_v_raw(
                 stride_qn_b, stride_qn_h, stride_qn_s, stride_qn_l,
                 stride_qp_b, stride_qp_h
             );
-            if (tid == 0) {
-                shared_scores[l] = total_polar_score + qjl_term;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float block_max = -INFINITY;
-        for (uint l = 0; l < block_size; l++) {
-            block_max = max(block_max, shared_scores[l]);
-        }
-        float m_new = max(m_stat, block_max);
-        float alpha = exp(m_stat - m_new);
-        float l_block = 0.0f;
-        for (uint l = 0; l < block_size; l++) {
-            uint global_tok_idx = s * block_size + l;
-            if (global_tok_idx < actual_seq_len) {
-                l_block += exp(shared_scores[l] - m_new);
-            }
-        }
-        float l_new = l_stat * alpha + l_block;
+            // Per-token online-softmax update (Milakov & Gimelshein streaming algorithm).
+            // All 32 threads in the SIMD group execute identically since score is broadcast
+            // by simd_sum above. No threadgroup memory or barriers needed in this loop.
+            float m_new = max(m_stat, score);
+            float alpha = exp(m_stat - m_new);
+            float exp_score = exp(score - m_new);
 
-        for (uint k = 0; k < num_elements_per_thread; k++) {
-            uint d = tid + k * 32;
-            float v_sum = 0.0f;
-            uint group_idx = d / group_size;
-            for (uint l = 0; l < block_size; l++) {
-                uint global_tok_idx = s * block_size + l;
-                if (global_tok_idx < actual_seq_len) {
-                    float p = exp(shared_scores[l] - m_new);
-                    uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
-                    uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
-                    int8_t v_code = v_codes[offset_vc];
-                    float v_scale = float(v_scales[offset_vs]);
-                    float dequantized_v = float(v_code) * v_scale;
-                    v_sum += p * dequantized_v;
-                }
+            // Update V accumulator: each thread owns head_dim/32 distinct output elements.
+            for (uint k = 0; k < num_elements_per_thread; k++) {
+                uint d = tid + k * 32;
+                uint group_idx = d / group_size;
+                uint offset_vc = b * stride_vc_b + kv_head * stride_vc_h + s * stride_vc_s + l * stride_vc_l + d;
+                uint offset_vs = b * stride_vs_b + kv_head * stride_vs_h + s * stride_vs_s + l * stride_vs_l + group_idx;
+                float dequantized_v = float(v_codes[offset_vc]) * float(v_scales[offset_vs]);
+                acc[k] = acc[k] * alpha + exp_score * dequantized_v;
             }
-            acc[k] = acc[k] * alpha + v_sum;
+
+            l_stat = l_stat * alpha + exp_score;
+            m_stat = m_new;
         }
-        m_stat = m_new;
-        l_stat = l_new;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     if (tid == 0) {
