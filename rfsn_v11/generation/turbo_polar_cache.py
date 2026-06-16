@@ -33,6 +33,10 @@ class TurboPolarAttentionView:
     partial_v: Optional[mx.array]
     partial_length: int
     total_tokens: int
+    # Full pre-allocated tail buffers (contiguous) to avoid
+    # mx.contiguous copy on every Metal decode dispatch.
+    partial_k_full: Optional[mx.array] = None
+    partial_v_full: Optional[mx.array] = None
 
 
 @dataclass
@@ -606,6 +610,8 @@ class TurboPolarKVCacheRuntime:
             partial_v=self._current_tail_v(),
             partial_length=self.partial_length,
             total_tokens=self.actual_seq_len,
+            partial_k_full=self.partial_k_buffer,
+            partial_v_full=self.partial_v_buffer,
         )
 
     def audit_cache_residency(self) -> CacheResidencyAudit:

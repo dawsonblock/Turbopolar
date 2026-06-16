@@ -728,6 +728,9 @@ class MetalKernelBridge:
         actual_seq_len: int,
         mode: ExecutionMode = ExecutionMode.DEVELOPMENT_AUTO,
         trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE,
+        tail_k_full: Optional[mx.array] = None,
+        tail_v_full: Optional[mx.array] = None,
+        tail_length: Optional[int] = None,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Page-based online-softmax attention without full-cache materialization.
 
@@ -742,6 +745,9 @@ class MetalKernelBridge:
             trace_validation_mode: TraceValidationMode. SYNCHRONOUS_EVIDENCE evaluates each
                 page and the final output immediately. ASYNC_PERFORMANCE defers evaluation
                 for speed benchmarking.
+            tail_k_full: full pre-allocated K tail buffer (avoids mx.contiguous copy).
+            tail_v_full: full pre-allocated V tail buffer (avoids mx.contiguous copy).
+            tail_length: actual number of valid tokens in the tail.
 
         Returns:
             [B, H_q, D] attention output and execution trace dict.
@@ -754,6 +760,9 @@ class MetalKernelBridge:
             return self._execute_paged_online_attention_metal_strict(
                 q, pages, tail_k, tail_v, config, actual_seq_len,
                 trace_validation_mode=trace_validation_mode,
+                tail_k_full=tail_k_full,
+                tail_v_full=tail_v_full,
+                tail_length=tail_length,
             )
         # DEVELOPMENT_AUTO: try strict, fall back to reference on documented
         # Metal availability/dispatch failures only. Programming errors propagate.
@@ -761,6 +770,9 @@ class MetalKernelBridge:
             return self._execute_paged_online_attention_metal_strict(
                 q, pages, tail_k, tail_v, config, actual_seq_len,
                 trace_validation_mode=trace_validation_mode,
+                tail_k_full=tail_k_full,
+                tail_v_full=tail_v_full,
+                tail_length=tail_length,
             )
         except (MetalExecutionRequiredError, MetalKernelInitializationError, MetalKernelDispatchError) as _exc:
             self._stats.full_attention_fallbacks += 1
@@ -933,6 +945,9 @@ class MetalKernelBridge:
         config,
         actual_seq_len: int,
         trace_validation_mode: TraceValidationMode = TraceValidationMode.SYNCHRONOUS_EVIDENCE,
+        tail_k_full: Optional[mx.array] = None,
+        tail_v_full: Optional[mx.array] = None,
+        tail_length: Optional[int] = None,
     ) -> Tuple[mx.array, Dict[str, Any]]:
         """Strict Metal path: any missing kernel or dispatch error is fatal.
 
@@ -1006,15 +1021,24 @@ class MetalKernelBridge:
                 })
 
         # Dense tail via Metal raw-state kernel.
+        # If full pre-allocated buffers are provided, use them to avoid
+        # mx.contiguous copy of the sliced tail on every decode step.
         dense_tail_metal = False
-        if tail_k is not None and tail_k.shape[2] > 0:
+        _use_tail_k = tail_k_full if tail_k_full is not None else tail_k
+        _use_tail_v = tail_v_full if tail_v_full is not None else tail_v
+        _use_tail_len = tail_length if tail_length is not None else (
+            tail_k.shape[2] if tail_k is not None else 0
+        )
+        if _use_tail_k is not None and _use_tail_len > 0:
             if self._kernel_dense_tail_raw is None:
                 raise MetalExecutionRequiredError(
                     "Dense-tail raw-state Metal kernel is unavailable."
                 )
             try:
                 tail_weighted, tail_max, tail_exp = self._execute_dense_tail_raw(
-                    q, tail_k, tail_v, config, evaluate_outputs=synchronous
+                    q, _use_tail_k, _use_tail_v, config,
+                    evaluate_outputs=synchronous,
+                    tail_length=_use_tail_len,
                 )
             except Exception as _exc:
                 raise MetalKernelDispatchError(
@@ -1023,7 +1047,7 @@ class MetalKernelBridge:
             state = self._online_softmax_combine_raw(
                 state, tail_max, tail_exp, tail_weighted
             )
-            total_tokens += tail_k.shape[2]
+            total_tokens += _use_tail_len
             dense_tail_metal = True
 
         output = state.weighted_value_sum / state.exp_sum[:, :, None]
@@ -1068,6 +1092,7 @@ class MetalKernelBridge:
         tail_v: mx.array,
         config,
         evaluate_outputs: bool = True,
+        tail_length: Optional[int] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
         """Dispatch dense-tail raw-state Metal kernel.
 
@@ -1075,13 +1100,22 @@ class MetalKernelBridge:
         tail_k/tail_v may be non-contiguous views (e.g. sliced from a larger
         fixed tail buffer) and q may carry non-contiguous strides from
         upstream reshape/transpose/RoPE operations.
+
+        When tail_length is provided and differs from tail_k.shape[2], the
+        full pre-allocated buffer is assumed and no mx.contiguous copy is
+        needed because the full buffer is already contiguous.
         """
+        _tl = tail_length if tail_length is not None else tail_k.shape[2]
+        # Full pre-allocated buffers are already contiguous; skip copy.
+        _is_full_buffer = (
+            tail_length is not None and tail_length != tail_k.shape[2]
+        )
+        if not _is_full_buffer:
+            tail_k = mx.contiguous(tail_k)
+            tail_v = mx.contiguous(tail_v)
         q = mx.contiguous(q)
-        tail_k = mx.contiguous(tail_k)
-        tail_v = mx.contiguous(tail_v)
 
         B, H_q, D = q.shape[0], q.shape[1], config.head_dim
-        tail_length = tail_k.shape[2]
         num_queries_per_kv = (
             H_q // config.num_kv_heads if config.num_kv_heads > 0 else 1
         )
@@ -1097,7 +1131,7 @@ class MetalKernelBridge:
                 tail_k,
                 tail_v,
                 mx.array(D, dtype=mx.uint32),
-                mx.array(tail_length, dtype=mx.uint32),
+                mx.array(_tl, dtype=mx.uint32),
                 mx.array(config.attention_scale, dtype=mx.float16),
                 mx.array(num_queries_per_kv, dtype=mx.uint32),
                 strides,

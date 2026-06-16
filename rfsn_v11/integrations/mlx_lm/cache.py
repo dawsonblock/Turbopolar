@@ -238,6 +238,9 @@ class TurboPolarFastCache:
             view.total_tokens,
             mode=cfg.execution_mode,
             trace_validation_mode=cfg.trace_validation_mode,
+            tail_k_full=view.partial_k_full,
+            tail_v_full=view.partial_v_full,
+            tail_length=view.partial_length,
         )
 
         # In SYNCHRONOUS_EVIDENCE mode the bridge evaluates outputs
@@ -275,7 +278,7 @@ class TurboPolarFastCache:
                 if view.partial_k is not None
                 else 0
             )
-            
+
             step_trace = self._build_attention_trace(
                 trace=trace,
                 view=view,

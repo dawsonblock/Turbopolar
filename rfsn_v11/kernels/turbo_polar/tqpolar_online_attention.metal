@@ -239,6 +239,15 @@ kernel void tqpolar_online_attention_dense_v(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
+    // Native Polar Dot-Product: preload query pairs into registers.
+    // Each thread handles (half_d / 32) pair positions; max 2 for head_dim=128.
+    float q_x_reg[4];
+    float q_y_reg[4];
+    for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
+        q_x_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+        q_y_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+    }
+
     for (uint s = 0; s < total_blocks; s++) {
         // Hoist the per-block radii scale read outside the token loop.
         float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
@@ -248,19 +257,20 @@ kernel void tqpolar_online_attention_dense_v(
             if (global_tok_idx >= actual_seq_len) {
                 continue;
             }
-            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
+            // Compute Q @ K dot product directly in polar space.
+            // No Cartesian K temporaries; fused as r * (q_x * cos + q_y * sin).
             float private_sum = 0.0f;
-            for (uint j = tid; j < half_d; j += 32) {
+            for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
                 uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
                 float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
-                float k_x, k_y;
+                float k_cos, k_sin;
                 if (j >= split_half_d) {
                     // Deep-bucket: use LUT for 8-bit codes, trig for narrower configs.
                     uint rel_j = j - split_half_d;
                     _tqpolar_cossin_lut(angle_codes_deep, rel_j, offset_cd,
-                                        deep_bits, deep_scale, &k_x, &k_y);
+                                        deep_bits, deep_scale, &k_cos, &k_sin);
                 } else {
                     // L1-bucket: always use the normalized angle / trig path.
                     float norm_angle = float(static_cast<half>(
@@ -269,14 +279,10 @@ kernel void tqpolar_online_attention_dense_v(
                             : ((angle_codes_l1[offset_c1 + j / 2] >> ((j % 2) * 4)) & 0x0F)
                     ) / l1_scale);
                     float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
-                    k_x = cos(angle);
-                    k_y = sin(angle);
+                    k_cos = cos(angle);
+                    k_sin = sin(angle);
                 }
-                k_x *= r;
-                k_y *= r;
-                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+                private_sum += r * (q_x_reg[idx] * k_cos + q_y_reg[idx] * k_sin) * float(attention_scale);
             }
             // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
             float score = simd_sum(private_sum);
@@ -386,6 +392,14 @@ kernel void tqpolar_online_attention_quant_v(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
+    // Native Polar Dot-Product: preload query pairs into registers.
+    float q_x_reg[4];
+    float q_y_reg[4];
+    for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
+        q_x_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+        q_y_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+    }
+
     for (uint s = 0; s < total_blocks; s++) {
         // Hoist the per-block radii scale read outside the token loop.
         float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
@@ -395,35 +409,29 @@ kernel void tqpolar_online_attention_quant_v(
             if (global_tok_idx >= actual_seq_len) {
                 continue;
             }
-            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
+            // Compute Q @ K dot product directly in polar space.
             float private_sum = 0.0f;
-            for (uint j = tid; j < half_d; j += 32) {
+            for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
                 uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
                 float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
-                float k_x, k_y;
+                float k_cos, k_sin;
                 if (j >= split_half_d) {
-                    // Deep-bucket: use LUT for 8-bit codes, trig for narrower configs.
                     uint rel_j = j - split_half_d;
                     _tqpolar_cossin_lut(angle_codes_deep, rel_j, offset_cd,
-                                        deep_bits, deep_scale, &k_x, &k_y);
+                                        deep_bits, deep_scale, &k_cos, &k_sin);
                 } else {
-                    // L1-bucket: always use the normalized angle / trig path.
                     float norm_angle = float(static_cast<half>(
                         (l1_bits == 8)
                             ? angle_codes_l1[offset_c1 + j]
                             : ((angle_codes_l1[offset_c1 + j / 2] >> ((j % 2) * 4)) & 0x0F)
                     ) / l1_scale);
                     float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
-                    k_x = cos(angle);
-                    k_y = sin(angle);
+                    k_cos = cos(angle);
+                    k_sin = sin(angle);
                 }
-                k_x *= r;
-                k_y *= r;
-                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+                private_sum += r * (q_x_reg[idx] * k_cos + q_y_reg[idx] * k_sin) * float(attention_scale);
             }
             // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
             float score = simd_sum(private_sum);
@@ -544,6 +552,14 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
+    // Native Polar Dot-Product: preload query pairs into registers.
+    float q_x_reg[4];
+    float q_y_reg[4];
+    for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
+        q_x_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+        q_y_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+    }
+
     // Phase 1: compressed completed blocks.
     for (uint s = 0; s < total_blocks; s++) {
         // Hoist the per-block radii scale read outside the token loop.
@@ -554,35 +570,29 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
             if (global_tok_idx >= actual_seq_len) {
                 continue;
             }
-            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
+            // Compute Q @ K dot product directly in polar space.
             float private_sum = 0.0f;
-            for (uint j = tid; j < half_d; j += 32) {
+            for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
                 uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
                 float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
-                float k_x, k_y;
+                float k_cos, k_sin;
                 if (j >= split_half_d) {
-                    // Deep-bucket: use LUT for 8-bit codes, trig for narrower configs.
                     uint rel_j = j - split_half_d;
                     _tqpolar_cossin_lut(angle_codes_deep, rel_j, offset_cd,
-                                        deep_bits, deep_scale, &k_x, &k_y);
+                                        deep_bits, deep_scale, &k_cos, &k_sin);
                 } else {
-                    // L1-bucket: always use the normalized angle / trig path.
                     float norm_angle = float(static_cast<half>(
                         (l1_bits == 8)
                             ? angle_codes_l1[offset_c1 + j]
                             : ((angle_codes_l1[offset_c1 + j / 2] >> ((j % 2) * 4)) & 0x0F)
                     ) / l1_scale);
                     float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
-                    k_x = cos(angle);
-                    k_y = sin(angle);
+                    k_cos = cos(angle);
+                    k_sin = sin(angle);
                 }
-                k_x *= r;
-                k_y *= r;
-                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+                private_sum += r * (q_x_reg[idx] * k_cos + q_y_reg[idx] * k_sin) * float(attention_scale);
             }
             // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
             float score = simd_sum(private_sum);
@@ -620,17 +630,20 @@ kernel void tqpolar_online_attention_quant_v_dense_tail(
 
     // Phase 2: dense partial tail.
     // simd_sum broadcasts the score to all threads; no shared memory needed.
+    float q_reg[4];
+    for (uint j = tid, idx = 0; j < head_dim; j += 32, idx++) {
+        q_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j];
+    }
     for (uint t = 0; t < tail_length; t++) {
         uint global_tok_idx = total_blocks * block_size + t;
         if (global_tok_idx >= actual_seq_len) {
             continue;
         }
         float private_sum = 0.0f;
-        for (uint j = tid; j < head_dim; j += 32) {
+        for (uint j = tid, idx = 0; j < head_dim; j += 32, idx++) {
             uint offset_k = b * stride_tk_b + kv_head * stride_tk_h + t * stride_tk_l + j * stride_tk_d;
             float k_val = float(tail_k[offset_k]);
-            float q_val = q[b * stride_q_b + q_head * stride_q_h + j];
-            private_sum += q_val * k_val * float(attention_scale);
+            private_sum += q_reg[idx] * k_val * float(attention_scale);
         }
         float score = simd_sum(private_sum);
 
@@ -684,14 +697,19 @@ kernel void tqpolar_dense_tail_state_raw(
     float l_stat = 0.0f;
     float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
+    float q_x_reg[4];
+    float q_y_reg[4];
+    for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
+        q_x_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+        q_y_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+    }
+
     for (uint t = 0; t < tail_length; t++) {
         float private_sum = 0.0f;
-        for (uint j = tid; j < half_d; j += 32) {
+        for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
             float k_x = tail_k[b * stride_tk_b + kv_head * stride_tk_h + t * stride_tk_l + j * 2];
             float k_y = tail_k[b * stride_tk_b + kv_head * stride_tk_h + t * stride_tk_l + j * 2 + 1];
-            float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-            float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-            private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+            private_sum += (q_x_reg[idx] * k_x + q_y_reg[idx] * k_y) * float(attention_scale);
         }
         float score = simd_sum(private_sum);
 
@@ -793,6 +811,14 @@ kernel void tqpolar_online_attention_quant_v_raw(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float q_norm = (use_qjl != 0) ? shared_q_norm[0] : 0.0f;
 
+    // Native Polar Dot-Product: preload query pairs into registers.
+    float q_x_reg[4];
+    float q_y_reg[4];
+    for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
+        q_x_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2];
+        q_y_reg[idx] = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
+    }
+
     for (uint s = 0; s < total_blocks; s++) {
         // Hoist the per-block radii scale read outside the token loop.
         float radii_scale_val = (int8_radii == 0) ? 0.0f : float(radii_scales[b * stride_rs_b + kv_head * stride_rs_h + s * stride_rs_s]);
@@ -802,35 +828,29 @@ kernel void tqpolar_online_attention_quant_v_raw(
             if (global_tok_idx >= actual_seq_len) {
                 continue;
             }
-            // Compute Q @ K dot product; each of the 32 threads covers half_d/32 dims.
+            // Compute Q @ K dot product directly in polar space.
             float private_sum = 0.0f;
-            for (uint j = tid; j < half_d; j += 32) {
+            for (uint j = tid, idx = 0; j < half_d; j += 32, idx++) {
                 uint offset_r = b * stride_r_b + kv_head * stride_r_h + s * stride_r_s + l * stride_r_l + j;
                 uint offset_c1 = b * stride_c1_b + kv_head * stride_c1_h + s * stride_c1_s + l * stride_c1_l;
                 uint offset_cd = b * stride_cd_b + kv_head * stride_cd_h + s * stride_cd_s + l * stride_cd_l;
                 float r = _tqpolar_decode_radius(polar_radii, polar_radii_i8, radii_scale_val, offset_r, int8_radii, log_radii);
-                float k_x, k_y;
+                float k_cos, k_sin;
                 if (j >= split_half_d) {
-                    // Deep-bucket: use LUT for 8-bit codes, trig for narrower configs.
                     uint rel_j = j - split_half_d;
                     _tqpolar_cossin_lut(angle_codes_deep, rel_j, offset_cd,
-                                        deep_bits, deep_scale, &k_x, &k_y);
+                                        deep_bits, deep_scale, &k_cos, &k_sin);
                 } else {
-                    // L1-bucket: always use the normalized angle / trig path.
                     float norm_angle = float(static_cast<half>(
                         (l1_bits == 8)
                             ? angle_codes_l1[offset_c1 + j]
                             : ((angle_codes_l1[offset_c1 + j / 2] >> ((j % 2) * 4)) & 0x0F)
                     ) / l1_scale);
                     float angle = (norm_angle * 2.0f * M_PI_F) - M_PI_F;
-                    k_x = cos(angle);
-                    k_y = sin(angle);
+                    k_cos = cos(angle);
+                    k_sin = sin(angle);
                 }
-                k_x *= r;
-                k_y *= r;
-                float q_x = q[b * stride_q_b + q_head * stride_q_h + j * 2];
-                float q_y = q[b * stride_q_b + q_head * stride_q_h + j * 2 + 1];
-                private_sum += (q_x * k_x + q_y * k_y) * float(attention_scale);
+                private_sum += r * (q_x_reg[idx] * k_cos + q_y_reg[idx] * k_sin) * float(attention_scale);
             }
             // simd_sum broadcasts the reduced score to all 32 threads in the SIMD group.
             float score = simd_sum(private_sum);
